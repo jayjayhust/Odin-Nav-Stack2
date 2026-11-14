@@ -22,6 +22,15 @@
 #   mode: autonomous  - the hook makes the robot traverse by itself (e.g. a stair
 #                       gait sequence); it must end by calling arrived_at_floor
 #
+# Stair gait handover is provided by the `stair_gait` package:
+#   /stair_gait/enter_climb    -> SwitchGait(3) FORWARD_CLIMBING_MODE
+#   /stair_gait/enter_descend  -> SwitchGait(4) REVERSE_CLIMBING_MODE
+#   /stair_gait/leave          -> SwitchGait(1) TROT
+#   /stair_gait/walkstair_mode -> mode("walkstair")
+# The sport API id is NOT in unitree_sdk2's public sport_api.hpp; it is a
+# parameter (switch_gait_api_id / mode_api_id) that must be filled in from the
+# firmware / SDK actually deployed. Until then keep mode: manual.
+#
 # Order inside `transitions` is the priority order: the first entry that reaches
 # the target floor is used. `to: ""` is a wildcard (works for any other floor).
 #
@@ -46,7 +55,10 @@ floors:
         pose: {x: 1.20, y: -2.60, yaw: 1.57}
         # After the stair climb is validated on site, switch to:
         #   mode: autonomous
-        #   hook: "scripts/transition/stairs_auto_example.sh"
+        #   hook: "scripts/transition/stairs_gait_hook.sh"
+        # and start stair_gait with enable_actuation:=true plus a valid
+        # switch_gait_api_id. The generic template stairs_auto_example.sh is
+        # kept for SDKs that expose a shell entry point instead.
       # Lift kept as a fallback (dry contact / staff with a lift card).
       - to: ""
         type: lift
@@ -60,7 +72,7 @@ floors:
     transitions:
       - to: ""
         type: stairs
-        mode: manual
+        mode: manual                       # autonomous: stairs_gait_hook.sh
         pose: {x: 1.35, y: -2.45, yaw: 1.57}
       - to: ""
         type: lift
@@ -74,7 +86,7 @@ floors:
     transitions:
       - to: ""
         type: stairs
-        mode: manual
+        mode: manual                       # autonomous: stairs_gait_hook.sh
         pose: {x: 1.35, y: -2.45, yaw: 1.57}
       - to: ""
         type: lift
@@ -88,7 +100,7 @@ floors:
     transitions:
       - to: ""
         type: stairs
-        mode: manual
+        mode: manual                       # autonomous: stairs_gait_hook.sh
         pose: {x: 1.35, y: -2.45, yaw: 1.57}
       - to: ""
         type: lift

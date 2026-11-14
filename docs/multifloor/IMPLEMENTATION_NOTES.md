@@ -71,4 +71,4 @@ c++ 编译 ................................. 未做（本机无 ROS/Noetic）
 ======================
 git push origin feature/go2-multifloor   # 本机 GITHUB_TOKEN 为空，未能推送
 cd ros_ws && catkin_make -DCMAKE_BUILD_TYPE=Release \
-  -DCATKIN_WHITELIST_PACKAGES="nav_interfaces;odin_ros_driver;map_planner;sliding_map;neupan_ros;mission_manager;atomic_move;floor_manager"
+  -DCATKIN_WHITELIST_PACKAGES="nav_interfaces;odin_ros_driver;map_planner;sliding_map;neupan_ros;mission_manager;atomic_move;floor_manager;octo_planner_ros1;stair_gait"

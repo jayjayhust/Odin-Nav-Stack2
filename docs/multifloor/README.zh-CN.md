@@ -97,7 +97,7 @@ floors:
 cd ros_ws
 # 白名单必须包含新包 floor_manager
 catkin_make -DCMAKE_BUILD_TYPE=Release \
-  -DCATKIN_WHITELIST_PACKAGES="nav_interfaces;odin_ros_driver;map_planner;sliding_map;neupan_ros;mission_manager;atomic_move;floor_manager;sw01_ros_control;dobot_ros_control"
+  -DCATKIN_WHITELIST_PACKAGES="nav_interfaces;odin_ros_driver;map_planner;sliding_map;neupan_ros;mission_manager;atomic_move;floor_manager;octo_planner_ros1;stair_gait;sw01_ros_control;dobot_ros_control"
 
 source devel/setup.bash
 rospack find floor_manager

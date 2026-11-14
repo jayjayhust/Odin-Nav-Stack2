@@ -1,0 +1,25 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>stair_gait</name>
+  <version>0.1.0</version>
+  <description>
+    Stair semantics (up / down / flat with tread height) from Odin1 point cloud,
+    plus an explicit gate that hands Go2 over to its climbing gait. The sport
+    API id for SwitchGait / WalkStair is a parameter because unitree_sdk2's
+    public sport_api.hpp does not publish it.
+  </description>
+  <maintainer email="jayjayhust@users.noreply.github.com">jayjayhust</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>libpcl-all-dev</depend>
+</package>

@@ -1,0 +1,16 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="config" default="$(find stair_gait)/config/stair_gait.yaml"/>
+  <arg name="enable_actuation" default="false"/>
+  <arg name="auto_switch" default="false"/>
+  <arg name="switch_gait_api_id" default="-1"/>
+  <arg name="mode_api_id" default="-1"/>
+
+  <node pkg="stair_gait" type="stair_gait_node" name="stair_gait" output="screen">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="enable_actuation" value="$(arg enable_actuation)"/>
+    <param name="auto_switch" value="$(arg auto_switch)"/>
+    <param name="switch_gait_api_id" value="$(arg switch_gait_api_id)"/>
+    <param name="mode_api_id" value="$(arg mode_api_id)"/>
+  </node>
+</launch>

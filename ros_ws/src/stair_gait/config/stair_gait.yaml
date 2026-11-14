@@ -1,0 +1,38 @@
+# Stair semantics + Go2 climbing gait handover.
+#
+# SAFETY: keep enable_actuation false until switch_gait_api_id / mode_api_id
+# have been confirmed on the actual firmware. Wrong ids return non-zero codes
+# and the node logs them, but a wrong id could also reach an unintended
+# service, so validate once with the robot on blocks and the legs free.
+
+cloud_topic: "/odin1/cloud_slam"
+base_frame: "base_link"
+detect_rate_hz: 10.0
+
+# api ids: -1 means "not configured, do not call"
+# gait values follow the Go2 ROS2 /switch_gait service:
+#   0 idLE, 1 TROT, 2 TROT_RUN_NING, 3 FORWARD_CLIMBING_MODE, 4 REVERSE_CLIMBING_MODE
+switch_gait_api_id: -1
+mode_api_id: -1
+gait_forward_climb: 3
+gait_reverse_climb: 4
+gait_trot: 1
+
+enable_actuation: false
+auto_switch: false
+confirm_frames: 3
+
+# empty = let unitree_sdk2 pick the default DDS interface
+network_interface: ""
+
+roi_x_min: 0.80
+roi_x_max: 3.20
+roi_y_half: 0.60
+roi_z_min: -0.75
+roi_z_max: 0.60
+bin_m: 0.05
+min_bin_points: 3
+min_rise_m: 0.08
+max_rise_m: 0.30
+min_steps: 2
+max_rise_spread_m: 0.06

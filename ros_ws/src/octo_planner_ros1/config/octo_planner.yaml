@@ -1,0 +1,43 @@
+# 3D occupancy planner parameters.
+# The names follow jie_3d_nav/octo_planner so the values can be compared
+# across the two stacks without translation.
+
+# Same contract as map_planner: mission_manager reaches this through
+# global_planner / plan_service.
+service_name: "/map_planner/plan"
+
+map_frame: "map"
+base_frame: "base_link"
+
+# Voxel size. 0.10 m keeps a 4-floor single layer around 1.5 G cells only if
+# the whole building were one grid; a single storey stays well below that.
+resolution: 0.10
+
+# Either a prebuilt cloud (recommended for repeatable tests) ...
+pcd_file: ""
+# ... or live accumulation from Odin1. odin1/cloud_slam is published in the
+# odometry frame, the node transforms it into map_frame through TF.
+cloud_topic: "/odin1/cloud_slam"
+accumulate_cloud: true
+max_points_per_cloud: 20000
+
+# Surface points clear the column above them so the robot body fits.
+clearance_cells: 20
+
+# Inflation: robot_radius is applied in XY, inflation_z_cells in Z. A stair
+# tread is 0.26-0.30 m so an XY radius of 0.25 already touches the riser; that
+# is why stair segments must be handed over to the gait layer instead of being
+# planned through.
+robot_radius: 0.25
+inflation_z_cells: 2
+
+max_iterations: 500000
+require_ground_support: true
+ground_support_xy_radius_cells: 1
+snap_search_radius_cells: 12
+max_step_z_cells: 3
+z_bias: 0.0
+grid_margin_m: 1.0
+
+publish_voxel_markers: false
+tf_timeout_sec: 0.2

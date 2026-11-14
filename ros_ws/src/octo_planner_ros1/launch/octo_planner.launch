@@ -1,0 +1,15 @@
+<?xml version="1.0"?>
+<launch>
+  <arg name="service_name" default="/map_planner/plan"/>
+  <arg name="pcd_file" default=""/>
+  <arg name="cloud_topic" default="/odin1/cloud_slam"/>
+  <arg name="config" default="$(find octo_planner_ros1)/config/octo_planner.yaml"/>
+
+  <node pkg="octo_planner_ros1" type="octo_planner_node" name="octo_planner_ros1"
+        output="screen" respawn="true" respawn_delay="2">
+    <rosparam command="load" file="$(arg config)"/>
+    <param name="service_name" value="$(arg service_name)"/>
+    <param name="pcd_file" value="$(arg pcd_file)"/>
+    <param name="cloud_topic" value="$(arg cloud_topic)"/>
+  </node>
+</launch>
