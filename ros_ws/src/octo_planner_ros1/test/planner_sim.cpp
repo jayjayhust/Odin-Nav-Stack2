@@ -141,7 +141,7 @@ Scenario buildDeskBarrier() {
   return sc;
 }
 
-// --- scene F: three-storey office -------------------------------------------
+// --- scene F: four-storey office --------------------------------------------
 // Two switch-back flights per storey, the way a real twin-flight stair is
 // built: each half flight rises 1.7 m over 2.7 m of going, the two runs sit
 // side by side in y, and a 1.2 m landing at the far end turns you 180 degrees
@@ -151,9 +151,9 @@ Scenario buildMultiFloor(bool curb) {
   Scenario sc;
   sc.name = curb ? "multi_floor" : "multi_floor_glass";
   sc.desc = curb
-    ? "3 层办公楼（现场楼梯按实拍复核并加了 0.22 m 连续挡边）：双跑每层两段 9 级（踢面 0.189 / 踏面 0.30）+ 端部 1.2 m 转弯平台，玻璃栏板夹不锈钢立柱，梯井贯通三层，起点 1 层、目标 3 层"
+    ? "4 层办公楼（现场楼梯按实拍复核并加了 0.22 m 连续挡边）：双跑每层两段 9 级（踢面 0.189 / 踏面 0.30）+ 端部 1.2 m 转弯平台，玻璃栏板夹不锈钢立柱，梯井贯通四层，起点 1 层、目标 4 层"
     : "同一栋楼，但不做任何改造：只有夹胶玻璃栏板 + 1.35 m 间距的不锈钢立柱，玻璃对 lidar 近乎透明——用来复现现场真实的感知缺口";
-  sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 12.0, 6.0, 10.6, 0.3);
+  sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 12.0, 6.0, 13.8, 0.3);
 
   const double FL = 3.4;
   const int    N = 9;                            // steps per half flight
@@ -167,7 +167,7 @@ Scenario buildMultiFloor(bool curb) {
   // Floor slabs, leaving the stair well open. The ground floor stays solid
   // because the first run starts from it; the two slabs above are holed so the
   // well runs through the building.
-  for (int f = 0; f < 3; ++f) {
+  for (int f = 0; f < 4; ++f) {
     for (double x = 0.0; x <= 12.0 + 1e-9; x += 0.05) {
       for (double y = 0.0; y <= 6.0 + 1e-9; y += 0.05) {
         const bool in_well = (f > 0) &&
@@ -179,7 +179,7 @@ Scenario buildMultiFloor(bool curb) {
     }
   }
 
-  for (int f = 0; f < 2; ++f) {
+  for (int f = 0; f < 3; ++f) {
     // outbound run climbs +x along the upper half of the well
     for (int i = 0; i < N; ++i) {
       addPlate(sc.grid, TX0 + i * TREAD, TX0 + (i + 1) * TREAD, TY_R0, TY_R1,
@@ -195,17 +195,17 @@ Scenario buildMultiFloor(bool curb) {
   }
 
   // Outer shell.
-  addWallY(sc.grid, 0.0, 0.0, 6.0, 0.0, 10.6);
-  addWallY(sc.grid, 12.0, 0.0, 6.0, 0.0, 10.6);
-  addWallX(sc.grid, 0.0, 0.0, 12.0, 0.0, 10.6);
-  addWallX(sc.grid, 6.0, 0.0, 12.0, 0.0, 10.6);
+  addWallY(sc.grid, 0.0, 0.0, 6.0, 0.0, 13.8);
+  addWallY(sc.grid, 12.0, 0.0, 6.0, 0.0, 13.8);
+  addWallX(sc.grid, 0.0, 0.0, 12.0, 0.0, 13.8);
+  addWallX(sc.grid, 6.0, 0.0, 12.0, 0.0, 13.8);
 
   // Shaft walls on both sides of the well, full height, plus the wall behind
   // the landing. Only the two landings are open, so the robot enters and leaves
   // the flight exactly where a person would.
-  addWallX(sc.grid, TY_L0 - 0.05, TX0, LX1, 0.0, 10.6);
-  addWallX(sc.grid, TY_R1 + 0.05, TX0, LX1, 0.0, 10.6);
-  addWallY(sc.grid, LX1 + 0.05, TY_L0, TY_R1, 0.0, 10.6);
+  addWallX(sc.grid, TY_L0 - 0.05, TX0, LX1, 0.0, 13.8);
+  addWallX(sc.grid, TY_R1 + 0.05, TX0, LX1, 0.0, 13.8);
+  addWallY(sc.grid, LX1 + 0.05, TY_L0, TY_R1, 0.0, 13.8);
 
   // Real stair from the site photographs: frameless glass balustrade between
   // stainless posts at roughly 1.2 m centres, a round tube handrail on top, and
@@ -216,7 +216,7 @@ Scenario buildMultiFloor(bool curb) {
   // cloud; only the posts and the tube come back, and the posts sit 1.2 m apart.
   // The middle divider between the two flights is therefore nearly invisible to
   // perception - which is precisely the edge the robot must not stray past.
-  for (int f = 0; f < 2; ++f) {
+  for (int f = 0; f < 3; ++f) {
     for (int k = 0; k <= 2; ++k) {
       const double xo = TX0 + k * (TX1 - TX0) * 0.5;
       const double zo = f * FL + k * (FL * 0.5);
@@ -244,7 +244,7 @@ Scenario buildMultiFloor(bool curb) {
   }
 
   sc.start = makeKeyAt(sc.grid, 10.00, 2.40, 0.35);
-  sc.goal = makeKeyAt(sc.grid, 1.50, 2.40, 7.00);
+  sc.goal = makeKeyAt(sc.grid, 1.50, 2.40, 10.20);
   return sc;
 }
 
@@ -485,8 +485,8 @@ int main() {
   for (const VoxelKey& k : multi.result.path) {
     top_z = std::max(top_z, static_cast<double>(k.z));
   }
-  multi.checks.push_back({"跨 3 层出图", multi.ok, multi.result.message});
-  multi.checks.push_back({"最高点到达三层站立高度", top_z >= 70.0,
+  multi.checks.push_back({"跨 4 层出图", multi.ok, multi.result.message});
+  multi.checks.push_back({"最高点到达四层站立高度", top_z >= 102.0,
                           "max iz=" + std::to_string(static_cast<int>(top_z))});
   multi.checks.push_back({"扩展次数在预算内",
                           multi.result.expanded <= params.max_iterations,

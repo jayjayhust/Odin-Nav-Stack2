@@ -1,19 +1,32 @@
 # Stair semantics + Go2 climbing gait handover.
 #
-# SAFETY: keep enable_actuation false until switch_gait_api_id / mode_api_id
-# have been confirmed on the actual firmware. Wrong ids return non-zero codes
-# and the node logs them, but a wrong id could also reach an unintended
-# service, so validate once with the robot on blocks and the legs free.
+# SAFETY: keep enable_actuation false until the ids below have been confirmed
+# on YOUR firmware. They are known-good on a stock Go2, but a different
+# firmware can renumber them. Wrong ids return non-zero codes and the node
+# logs them, though a wrong id could also reach an unintended service, so
+# validate once with the robot on blocks and the legs free:
+#   rosrun stair_gait stair_gait_node _enable_actuation:=true
+#   rosservice call /stair_gait/leave        # trot, harmless
+#   rosservice call /stair_gait/enter_climb  # forward climbing
+#   rosservice call /stair_gait/walkstair_mode
 
 cloud_topic: "/odin1/cloud_slam"
 base_frame: "base_link"
 detect_rate_hz: 10.0
 
 # api ids: -1 means "not configured, do not call"
-# gait values follow the Go2 ROS2 /switch_gait service:
-#   0 idLE, 1 TROT, 2 TROT_RUN_NING, 3 FORWARD_CLIMBING_MODE, 4 REVERSE_CLIMBING_MODE
-switch_gait_api_id: -1
-mode_api_id: -1
+#   1011  SwitchGait  {"data": int}
+#   1049  WalkStair   {"data": bool}
+# Neither appears in the sport_api.hpp that ships with unitree_sdk2 (it stops
+# at 1036 / 1063), but both are in the Go2 firmware and both are confirmed
+# against the Go2 sport client bundled with unitree_sdk2_python, then
+# cross-checked against unitree_sdk2_rs which labels `api 1011 SwitchGait`.
+# Verify once on your own firmware before trusting them.
+#
+# gait values follow the Go2 /switch_gait numbering:
+#   0 idle, 1 trot, 2 trot-running, 3 FORWARD_CLIMBING_MODE, 4 REVERSE_CLIMBING_MODE
+switch_gait_api_id: 1011
+mode_api_id: 1049
 gait_forward_climb: 3
 gait_reverse_climb: 4
 gait_trot: 1

@@ -432,7 +432,7 @@ function drawCloud(s, T){
   cv.style.cursor = 'grab';
   let drag = null;
   // Left button orbits, right and middle do nothing. Pitch is deliberately
-  // unlimited: a three-storey stair core has to be inspectable from underneath
+  // unlimited: a four-storey stair core has to be inspectable from underneath
   // and from above, and clamping the elevation only gets in the way.
   cv.addEventListener('mousedown', (e) => {
     if (e.button !== 0) return;

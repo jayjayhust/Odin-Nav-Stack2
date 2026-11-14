@@ -230,12 +230,12 @@ class StairGaitNode {
     if (!gate(res)) return true;
     if (mode_api_id_ < 0) {
       res.success = false;
-      res.message = "mode_api_id is unset";
+      res.message = "mode_api_id (WalkStair) is unset";
       return true;
     }
-    const int32_t ret = client_.SetModeById(mode_api_id_, "walkstair");
+    const int32_t ret = client_.WalkStairById(mode_api_id_, true);
     res.success = (ret == 0);
-    res.message = "mode(walkstair) -> " + std::to_string(ret);
+    res.message = "WalkStair(true) -> " + std::to_string(ret);
     return true;
   }
 
