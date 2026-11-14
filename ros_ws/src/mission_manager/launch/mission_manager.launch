@@ -56,8 +56,10 @@
        default="$(find ons2_bringup)/../../../robots/go2/floors.yaml" />
   <arg name="initial_floor" default="1F" />
   <arg name="floor_status_topic" default="/floor_manager/status" />
-  <arg name="elevator_arrive_tolerance_m" default="0.30" />
-  <arg name="elevator_wait_timeout_sec" default="0.0" />
+  <arg name="transition_arrive_tolerance_m" default="0.30" />
+  <arg name="transition_wait_timeout_sec" default="0.0" />
+  <arg name="transition_hook_timeout_sec" default="180.0" />
+  <arg name="repo_root" default="$(optenv GO2_ROOT)" />
 
   <!-- Loads /mission_manager/floors for lift-lobby poses. -->
   <rosparam if="$(arg enable_multifloor)" file="$(arg floors_config)"
@@ -93,8 +95,10 @@
     <param name="enable_multifloor" value="$(arg enable_multifloor)" />
     <param name="floor_status_topic" value="$(arg floor_status_topic)" />
     <param name="initial_floor" value="$(arg initial_floor)" />
-    <param name="elevator_arrive_tolerance_m" value="$(arg elevator_arrive_tolerance_m)" />
-    <param name="elevator_wait_timeout_sec" value="$(arg elevator_wait_timeout_sec)" />
+    <param name="transition_arrive_tolerance_m" value="$(arg transition_arrive_tolerance_m)" />
+    <param name="transition_wait_timeout_sec" value="$(arg transition_wait_timeout_sec)" />
+    <param name="transition_hook_timeout_sec" value="$(arg transition_hook_timeout_sec)" />
+    <param name="repo_root" value="$(arg repo_root)" />
     <param name="recovery_shadow_enable" value="$(arg recovery_shadow_enable)" />
     <param name="recovery_behavior_enable" value="$(arg recovery_behavior_enable)" />
     <param name="enable_dynamic_mode" value="$(arg enable_dynamic_mode)" />

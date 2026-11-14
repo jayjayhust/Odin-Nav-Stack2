@@ -41,6 +41,7 @@ struct FloorSpec {
   double elevator_y{0.0};
   double elevator_yaw{0.0};
   bool has_elevator{false};
+  std::vector<std::string> transition_types;
 };
 
 double asDouble(const XmlRpc::XmlRpcValue& value) {
@@ -161,6 +162,19 @@ private:
         spec.id = asString(entry["id"]);
         spec.map_yaml = expandPath(asString(entry["map_yaml"]));
         spec.reloc_bin = expandPath(asString(entry["reloc_bin"]));
+        // Generic transition points (lift / stairs / ramp). floor_manager does
+        // not plan to them, it only needs to know they exist for logging and
+        // for refusing a switch to a floor with no way out.
+        if (entry.hasMember("transitions") &&
+            entry["transitions"].getType() == XmlRpc::XmlRpcValue::TypeArray) {
+          XmlRpc::XmlRpcValue& list = entry["transitions"];
+          for (int j = 0; j < list.size(); ++j) {
+            XmlRpc::XmlRpcValue& raw = list[j];
+            if (raw.getType() != XmlRpc::XmlRpcValue::TypeStruct) continue;
+            spec.transition_types.push_back(
+                raw.hasMember("type") ? asString(raw["type"]) : "lift");
+          }
+        }
         if (entry.hasMember("elevator") &&
             entry["elevator"].getType() == XmlRpc::XmlRpcValue::TypeStruct) {
           XmlRpc::XmlRpcValue& elevator = entry["elevator"];
@@ -171,6 +185,12 @@ private:
             spec.elevator_yaw = asDouble(elevator["yaw"]);
           }
         }
+        if (spec.transition_types.empty() && spec.has_elevator) {
+          spec.transition_types.push_back("lift");
+        }
+        ROS_INFO("[floor_manager] floor '%s': %zu transition point(s)%s",
+                 spec.id.c_str(), spec.transition_types.size(),
+                 spec.has_elevator ? " (legacy elevator block)" : "");
         floor_order_.push_back(spec.id);
         floors_[spec.id] = spec;
       }

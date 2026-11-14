@@ -20,7 +20,7 @@ commit: 80b3d61 (local only, NOT pushed)
   CMakeLists.txt          已注册
 
 mission_manager/
-  include/.../mission_manager.h   State::ELEVATOR_TRANSIT + 5 方法 + multifloor 成员
+  include/.../mission_manager.h   State::FLOOR_TRANSIT + 5 方法 + multifloor 成员
   src/mission_manager_node.cpp    见下
   launch/mission_manager.launch   enable_multifloor/floors_config/initial_floor/...
 
@@ -39,12 +39,12 @@ docs/multifloor/
   README.zh-CN.md   建图->编译->启动->下达任务->验证->排障
   design.zh-CN.md   接口契约 + 状态机 + 11 步切层时序 + 设计取舍
 
-robots/go2/floors.yaml   4 层示例，elevator 6.20/1.80/0.0
+robots/go2/floors.yaml   4 层示例，transitions: stairs(manual) 优先, lift(manual) 兜底
 
 mission_manager 关键改动
 ========================
 1) 构造：读 enable_multifloor/floor_status_topic/initial_floor/
-   elevator_arrive_tolerance_m/elevator_wait_timeout_sec，解析 ~floors 建 floor_elevators_，
+   transition_arrive_tolerance_m/transition_wait_timeout_sec，解析 ~floors 建 floor_elevators_，
    订阅 /floor_manager/status
 2) currentGoalPose(): floor_transit_active_ ? transit_goal_ : waypointPose(...)
    已被 planCurrentWaypoint / processPeriodicReplan / recovery shadow /
@@ -52,7 +52,7 @@ mission_manager 关键改动
 3) startCurrentWaypoint() 开头：target_floor != current_floor_ ->
    已在电梯口(<=0.30m)则 enterElevatorTransit，否则规划到电梯口
 4) ARRIVED 分支前：floor_transit_active_ -> enterElevatorTransit 并 return（不做对齐/停留）
-5) process() 最前：ELEVATOR_TRANSIT -> processElevatorTransit()
+5) process() 最前：FLOOR_TRANSIT -> processElevatorTransit()
 6) processElevatorTransit(): 等 !switching && current_floor==target ->
    更新 current_floor_、home_pose_valid_=false、续跑原航点
 7) cancel/reset/startMission 清理 floor_transit_active_ 与 target_floor_

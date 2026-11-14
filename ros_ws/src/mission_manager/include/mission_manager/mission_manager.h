@@ -78,10 +78,20 @@ private:
     // Substate of DYNAMIC: in-place stepped rotation search triggered via follow_search
     // when the target is lost, until a new dynamic_goal is received or limits are reached.
     DYNAMIC_SEARCHING,
-    // Multi-floor: parked at the current floor's lift lobby, waiting for the
-    // operator (or a lift integration) to move the robot and confirm arrival
-    // through floor_manager. No velocity commands are issued in this state.
-    ELEVATOR_TRANSIT
+    // Multi-floor: parked at the current floor's transition point (lift lobby,
+    // stair head, ramp foot), waiting for floor_manager to confirm the new
+    // floor. No velocity commands are issued in this state.
+    FLOOR_TRANSIT
+  };
+
+  // One way to leave a floor. `to` empty means "usable for any other floor".
+  struct FloorTransition {
+    std::string to_floor;
+    std::string type;   // lift | stairs | ramp
+    std::string mode;   // manual | api | autonomous
+    geometry_msgs::PoseStamped pose;
+    std::string hook;   // optional external script, exit 0 = arrived
+    double timeout_sec{0.0};
   };
 
   // Search termination reason passed atomically from worker thread to main loop
@@ -183,13 +193,19 @@ private:
 
   // ---- Multi-floor support (waypoint.floor driven) ----
   void floorStatusCb(const nav_interfaces::FloorStatusConstPtr &msg);
-  bool elevatorPoseForFloor(const std::string &floor,
-                            geometry_msgs::PoseStamped &pose) const;
-  // Park at the current floor's lift lobby and wait for floor_manager to
-  // report that the robot is on `target_floor` with a stable relocalization.
-  void enterElevatorTransit(const std::string &target_floor);
-  void processElevatorTransit();
-  // Goal actually planned right now: the lift lobby while transiting to
+  // First transition out of `from` that reaches `to`; a transition with an
+  // empty `to_floor` acts as a wildcard. Order in floors.yaml is the priority.
+  bool selectTransition(const std::string &from, const std::string &to,
+                        FloorTransition &out) const;
+  // Park at the chosen transition point and wait for the new floor.
+  void enterFloorTransit(const std::string &target_floor,
+                         const FloorTransition &transition);
+  void processFloorTransit();
+  // Async external hook (lift API, stair climb sequence). Never blocks the
+  // ROS callback queue, so cancel/pause stay responsive.
+  void startTransitionHook(const FloorTransition &transition);
+  std::string expandTransitionPath(const std::string &path) const;
+  // Goal actually planned right now: the transition point while heading to
   // another floor, otherwise the active waypoint.
   geometry_msgs::PoseStamped currentGoalPose() const;
 
@@ -276,12 +292,19 @@ private:
   std::string current_floor_;
   std::string target_floor_;
   std::string transit_target_floor_;
-  bool floor_transit_active_{false};          // currently heading to the lift lobby
+  bool floor_transit_active_{false};          // currently heading to the transition point
   geometry_msgs::PoseStamped transit_goal_;
-  double elevator_arrive_tolerance_m_{0.30};
-  double elevator_wait_timeout_sec_{0.0};     // 0 = wait forever
-  ros::Time elevator_wait_started_at_;
-  std::map<std::string, geometry_msgs::PoseStamped> floor_elevators_;
+  double transition_arrive_tolerance_m_{0.30};
+  double transition_wait_timeout_sec_{0.0};   // 0 = wait forever
+  double transition_hook_timeout_sec_{180.0};
+  ros::Time transit_wait_started_at_;
+  std::map<std::string, std::vector<FloorTransition>> floor_transitions_;
+  FloorTransition active_transition_;
+  std::string repo_root_;
+  bool transition_hook_running_{false};
+  std::atomic<bool> transition_hook_failed_{false};
+  std::string transition_hook_message_;
+  std::mutex hook_mutex_;
   ros::Subscriber floor_status_sub_;
   nav_interfaces::FloorStatus floor_status_;
   bool floor_status_valid_{false};

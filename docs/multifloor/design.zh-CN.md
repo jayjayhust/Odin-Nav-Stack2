@@ -67,28 +67,57 @@ string floor
 `/sliding_map_node/clear`（`std_srvs/Trigger`）：把 `map_.data` 全置 `-1`、时间戳归零并重发
 `/sliding_map`。切层后旧层的动态障碍残留必须清掉，否则新层规划会被"幽灵障碍"挡住。
 
+### 2.6 楼层过渡点（`floors.yaml` 的 `transitions`）
+
+过渡点不是"电梯专有"，它是**离开某一层的唯一出口**，写成列表：
+
+```yaml
+transitions:
+  - to: ""              # 空 = 通配，适用于任何其他层
+    type: stairs        # lift | stairs | ramp
+    mode: manual        # manual | api | autonomous
+    pose: {x, y, yaw}   # 该层自己 map 系下的停靠位姿
+    hook: ""            # api / autonomous 时执行的外部脚本
+    timeout_sec: 0      # 0 = 用 transition_hook_timeout_sec
+```
+
+选择顺序：先找 `to == 目标层`，再找 `to == ""`；**数组顺序即优先级**，所以
+"楼梯优先、电梯兜底"只需把 stairs 写在前面。
+
+`mode` 的语义：
+
+| mode | mission_manager 的行为 |
+| --- | --- |
+| `manual` | 只发事件与提示，等人操作后调用 `arrived_at_floor` |
+| `api` | 异步执行 hook（`timeout` 包裹），hook 负责调电梯协议并最终调 `arrived_at_floor` |
+| `autonomous` | 同 `api`，但 hook 内部是机器人自己的穿越动作（如爬楼步态序列） |
+
+hook 通过环境变量拿到上下文：`FLOOR_TRANSITION_FROM / _TO / _TYPE / _MODE`。
+
 ## 3. 状态机
 
-`mission_manager` 新增 `ELEVATOR_TRANSIT`，其余状态不变：
+`mission_manager` 新增 `FLOOR_TRANSIT`，其余状态不变：
 
 ```
-NAVIGATING ──到达电梯口──► ELEVATOR_TRANSIT ──FloorStatus 确认──► NAVIGATING(新层)
+NAVIGATING ──到达过渡点──► FLOOR_TRANSIT ──FloorStatus 确认──► NAVIGATING(新层)
      │                          ▲
-     │ 到达真实航点              │ 已在电梯口
+     │ 到达真实航点              │ 已在过渡点
      ▼                          │
   ARRIVED ──► ALIGNING ──► DWELLING ──► 下一航点 ──┐
                                                     │ floor 不同
-                                                    └──► 先规划到本层电梯口
+                                                    └──► 先规划到本层过渡点
 ```
 
 判定顺序（`startCurrentWaypoint()` 开头）：
 
 1. `target_floor = waypoint.floor.empty() ? current_floor_ : waypoint.floor`
-2. `target_floor != current_floor_` → 取当前层 `elevator` 位姿
-3. 机器人已在电梯口（`dist ≤ elevator_arrive_tolerance_m`）→ 直接 `ELEVATOR_TRANSIT`
-4. 否则 `floor_transit_active_=true`，`planCurrentWaypoint()` 的 goal 换成电梯口
-5. 到达电梯口后**不进入** `ARRIVED/ALIGNING/DWELLING`，直接 `ELEVATOR_TRANSIT`
-6. `ELEVATOR_TRANSIT` 中不发任何速度指令，等 `FloorStatus`
+2. `target_floor != current_floor_` → 用 `selectTransition(from, to)` 选过渡点
+   （先匹配 `to`，再匹配通配条目 `to: ""`；数组顺序即优先级）
+3. 机器人已在过渡点（`dist ≤ transition_arrive_tolerance_m`）→ 直接 `FLOOR_TRANSIT`
+4. 否则 `floor_transit_active_=true`，`planCurrentWaypoint()` 的 goal 换成过渡点位姿
+5. 到达过渡点后**不进入** `ARRIVED/ALIGNING/DWELLING`，直接 `FLOOR_TRANSIT`，
+   并异步拉起 `hook`（`api` / `autonomous` 时才拉起，`manual` 只提示）
+6. `FLOOR_TRANSIT` 中不发任何速度指令，等 `FloorStatus`
 7. 确认后 `current_floor_ = target_floor_`、`home_pose_valid_ = false`、续跑原航点
 
 `currentGoalPose()` 统一了"当前该往哪走"，已被 `planCurrentWaypoint`、周期重规划、
@@ -125,4 +154,5 @@ recovery shadow、`distanceToTarget`、状态上报复用，避免跨层时误�
 
 - `ArrivedAtFloor` 背后接电梯厂商 API（Modbus/干接点），把人工确认替换为自动确认；
 - `FloorStatus` 增加 `map_origin` 字段，供上层做楼层间粗略拓扑（如"A 栋 2F 到 B 栋 2F"）；
-- 跨层任务加"电梯等待超时自动返航"策略（当前 `elevator_wait_timeout_sec` 只支持跳过航点）。
+- 跨层任务加"过渡等待超时自动返航"策略（当前 `transition_wait_timeout_sec` 只支持跳过航点）；
+- 楼梯端点位姿校验自动化：把"重定位后与期望楼梯口位姿偏差 >0.5 m 即判失败"写进 floor_manager。

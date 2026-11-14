@@ -18,6 +18,7 @@
 #include <boost/bind/bind.hpp>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <iomanip>
 #include <limits>
 #include <sstream>
@@ -61,10 +62,17 @@ MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
   private_nh_.param("enable_multifloor", enable_multifloor_, enable_multifloor_);
   private_nh_.param("floor_status_topic", floor_status_topic_, floor_status_topic_);
   private_nh_.param("initial_floor", initial_floor_, initial_floor_);
-  private_nh_.param("elevator_arrive_tolerance_m", elevator_arrive_tolerance_m_,
-                    elevator_arrive_tolerance_m_);
-  private_nh_.param("elevator_wait_timeout_sec", elevator_wait_timeout_sec_,
-                    elevator_wait_timeout_sec_);
+  private_nh_.param("transition_arrive_tolerance_m", transition_arrive_tolerance_m_,
+                    transition_arrive_tolerance_m_);
+  private_nh_.param("transition_wait_timeout_sec", transition_wait_timeout_sec_,
+                    transition_wait_timeout_sec_);
+  private_nh_.param("transition_hook_timeout_sec", transition_hook_timeout_sec_,
+                    transition_hook_timeout_sec_);
+  private_nh_.param("repo_root", repo_root_, repo_root_);
+  if (repo_root_.empty()) {
+    const char *env_root = std::getenv("GO2_ROOT");
+    if (env_root != nullptr) repo_root_ = env_root;
+  }
   if (enable_multifloor_) {
     current_floor_ = initial_floor_;
     XmlRpc::XmlRpcValue floors;
@@ -79,28 +87,74 @@ MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
         }
         return 0.0;
       };
-      for (int i = 0; i < floors.size(); ++i) {
-        XmlRpc::XmlRpcValue &entry = floors[i];
-        if (entry.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
-            !entry.hasMember("id") || !entry.hasMember("elevator")) {
-          continue;
+      auto asString = [](const XmlRpc::XmlRpcValue &value) -> std::string {
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeString) {
+          return static_cast<std::string>(value);
         }
-        const std::string id = static_cast<std::string>(entry["id"]);
-        XmlRpc::XmlRpcValue &elevator = entry["elevator"];
-        if (elevator.getType() != XmlRpc::XmlRpcValue::TypeStruct) continue;
-        geometry_msgs::PoseStamped pose;
+        return std::string();
+      };
+      // pose: {x, y, yaw}
+      auto parsePose = [&](const XmlRpc::XmlRpcValue &value,
+                           geometry_msgs::PoseStamped &pose) -> bool {
+        if (value.getType() != XmlRpc::XmlRpcValue::TypeStruct) return false;
         pose.header.frame_id = map_frame_;
-        if (elevator.hasMember("x")) pose.pose.position.x = asDouble(elevator["x"]);
-        if (elevator.hasMember("y")) pose.pose.position.y = asDouble(elevator["y"]);
-        const double yaw =
-            elevator.hasMember("yaw") ? asDouble(elevator["yaw"]) : 0.0;
+        if (value.hasMember("x")) pose.pose.position.x = asDouble(value["x"]);
+        if (value.hasMember("y")) pose.pose.position.y = asDouble(value["y"]);
+        const double yaw = value.hasMember("yaw") ? asDouble(value["yaw"]) : 0.0;
         tf2::Quaternion quaternion;
         quaternion.setRPY(0.0, 0.0, yaw);
         pose.pose.orientation = tf2::toMsg(quaternion);
-        floor_elevators_[id] = pose;
+        return true;
+      };
+      for (int i = 0; i < floors.size(); ++i) {
+        XmlRpc::XmlRpcValue &entry = floors[i];
+        if (entry.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+            !entry.hasMember("id")) {
+          continue;
+        }
+        const std::string id = asString(entry["id"]);
+        if (id.empty()) continue;
+        std::vector<FloorTransition> transitions;
+        if (entry.hasMember("transitions") &&
+            entry["transitions"].getType() == XmlRpc::XmlRpcValue::TypeArray) {
+          XmlRpc::XmlRpcValue &list = entry["transitions"];
+          for (int j = 0; j < list.size(); ++j) {
+            XmlRpc::XmlRpcValue &raw = list[j];
+            if (raw.getType() != XmlRpc::XmlRpcValue::TypeStruct) continue;
+            FloorTransition transition;
+            transition.type = raw.hasMember("type") ? asString(raw["type"]) : "lift";
+            transition.mode = raw.hasMember("mode") ? asString(raw["mode"]) : "manual";
+            if (raw.hasMember("to")) transition.to_floor = asString(raw["to"]);
+            if (raw.hasMember("hook")) transition.hook = asString(raw["hook"]);
+            if (raw.hasMember("timeout_sec")) {
+              transition.timeout_sec = asDouble(raw["timeout_sec"]);
+            }
+            if (!raw.hasMember("pose") || !parsePose(raw["pose"], transition.pose)) {
+              ROS_WARN("[mission_manager] floor '%s' transition #%d has no valid "
+                       "pose, skipped", id.c_str(), j);
+              continue;
+            }
+            transitions.push_back(transition);
+          }
+        }
+        // Backward compatibility: a bare `elevator: {x,y,yaw}` block becomes a
+        // manual wildcard lift transition.
+        if (transitions.empty() && entry.hasMember("elevator")) {
+          FloorTransition transition;
+          transition.type = "lift";
+          transition.mode = "manual";
+          if (parsePose(entry["elevator"], transition.pose)) {
+            transitions.push_back(transition);
+          }
+        }
+        if (!transitions.empty()) {
+          floor_transitions_[id] = transitions;
+          ROS_INFO("[mission_manager] floor '%s': %zu transition(s)", id.c_str(),
+                   transitions.size());
+        }
       }
-      ROS_INFO("[mission_manager] multi-floor enabled: %zu lift lobbies, initial floor '%s'",
-               floor_elevators_.size(), current_floor_.c_str());
+      ROS_INFO("[mission_manager] multi-floor enabled: %zu floors, initial '%s'",
+               floor_transitions_.size(), current_floor_.c_str());
     } else {
       ROS_WARN("[mission_manager] enable_multifloor=true but no ~floors list was "
                "loaded; floor transitions will fail");
@@ -391,8 +445,8 @@ void MissionManager::process() {
     }
   }
   processRecoveryShadow();
-  if (state_ == State::ELEVATOR_TRANSIT) {
-    processElevatorTransit();
+  if (state_ == State::FLOOR_TRANSIT) {
+    processFloorTransit();
     return;
   }
   if (state_ == State::DYNAMIC || state_ == State::DYNAMIC_SEARCHING) {
@@ -490,10 +544,10 @@ void MissionManager::process() {
         !route_segment_final_) {
       return;
     }
-    // Arrived at the lift lobby, not at the real waypoint: park and wait.
+    // Arrived at the transition point, not at the real waypoint: park and wait.
     if (floor_transit_active_) {
       floor_transit_active_ = false;
-      enterElevatorTransit(transit_target_floor_);
+      enterFloorTransit(transit_target_floor_, active_transition_);
       return;
     }
     transitionTo(State::ARRIVED);
@@ -2136,8 +2190,9 @@ bool MissionManager::startCurrentWaypoint() {
   resetInstallGateState("waypoint");
 
   // Multi-floor gate: a waypoint tagged with another floor cannot be planned
-  // on the current map. Drive to the lift lobby first, then park in
-  // ELEVATOR_TRANSIT until floor_manager reports the new floor is ready.
+  // on the current map. Drive to the floor's transition point (lift lobby,
+  // stair head or ramp foot) first, then park in FLOOR_TRANSIT until
+  // floor_manager reports the new floor is ready.
   if (enable_multifloor_ && !waypoints_.empty() && current_index_ >= 0 &&
       current_index_ < static_cast<int>(waypoints_.size()) && !floor_transit_active_) {
     const nav_interfaces::Waypoint &waypoint = waypoints_[current_index_];
@@ -2145,31 +2200,38 @@ bool MissionManager::startCurrentWaypoint() {
         waypoint.floor.empty() ? current_floor_ : waypoint.floor;
     if (!target_floor.empty() && !current_floor_.empty() &&
         target_floor != current_floor_) {
-      geometry_msgs::PoseStamped lobby;
-      if (!elevatorPoseForFloor(current_floor_, lobby)) {
-        transitionTo(State::FAILED,
-                     "no lift lobby configured for floor " + current_floor_);
+      FloorTransition transition;
+      if (!selectTransition(current_floor_, target_floor, transition)) {
+        transitionTo(State::FAILED, "no floor transition from '" + current_floor_ +
+                                        "' to '" + target_floor + "' in floors.yaml");
         return false;
       }
       geometry_msgs::PoseStamped robot;
-      bool already_at_lobby = false;
+      bool already_at_point = false;
       if (getRobotPose(robot)) {
-        const double dx = robot.pose.position.x - lobby.pose.position.x;
-        const double dy = robot.pose.position.y - lobby.pose.position.y;
-        already_at_lobby = std::hypot(dx, dy) <= elevator_arrive_tolerance_m_;
+        const double dx =
+            robot.pose.position.x - transition.pose.pose.position.x;
+        const double dy =
+            robot.pose.position.y - transition.pose.pose.position.y;
+        already_at_point = std::hypot(dx, dy) <= transition_arrive_tolerance_m_;
       }
-      if (already_at_lobby) {
-        ROS_INFO("[mission_manager] already at the %s lift lobby; waiting for floor '%s'",
-                 current_floor_.c_str(), target_floor.c_str());
-        enterElevatorTransit(target_floor);
+      if (already_at_point) {
+        ROS_INFO("[mission_manager] already at the %s point of floor '%s'; "
+                 "waiting to reach '%s'",
+                 transition.type.c_str(), current_floor_.c_str(),
+                 target_floor.c_str());
+        enterFloorTransit(target_floor, transition);
         return true;
       }
       floor_transit_active_ = true;
       transit_target_floor_ = target_floor;
-      transit_goal_ = lobby;
+      transit_goal_ = transition.pose;
+      transit_goal_.header.stamp = ros::Time::now();
+      active_transition_ = transition;
       ROS_INFO("[mission_manager] waypoint %d belongs to floor '%s': driving to the "
-               "%s lift lobby first",
-               current_index_, target_floor.c_str(), current_floor_.c_str());
+               "%s point on floor '%s' first",
+               current_index_, target_floor.c_str(), transition.type.c_str(),
+               current_floor_.c_str());
     }
   }
 
@@ -2738,35 +2800,120 @@ void MissionManager::floorStatusCb(
   std::lock_guard<std::mutex> lock(floor_status_mutex_);
   floor_status_ = *msg;
   floor_status_valid_ = true;
-  // Do not adopt a new floor while parked at the lift: the ELEVATOR_TRANSIT
-  // handler must observe the transition itself and resume the mission.
-  if (state_ != State::ELEVATOR_TRANSIT && !msg->switching &&
+  // Do not adopt a new floor while parked at a transition point: the
+  // FLOOR_TRANSIT handler must observe the transition itself and resume.
+  if (state_ != State::FLOOR_TRANSIT && !msg->switching &&
       !msg->current_floor.empty()) {
     current_floor_ = msg->current_floor;
   }
 }
 
-bool MissionManager::elevatorPoseForFloor(
-    const std::string &floor, geometry_msgs::PoseStamped &pose) const {
-  auto it = floor_elevators_.find(floor);
-  if (it == floor_elevators_.end()) return false;
-  pose = it->second;
-  pose.header.stamp = ros::Time::now();
-  return true;
+bool MissionManager::selectTransition(const std::string &from,
+                                      const std::string &to,
+                                      FloorTransition &out) const {
+  auto it = floor_transitions_.find(from);
+  if (it == floor_transitions_.end() || it->second.empty()) return false;
+  // Exact destination wins, then a wildcard entry (empty `to`) covers the rest.
+  // Order inside floors.yaml is the priority order.
+  for (const auto &transition : it->second) {
+    if (transition.to_floor == to) {
+      out = transition;
+      return true;
+    }
+  }
+  for (const auto &transition : it->second) {
+    if (transition.to_floor.empty()) {
+      out = transition;
+      return true;
+    }
+  }
+  return false;
 }
 
-void MissionManager::enterElevatorTransit(const std::string &target_floor) {
+std::string MissionManager::expandTransitionPath(const std::string &path) const {
+  if (path.empty()) return path;
+  std::string expanded = path;
+  const std::vector<std::string> placeholders = {"${REPO_ROOT}", "$REPO_ROOT",
+                                                 "{REPO_ROOT}"};
+  for (const auto &placeholder : placeholders) {
+    std::size_t pos = 0;
+    while ((pos = expanded.find(placeholder, pos)) != std::string::npos) {
+      expanded.replace(pos, placeholder.size(), repo_root_);
+      pos += repo_root_.size();
+    }
+  }
+  if (!expanded.empty() && expanded.front() != '/' && !repo_root_.empty()) {
+    expanded = repo_root_ + "/" + expanded;
+  }
+  return expanded;
+}
+
+void MissionManager::enterFloorTransit(const std::string &target_floor,
+                                       const FloorTransition &transition) {
   stopNavigation();
   target_floor_ = target_floor;
-  elevator_wait_started_at_ = ros::Time::now();
-  transitionTo(State::ELEVATOR_TRANSIT,
-               "waiting at the lift lobby for floor " + target_floor);
-  publishEvent("WAITING_ELEVATOR",
-               "move the robot to floor " + target_floor +
-                   " and call /floor_manager/arrived_at_floor " + target_floor);
+  active_transition_ = transition;
+  transit_wait_started_at_ = ros::Time::now();
+  transitionTo(State::FLOOR_TRANSIT,
+               transition.type + "/" + transition.mode + " -> floor " + target_floor);
+  publishEvent("WAITING_TRANSITION",
+               "at the " + transition.type + " point on floor " + current_floor_ +
+                   ", waiting to reach " + target_floor);
+  startTransitionHook(transition);
 }
 
-void MissionManager::processElevatorTransit() {
+void MissionManager::startTransitionHook(const FloorTransition &transition) {
+  if (transition.mode == "manual" || transition.hook.empty()) {
+    ROS_INFO("[mission_manager] transition to '%s' is manual: move the robot, then "
+             "call /floor_manager/arrived_at_floor %s",
+             target_floor_.c_str(), target_floor_.c_str());
+    return;
+  }
+  {
+    std::lock_guard<std::mutex> lock(hook_mutex_);
+    if (transition_hook_running_) return;
+    transition_hook_running_ = true;
+  }
+  transition_hook_failed_.store(false);
+  transition_hook_message_ = "hook running";
+  const std::string script = expandTransitionPath(transition.hook);
+  const double timeout_sec = transition.timeout_sec > 0.0
+                                 ? transition.timeout_sec
+                                 : transition_hook_timeout_sec_;
+  // `timeout` guarantees the hook cannot hang this state forever; the thread is
+  // detached so the ROS callback queue (cancel/pause) stays responsive.
+  // Context reaches the hook through environment variables, never argv, so the
+  // same script can serve several floors.
+  const std::string command =
+      "FLOOR_TRANSITION_FROM='" + current_floor_ + "' " +
+      "FLOOR_TRANSITION_TO='" + target_floor_ + "' " +
+      "FLOOR_TRANSITION_TYPE='" + transition.type + "' " +
+      "FLOOR_TRANSITION_MODE='" + transition.mode + "' " +
+      "timeout --signal=INT " + std::to_string(static_cast<int>(timeout_sec)) +
+      " bash '" + script + "' > /tmp/ons2_floor_transition.log 2>&1";
+  ROS_INFO("[mission_manager] starting transition hook (%s/%s): %s",
+           transition.type.c_str(), transition.mode.c_str(), command.c_str());
+  std::thread([this, command]() {
+    const int rc = std::system(command.c_str());
+    {
+      std::lock_guard<std::mutex> lock(hook_mutex_);
+      transition_hook_running_ = false;
+      transition_hook_failed_.store(rc != 0);
+      transition_hook_message_ =
+          rc == 0 ? std::string("hook finished")
+                  : ("hook exited with " + std::to_string(rc));
+    }
+    if (rc == 0) {
+      ROS_INFO("[mission_manager] transition hook finished; waiting for floor_manager "
+               "to confirm the new floor");
+    } else {
+      ROS_WARN("[mission_manager] transition hook failed (rc=%d), see "
+               "/tmp/ons2_floor_transition.log", rc);
+    }
+  }).detach();
+}
+
+void MissionManager::processFloorTransit() {
   nav_interfaces::FloorStatus status;
   bool status_valid = false;
   {
@@ -2775,21 +2922,34 @@ void MissionManager::processElevatorTransit() {
     status_valid = floor_status_valid_;
   }
 
-  if (elevator_wait_timeout_sec_ > 0.0 && !elevator_wait_started_at_.isZero() &&
-      (ros::Time::now() - elevator_wait_started_at_).toSec() >
-          elevator_wait_timeout_sec_) {
-    skipCurrentWaypointOrFail("elevator wait timed out on floor " + current_floor_);
+  if (transition_wait_timeout_sec_ > 0.0 && !transit_wait_started_at_.isZero() &&
+      (ros::Time::now() - transit_wait_started_at_).toSec() >
+          transition_wait_timeout_sec_) {
+    skipCurrentWaypointOrFail("floor transition timed out on floor " + current_floor_);
     return;
   }
 
-  if (!status_valid) return;
-  if (status.switching || status.current_floor != target_floor_) return;
+  if (!status_valid) {
+    ROS_WARN_THROTTLE(5.0, "[mission_manager] FLOOR_TRANSIT: no FloorStatus on '%s' yet",
+                      floor_status_topic_.c_str());
+    return;
+  }
+  if (status.switching || status.current_floor != target_floor_) {
+    ROS_INFO_THROTTLE(5.0, "[mission_manager] FLOOR_TRANSIT: now '%s' -> target '%s' (%s)",
+                      status.current_floor.c_str(), target_floor_.c_str(),
+                      status.detail.c_str());
+    return;
+  }
 
   ROS_INFO("[mission_manager] floor switch confirmed: '%s' -> '%s'",
            current_floor_.c_str(), target_floor_.c_str());
   current_floor_ = target_floor_;
   target_floor_.clear();
   floor_transit_active_ = false;
+  {
+    std::lock_guard<std::mutex> lock(hook_mutex_);
+    transition_hook_message_ = "confirmed on " + current_floor_;
+  }
   // The cached home pose belongs to the previous floor's map frame.
   home_pose_valid_ = false;
   publishEvent("FLOOR_SWITCHED", "active floor is now " + current_floor_);
@@ -2825,7 +2985,7 @@ std::string MissionManager::stateName(State state) const {
     case State::FAILED: return "FAILED";
     case State::DYNAMIC: return "DYNAMIC";
     case State::DYNAMIC_SEARCHING: return "DYNAMIC_SEARCHING";
-    case State::ELEVATOR_TRANSIT: return "ELEVATOR_TRANSIT";
+    case State::FLOOR_TRANSIT: return "FLOOR_TRANSIT";
   }
   return "UNKNOWN";
 }
