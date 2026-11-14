@@ -36,6 +36,9 @@ struct Scenario {
   VoxelKey start;
   VoxelKey goal;
   AStar3D::Result result;
+  // Stair corridors handed to the planner: an open-loop stair segment cannot
+  // correct a lateral offset, so these pull the path to the centre of each run.
+  std::vector<AStar3D::Params::Corridor> corridors;
   std::vector<Check> checks;
   double elapsed_ms = 0.0;
   bool ok = false;
@@ -152,7 +155,7 @@ Scenario buildMultiFloor(bool curb) {
   sc.name = curb ? "multi_floor" : "multi_floor_glass";
   sc.desc = curb
     ? "4 层办公楼（现场楼梯按实拍复核并加了 0.22 m 连续挡边）：双跑每层两段 9 级（踢面 0.189 / 踏面 0.30）+ 端部 1.2 m 转弯平台，玻璃栏板夹不锈钢立柱，梯井贯通四层，起点 1 层、目标 4 层"
-    : "同一栋楼，但不做任何改造：只有夹胶玻璃栏板 + 1.35 m 间距的不锈钢立柱，玻璃对 lidar 近乎透明——用来复现现场真实的感知缺口";
+    : "同一栋楼，不做任何改造：只有夹胶玻璃栏板 + 1.35 m 间距的不锈钢立柱，玻璃对 lidar 近乎透明——用来复现现场真实的感知缺口，且证明走廊代价（8.6 节）不靠感知也能把路径拉回中线";
   sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 12.0, 6.0, 13.8, 0.3);
 
   const double FL = 3.4;
@@ -243,6 +246,20 @@ Scenario buildMultiFloor(bool curb) {
     }
   }
 
+  // Declare the two runs of every storey as corridors. The open-loop stair
+  // hook means an offset at the foot of the flight is never corrected, so the
+  // path has to arrive centred; the landings stay free because turning there
+  // is what a person does anyway.
+  const double CORRIDOR_WEIGHT = 3.0;
+  for (int f = 0; f < 3; ++f) {
+    sc.corridors.push_back(AStar3D::Params::Corridor{
+        TX0, TX1, 0.5 * (TY_R0 + TY_R1), 0.5 * (TY_R1 - TY_R0),
+        f * FL, (f + 0.5) * FL + 1e-9, CORRIDOR_WEIGHT});
+    sc.corridors.push_back(AStar3D::Params::Corridor{
+        TX0, TX1, 0.5 * (TY_L0 + TY_L1), 0.5 * (TY_L1 - TY_L0),
+        f * FL + N * RISE, (f + 1) * FL + 1e-9, CORRIDOR_WEIGHT});
+  }
+
   sc.start = makeKeyAt(sc.grid, 10.00, 2.40, 0.35);
   sc.goal = makeKeyAt(sc.grid, 1.50, 2.40, 10.20);
   return sc;
@@ -321,7 +338,9 @@ void runScenario(Scenario& sc, const AStar3D::Params& params) {
   sc.grid.deinflate();
   sc.grid.inflate(rxy, 0, true);
   AStar3D planner;
-   sc.result = planner.plan(sc.grid, sc.start, sc.goal, params, true);
+  AStar3D::Params p = params;
+  p.corridors = sc.corridors;
+  sc.result = planner.plan(sc.grid, sc.start, sc.goal, p, true);
   sc.ok = sc.result.ok;
 }
 
@@ -491,6 +510,49 @@ int main() {
   multi.checks.push_back({"扩展次数在预算内",
                           multi.result.expanded <= params.max_iterations,
                           "expanded=" + std::to_string(multi.result.expanded)});
+
+  // The point of the corridors: the path has to sit near the centre of a run,
+  // not along a tread edge, because the stair segment runs open loop.
+  {
+    double sum_dev = 0.0;
+    int n = 0;
+    for (const auto& k : multi.result.path) {
+      double x, y, z;
+      multi.grid.indexToWorld(k.x, k.y, k.z, x, y, z);
+      if (x < 3.0 || x > 5.7) continue;
+      if (y < 1.8 || y > 3.0) continue;
+      sum_dev += std::fabs(y - 2.40);
+      ++n;
+    }
+    const double mean_dev = n > 0 ? sum_dev / n : 99.0;
+    char buf[96];
+    std::snprintf(buf, sizeof(buf), "梯段内的路径点 %d 个，平均偏离中线 %.2f m", n, mean_dev);
+    multi.checks.push_back({"梯段内贴着中线走（开环段的容错）", n > 0 && mean_dev <= 0.15, buf});
+  }
+
+  // The glass variant proves the corridor cost is doing real work: perception
+  // there is broken on purpose (no kerb, glass invisible to the lidar), yet the
+  // route still has to arrive centred at the foot of the flight.
+  Scenario& glass = scenarios[6];
+  glass.checks.push_back({"路径存在", glass.ok, glass.result.message});
+  {
+    double sum_dev = 0.0;
+    int n = 0;
+    for (const auto& k : glass.result.path) {
+      double x, y, z;
+      glass.grid.indexToWorld(k.x, k.y, k.z, x, y, z);
+      if (x < 3.0 || x > 5.7) continue;
+      if (y < 1.8 || y > 3.0) continue;
+      sum_dev += std::fabs(y - 2.40);
+      ++n;
+    }
+    const double mean_dev = n > 0 ? sum_dev / n : 99.0;
+    char buf[112];
+    std::snprintf(buf, sizeof(buf),
+                  "无挡边、玻璃不可见，仍靠走廊代价回到中线：%d 个点，平均偏离 %.2f m",
+                  n, mean_dev);
+    glass.checks.push_back({"感知缺口时不靠感知也走中线", n > 0 && mean_dev <= 0.15, buf});
+  }
 
   Scenario& wall = scenarios[3];
   wall.checks.push_back({"起点在膨胀带内仍可出发", wall.ok, wall.result.message});

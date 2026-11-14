@@ -160,7 +160,26 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
                                   ? static_cast<float>(params.z_bias * grid.resolution() *
                                                        std::abs(nz - goal.z))
                                   : 0.0f;
-          const float tentative = cur.g + step + zbias;
+
+          // Lateral cost inside declared stair corridors. Computed on the
+          // candidate cell, so the search pays it as it enters the run rather
+          // than discovering the offset at the bottom step.
+          float lateral = 0.0f;
+          if (!params.corridors.empty()) {
+            const double wx = grid.originX() + (nx + 0.5) * grid.resolution();
+            const double wy = grid.originY() + (ny + 0.5) * grid.resolution();
+            const double wz = grid.originZ() + (nz + 0.5) * grid.resolution();
+            for (const auto& c : params.corridors) {
+              if (c.weight <= 0.0) continue;
+              if (wz < c.z_min || wz > c.z_max) continue;
+              if (wx < c.x_min || wx > c.x_max) continue;
+              const double dy = std::fabs(wy - c.y_centre);
+              if (dy > c.y_half) continue;
+              lateral += static_cast<float>(c.weight * dy);
+            }
+          }
+
+          const float tentative = cur.g + step + zbias + lateral;
           if (tentative >= g_score[nflat]) continue;
 
           g_score[nflat] = tentative;

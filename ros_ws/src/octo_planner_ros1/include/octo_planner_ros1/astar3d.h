@@ -31,6 +31,30 @@ class AStar3D {
     // Extra cost per metre away from the goal's z plane, so that the planner
     // prefers the floor it is asked to stay on when a staircase branch exists.
     double z_bias = 0.0;
+
+    // A stair run the path must stay centred on.
+    //
+    // Why this exists: the stair segment is not tracked by the local planner.
+    // The floor transition hook stops NeuPAN, switches the climbing gait and
+    // drives straight open loop for a fixed time. So whatever lateral offset
+    // the global path has when the robot reaches the foot of the flight is
+    // carried, uncorrected, all the way up. Plain step cost has no idea about
+    // any of that and returns the shortest route, which hugs a tread edge -
+    // correct as A*, wrong as a plan.
+    //
+    // A corridor adds `weight` extra cost per metre of lateral distance from
+    // y_centre, inside a box in world coordinates. It only reshapes the route
+    // inside the box; open floors are untouched.
+    struct Corridor {
+      double x_min = 0.0;   // metres
+      double x_max = 0.0;   // metres
+      double y_centre = 0.0;  // metres, the line to stay on
+      double y_half = 0.0;    // metres, half-width of the box
+      double z_min = 0.0;   // metres
+      double z_max = 0.0;   // metres
+      double weight = 0.0;  // extra cost per metre off centre
+    };
+    std::vector<Corridor> corridors;
   };
 
   struct Result {
