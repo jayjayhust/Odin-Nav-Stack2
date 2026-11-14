@@ -59,7 +59,15 @@ class VoxelGrid {
   // Grow every occupied cell by (xy_radius, z_radius) cells. FREE cells that
   // fall inside become INFLATED; UNKNOWN is left alone so the robot may still
   // plan through space that was simply never observed.
-  void inflate(int xy_radius_cells, int z_radius_cells);
+  //
+  // skip_standing_surfaces: do not inflate a cell whose directly upper
+  // neighbour is FREE. Such a cell is a floor / tread / tabletop, i.e. a
+  // surface the robot walks ON, not an obstacle it would collide with.
+  // Without this flag a 0.17 m rise makes the upper tread's surface and the
+  // lower tread's standing cell share a z layer, and the radius inflation
+  // then erases the whole staircase.
+  void inflate(int xy_radius_cells, int z_radius_cells,
+               bool skip_standing_surfaces = false);
 
   // Undo the inflation pass: every INFLATED cell goes back to FREE. Lets the
   // planner re-inflate from the raw surface every request without keeping a

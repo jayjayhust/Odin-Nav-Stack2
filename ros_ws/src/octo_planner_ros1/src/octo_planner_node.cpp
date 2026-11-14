@@ -42,7 +42,7 @@ class OctoPlannerNode {
     pnh_.param<int>("max_points_per_cloud", max_points_per_cloud_, 20000);
     pnh_.param<int>("clearance_cells", clearance_cells_, 20);
     pnh_.param<double>("robot_radius", robot_radius_, 0.25);
-    pnh_.param<int>("inflation_z_cells", inflation_z_cells_, 2);
+    pnh_.param<int>("inflation_z_cells", inflation_z_cells_, 0);
     pnh_.param<int>("max_iterations", max_iterations_, 500000);
     pnh_.param<bool>("require_ground_support", require_ground_support_, true);
     pnh_.param<int>("ground_support_xy_radius_cells", ground_support_xy_radius_cells_, 1);
@@ -157,7 +157,7 @@ class OctoPlannerNode {
   void refreshInflationLocked() {
     grid_.deinflate();
     const int rxy = static_cast<int>(std::ceil(robot_radius_ / resolution_));
-    grid_.inflate(rxy, inflation_z_cells_);
+    grid_.inflate(rxy, inflation_z_cells_, true);
   }
 
   void publishMarkersLocked() {

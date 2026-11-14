@@ -7,6 +7,12 @@
 
 namespace octo_planner_ros1 {
 
+// C++14 needs out-of-class definitions for odr-used constexpr members.
+constexpr uint8_t VoxelGrid::kUnknown;
+constexpr uint8_t VoxelGrid::kFree;
+constexpr uint8_t VoxelGrid::kOccupied;
+constexpr uint8_t VoxelGrid::kInflated;
+
 void VoxelGrid::configure(double resolution,
                           double origin_x, double origin_y, double origin_z,
                           int nx, int ny, int nz) {
@@ -74,7 +80,8 @@ void VoxelGrid::insertSurfacePoint(double x, double y, double z,
   }
 }
 
-void VoxelGrid::inflate(int xy_radius_cells, int z_radius_cells) {
+void VoxelGrid::inflate(int xy_radius_cells, int z_radius_cells,
+                        bool skip_standing_surfaces) {
   if (xy_radius_cells <= 0 && z_radius_cells <= 0) return;
   const int rxy = std::max(0, xy_radius_cells);
   const int rz = std::max(0, z_radius_cells);
@@ -86,7 +93,10 @@ void VoxelGrid::inflate(int xy_radius_cells, int z_radius_cells) {
     for (int iy = 0; iy < ny_; ++iy) {
       const int base = (iz * ny_ + iy) * nx_;
       for (int ix = 0; ix < nx_; ++ix) {
-        if (data_[base + ix] == kOccupied) occupied.push_back(base + ix);
+        const int fx = base + ix;
+        if (data_[fx] != kOccupied) continue;
+        if (skip_standing_surfaces && at(ix, iy, iz + 1) == kFree) continue;
+        occupied.push_back(fx);
       }
     }
   }

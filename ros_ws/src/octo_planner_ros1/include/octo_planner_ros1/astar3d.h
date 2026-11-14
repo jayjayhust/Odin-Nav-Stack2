@@ -38,12 +38,16 @@ class AStar3D {
     std::string message;
     std::vector<VoxelKey> path;  // includes start and goal
     int expanded = 0;
+    // Order in which cells were closed, used by the offline simulator to
+    // animate the search. Kept separate from the planner's own data flow.
+    std::vector<VoxelKey> trace;
   };
 
   Result plan(const VoxelGrid& grid,
               const VoxelKey& start,
               const VoxelKey& goal,
-              const Params& params) const;
+              const Params& params,
+              bool record_trace = false) const;
 };
 
 }  // namespace octo_planner_ros1

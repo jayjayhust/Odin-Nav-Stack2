@@ -43,7 +43,8 @@ inline float heuristic(const VoxelGrid& g, int ax, int ay, int az,
 AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
                               const VoxelKey& start_in,
                               const VoxelKey& goal_in,
-                              const Params& params) const {
+                              const Params& params,
+                              bool record_trace) const {
   Result out;
   if (grid.empty()) {
     out.message = "voxel grid is empty";
@@ -60,19 +61,31 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
   const auto usable_endpoint = [](uint8_t v) {
     return v == VoxelGrid::kFree || v == VoxelGrid::kInflated;
   };
-  if (!usable_endpoint(grid.at(start.x, start.y, start.z))) {
-    if (!grid.nearestWalkable(start.x, start.y, start.z,
+  // Prefer snapping onto a genuinely FREE cell: starting inside the
+  // robot-radius band leaves every neighbour INFLATED, so the search would
+  // expand once and give up. Only fall back to INFLATED when no FREE cell is
+  // in range.
+  if (grid.at(start.x, start.y, start.z) != VoxelGrid::kFree) {
+    VoxelKey probe = start;
+    if (!grid.nearestWalkable(probe.x, probe.y, probe.z,
+                              params.snap_search_radius_cells,
+                              start.x, start.y, start.z, false) &&
+        !grid.nearestWalkable(probe.x, probe.y, probe.z,
                               params.snap_search_radius_cells,
                               start.x, start.y, start.z, true)) {
-      out.message = "start has no free cell within snap radius";
+      out.message = "start has no traversable cell within snap radius";
       return out;
     }
   }
-  if (!usable_endpoint(grid.at(goal.x, goal.y, goal.z))) {
-    if (!grid.nearestWalkable(goal.x, goal.y, goal.z,
+  if (grid.at(goal.x, goal.y, goal.z) != VoxelGrid::kFree) {
+    VoxelKey probe = goal;
+    if (!grid.nearestWalkable(probe.x, probe.y, probe.z,
+                              params.snap_search_radius_cells,
+                              goal.x, goal.y, goal.z, false) &&
+        !grid.nearestWalkable(probe.x, probe.y, probe.z,
                               params.snap_search_radius_cells,
                               goal.x, goal.y, goal.z, true)) {
-      out.message = "goal has no free cell within snap radius";
+      out.message = "goal has no traversable cell within snap radius";
       return out;
     }
   }
@@ -108,6 +121,7 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
 
     int cx, cy, cz;
     unflatten(grid, cur.flat, cx, cy, cz);
+    if (record_trace) out.trace.push_back(VoxelKey{cx, cy, cz});
 
     // Accept a cell adjacent to the goal, not only the exact cell: the goal is
     // usually the projection of a 2D waypoint and is rarely voxel-aligned.

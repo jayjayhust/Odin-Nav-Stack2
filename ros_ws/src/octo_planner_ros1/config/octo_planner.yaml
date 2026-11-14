@@ -29,7 +29,12 @@ clearance_cells: 20
 # is why stair segments must be handed over to the gait layer instead of being
 # planned through.
 robot_radius: 0.25
-inflation_z_cells: 2
+# Z inflation must stay 0 for walking on floors and treads: growing a surface
+# upward by 0.2 m turns the very cell the robot stands in into INFLATED, which
+# makes both the ground and every stair tread unplannable. Head clearance is
+# instead guaranteed by clearance_cells, which clears the column above each
+# surface point.
+inflation_z_cells: 0
 
 max_iterations: 500000
 require_ground_support: true
