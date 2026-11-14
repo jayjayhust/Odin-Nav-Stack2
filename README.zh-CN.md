@@ -48,6 +48,20 @@
   通过基于 VLM 的感知检测，用户可以接入VLM实现自定义的物体检查和场景问答功能。
 - **双运行时，共享核心**  
   `ros_ws/`（ROS1 Noetic）与 `ros2_ws/`（ROS2 Jazzy）共享规划器核心、话题/服务/动作名称以及配置档位。
+- **[fork] 跨楼层导航**（ROS 1，Go2）  
+  每个航点带楼层字段，过渡点按优先级排成 `lift` / `stairs` / `ramp` 表，每项可取 `manual` /
+  `api` / `autonomous`；切层是原子的：停运动 → 暂停任务 → 把驱动配置改指向下一层的 `.bin` →
+  重启 Odin1 驱动 → 等 TF → 重载地图。
+- **[fork] 3D 占据栅格规划**  
+  `octo_planner_ros1` 用 OctoMap 做 3D A\*，挂在和 `map_planner` 相同的 `nav_interfaces`
+  `PlanPath` 契约后面，`mission_manager` 不用改一行。它只膨胀墙、跳过可站立面，所以楼梯踏步
+  仍然能走，而旁边的栏板会变成一堵实墙。
+- **[fork] 楼梯语义与步态交接**  
+  `stair_gait` 读 `base_link` 正前方的点云，靠踏步的等比升高判断是上楼还是下楼，然后交给 Go2
+  的爬楼步态，到顶再切回 trot。两处驱动默认都是关的。
+- **[fork] 离线规划仿真**  
+  自包含的测试程序直接编译同一份 C++ 规划代码，不依赖 ROS，把七个合成场景回放到一个 HTML 页面
+  里（俯视、侧视切片、可旋转 3D 点云），并逐条断言结果。不需要机器人、桌面环境或 PCL。
 
 ## 1.2 新增内容
 
@@ -66,6 +80,10 @@
   使用Odin和RTK快速完成配置，可完整实现基于经纬度的导航，以及扩展更多的使用场景。
 - **插件化架构**  
   整个导航栈围绕插件化设计构建，可轻松接入自定义规划器。
+- **[fork] Go2 + Odin1 的跨层任务**  
+  四层办公楼导航，走的是楼梯语义而不是"只能等电梯"的抽象；配一套离线规划仿真，按现场照片复原
+  了双跑楼梯的几何，并量化出栏板在激光雷达眼里到底还剩多少可测内容。  
+  详见 [3D 规划器与楼梯](docs/multifloor/3d-planner-and-stairs.zh-CN.md)。
 - **更多功能即将推出**  
   后续版本将持续带来更多新能力。
 
@@ -84,7 +102,7 @@
 | 机器人 | 运行时 | 状态 |
 |---|---|---|
 | ASTRALL SW01 | ROS1 Noetic / ROS2 Jazzy | 支持（`scripts/ons2_sw01.sh`，配置 `robots/sw01/`），并经过大量验证测试和针对性优化 |
-| Unitree Go2 | ROS1 Noetic | 支持（`scripts/ons2_go2.sh`，配置 `robots/go2/`） |
+| Unitree Go2 | ROS1 Noetic | 支持（`scripts/ons2_go2.sh`，配置 `robots/go2/`）；也是 *fork* 里唯一支持跨楼层与 3D 规划的平台 |
 | Dobot Lumo | ROS1 Noetic | 支持（`scripts/ons2_dobot_lumo.sh`，配置 `robots/dobot_lumo/`，默认 `dry_run=true`） |
 | 你自己的机器人 | ROS1 或 ROS2 | 复制 `robots/_template/`；见 [03 · 接入你自己的机器人](docs/usage/03_integrate_your_robot.md) |
 
@@ -344,6 +362,8 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | **了解架构与模块数据流** | [系统架构](docs/architecture/ONS2_ARCHITECTURE.md) · [模块数据流](docs/architecture/MODULE_DATAFLOW.md) |
 | **扫描现场并建导航地图**（Q9000 / Odin1） | [建图教程](docs/map-tutorial/map-tutorial.zh-CN.md) · [`pcd_to_pgm.py`](scripts/map_processing/pcd_to_pgm.py) |
 | **在仿真中复现场景**（Real2Sim） | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
+| **跨楼层跑任务** —— 电梯、楼梯或坡道（ROS 1，Go2） | [跨层总览](docs/multifloor/README.zh-CN.md) · [设计方案](docs/multifloor/design.zh-CN.md) |
+| **离线看 3D 规划器怎么走** —— 七个场景、HTML 回放 | [3D 规划器与楼梯](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [打开回放页面](docs/multifloor/sim/planner_sim.html) |
 | **用 Docker 部署**（Jetson，ROS1） | [docker/docker-compose.yml](docker/docker-compose.yml) |
 
 > **中英文档：** 本仓所有指南都提供 `*.zh-CN.md` 中文版与英文版同目录并排（使用指南、调参指南、
@@ -366,7 +386,10 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | 巡检感知（Florence-2，独立仓） | ✅ | ✅ |
 | 远程 Web 监控（相机 / 喊话 / 急停） | ❌ 暂不支持 | ✅ SW01 |
 | 3DGS 导航控制台 *（可选，联系我们获取）* | ✅ | ✅ |
-
+| 跨层任务（电梯 / 楼梯 / 坡道）—— *fork，Go2* | ✅ | ❌ 暂不支持 |
+| 3D 占据栅格规划器（`octo_planner_ros1`）—— *fork* | ✅ | ❌ 暂不支持 |
+| 楼梯识别与 Go2 步态交接 —— *fork* | ✅ | ❌ 暂不支持 |
+| 离线规划仿真（HTML 回放）—— *fork* | ✅ 与运行时无关 | ✅ 与运行时无关 |
 
 ## 5.4 VLM 场景理解
 
@@ -446,7 +469,10 @@ Odin-Nav-Stack2/
 │       ├── atomic_move/           # 到点闭环精对齐服务 (move / turn / align)
 │       ├── unitree_control/       # Unitree Go2 SDK2 底盘速度桥
 │       ├── dobot_ros_control/     # Dobot Lumo RPC 底盘速度桥与 O1L 启动配置
-│       └── odin_vlm_terminal/     # VLM 场景问答终端节点
+│       ├── odin_vlm_terminal/     # VLM 场景问答终端节点
+│       ├── octo_planner_ros1/     # [fork] 3D OctoMap A* 全局规划器（VoxelGrid + AStar3D + ROS 节点）
+│       ├── stair_gait/            # [fork] 楼梯语义识别与 Go2 爬楼步态交接
+│       └── floor_manager/         # [fork] 切层原子操作：重启驱动、重载地图、等 TF
 ├── ros2_ws/                       # ROS 2 Jazzy 工作空间 (与 ros_ws 核心包一一对应)
 │   ├── scripts/                   # ROS 2 运行时脚本 (test_nav_control_ros2.py, waypoint_goal_bridge.py, sru/, ...)
 │   └── src/
@@ -466,7 +492,8 @@ Odin-Nav-Stack2/
 └── docs/                          # 文档体系
     ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
-    └── TUNING_GUIDE.md            # 完整参数字典与症状排障手册
+    ├── TUNING_GUIDE.md            # 完整参数字典与症状排障手册
+    └── multifloor/                # [fork] 跨层设计、3D 规划器与楼梯、离线仿真回放
 ```
 
 # 8. 常见问题

@@ -49,6 +49,22 @@
   Plug in your own vision-language model to run custom object checks and scene question answering. See [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception).
 - **Dual Runtime, Shared Core**  
   `ros_ws/` (ROS1 Noetic) and `ros2_ws/` (ROS2 Jazzy) share the planner core, the topic / service / action names, and the configuration profiles.
+- **[fork] Multi-floor navigation** (ROS 1, Go2)  
+  A floor field on every waypoint, a priority-ordered transition table (`lift` / `stairs` / `ramp`,
+  each `manual` / `api` / `autonomous`), and an atomic floor switch that stops motion, restarts the
+  Odin1 driver onto the next floor's `.bin`, waits for TF and reloads the map.
+- **[fork] 3D occupancy planning**  
+  An OctoMap 3D A\* global planner (`octo_planner_ros1`) behind the same `nav_interfaces` `PlanPath`
+  contract as `map_planner`, so `mission_manager` needs no change. It inflates walls but skips
+  standing surfaces, which keeps a stair tread walkable while its railing becomes a wall.
+- **[fork] Stair perception and gait handover**  
+  `stair_gait` reads the cloud in front of `base_link`, detects an ascending or descending flight
+  from the repeating rise of its treads, and hands the robot to Go2's climbing gait before
+  returning to trot on arrival. Both actuation paths ship disabled.
+- **[fork] Offline planner simulation**  
+  A self-contained harness compiles the same C++ planning code with no ROS, replays seven synthetic
+  scenes in a single HTML page (top view, elevation slice, rotatable 3D cloud) and asserts each
+  result. No robot, no desktop, no PCL.
 
 ## 1.2 What's New
 
@@ -67,6 +83,11 @@
   Configure Odin with RTK in minutes to get full latitude/longitude-based navigation and open up further use cases.
 - **Plugin architecture**  
   The stack is built around a plugin-based design, making it straightforward to integrate custom planners.
+- **[fork] Cross-floor missions on Go2 + Odin1**  
+  Four-storey office navigation with stair semantics rather than a lift-only abstraction, plus an
+  offline planner simulation that rebuilds the building's switch-back stair from site photographs
+  and measures where the railing stops being visible to the lidar.  
+  See [3D planner and stairs](docs/multifloor/3d-planner-and-stairs.zh-CN.md).
 - **More on the way**  
   Further capabilities will land in upcoming releases.
 
@@ -85,7 +106,7 @@
 | Robot | Runtime | Status |
 |---|---|---|
 | ASTRALL SW01 | ROS1 Noetic / ROS2 Jazzy | Supported (`scripts/ons2_sw01.sh`, profile `robots/sw01/`), extensively validated and tuned |
-| Unitree Go2 | ROS1 Noetic | Supported (`scripts/ons2_go2.sh`, profile `robots/go2/`) |
+| Unitree Go2 | ROS1 Noetic | Supported (`scripts/ons2_go2.sh`, profile `robots/go2/`); also the only platform with the *fork's* multi-floor and 3D-planner support |
 | Dobot Lumo | ROS1 Noetic | Supported (`scripts/ons2_dobot_lumo.sh`, profile `robots/dobot_lumo/`, defaults to `dry_run=true`) |
 | Your own robot | ROS1 or ROS2 | Copy `robots/_template/`; see [03 · Integrate Your Own Robot](docs/usage/03_integrate_your_robot.md) |
 
@@ -350,6 +371,8 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | **Understand the architecture / module dataflow** | [Architecture](docs/architecture/ONS2_ARCHITECTURE.md) · [Module Dataflow](docs/architecture/MODULE_DATAFLOW.md) |
 | **Scan a site and build a navigation map** (Q9000 / Odin1) | [Map Tutorial](docs/map-tutorial/map-tutorial.md) · [`pcd_to_pgm.py`](scripts/map_processing/pcd_to_pgm.py) |
 | **Reproduce a scenario in simulation** (Real2Sim) | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
+| **Run a mission across floors** — lift, stairs or ramp (ROS 1, Go2) | [Multi-floor overview](docs/multifloor/README.zh-CN.md) · [Design](docs/multifloor/design.zh-CN.md) |
+| **Watch the 3D planner offline** — seven scenes, HTML replay | [3D planner and stairs](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [Open the replay](docs/multifloor/sim/planner_sim.html) |
 | **Deploy with Docker** (Jetson, ROS1) | [docker/docker-compose.yml](docker/docker-compose.yml) |
 
 > **Chinese docs:** every guide in this repository has a `*.zh-CN.md` sibling (usage guides,
@@ -372,6 +395,10 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | Inspection perception (Florence-2, separate repo) | ✅ | ✅ |
 | Remote web monitor (camera / intercom / e-stop) | ❌ not yet | ✅ SW01 |
 | 3DGS navigation console *(optional, contact us)* | ✅ | ✅ |
+| Multi-floor missions (lift / stairs / ramp) — *fork, Go2* | ✅ | ❌ not yet |
+| 3D occupancy planner (`octo_planner_ros1`) — *fork* | ✅ | ❌ not yet |
+| Stair detection and Go2 gait handover — *fork* | ✅ | ❌ not yet |
+| Offline planner simulation (HTML replay) — *fork* | ✅ ROS-agnostic core | ✅ ROS-agnostic core |
 
 ## 5.4 VLM Scene Understanding
 
@@ -462,7 +489,10 @@ Odin-Nav-Stack2/
 │       ├── atomic_move/           # Closed-loop move / turn / align services
 │       ├── unitree_control/       # Unitree Go2 SDK2 velocity bridge
 │       ├── dobot_ros_control/     # Dobot Lumo RPC velocity bridge & O1L launch
-│       └── odin_vlm_terminal/     # VLM scene question-answering node
+│       ├── odin_vlm_terminal/     # VLM scene question-answering node
+│       ├── octo_planner_ros1/     # [fork] 3D OctoMap A* global planner (VoxelGrid + AStar3D + ROS node)
+│       ├── stair_gait/            # [fork] Stair detection & Go2 climbing-gait handover
+│       └── floor_manager/         # [fork] Atomic floor switch: driver restart, map reload, TF wait
 ├── ros2_ws/                       # ROS 2 Jazzy workspace (1:1 core parity with ros_ws)
 │   ├── scripts/                   # ROS 2 runtime scripts (test_nav_control_ros2.py, waypoint_goal_bridge.py, sru/, ...)
 │   └── src/
@@ -482,7 +512,8 @@ Odin-Nav-Stack2/
 └── docs/                          # Documentation
     ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
-    └── TUNING_GUIDE.md            # Detailed parameter dictionary & troubleshooting reference
+    ├── TUNING_GUIDE.md            # Detailed parameter dictionary & troubleshooting reference
+    └── multifloor/                # [fork] Multi-floor design, 3D planner & stairs, offline simulation harness
 ```
 
 # 8. FAQ
