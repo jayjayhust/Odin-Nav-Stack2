@@ -1,0 +1,498 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Go2 步态控制台</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;padding:20px 18px 40px;background:#0b1220;color:#dce6f5;
+ font:15px/1.6 -apple-system,"Segoe UI","Noto Sans SC",sans-serif}
+.wrap{max-width:1080px;margin:0 auto}
+h1{margin:0 0 4px;font-size:22px;font-weight:650;letter-spacing:.01em}
+.sub{margin:0 0 18px;color:#7d8fa9;font-size:13px}
+.card{background:#121c2e;border:1px solid #22304a;border-radius:10px;padding:16px 18px;margin-bottom:14px}
+.card h2{margin:0 0 12px;font-size:13px;font-weight:600;letter-spacing:.08em;color:#8fa3bf;text-transform:uppercase}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+input[type=text]{background:#0b1424;border:1px solid #2a3a56;border-radius:7px;color:#dce6f5;
+ padding:9px 11px;font:13px/1 ui-monospace,SFMono-Regular,Menlo,monospace;width:230px}
+input[type=text]:focus{outline:none;border-color:#4fc3f7}
+.btn{border:1px solid #2a3a56;background:#17233a;color:#cfe0f5;border-radius:8px;padding:10px 16px;
+ font-size:14px;cursor:pointer;transition:.12s;min-height:44px}
+.btn:hover{background:#1d2c48;border-color:#3a4f70}
+.btn:disabled{opacity:.38;cursor:not-allowed}
+.btn.pri{background:#12304a;border-color:#2f6f9e;color:#9fdcff}
+.btn.ok{background:#10301f;border-color:#2f7a4f;color:#8ef0b4}
+.btn.warn{background:#33240d;border-color:#8a6220;color:#ffce8a}
+.btn.danger{background:#3a1519;border-color:#96313c;color:#ffa3a9}
+.big{border-radius:10px;padding:16px 18px;font-size:15px;min-height:76px;text-align:left;
+ display:flex;flex-direction:column;justify-content:center;gap:3px;flex:1 1 200px}
+.big b{font-size:17px;font-weight:640}
+.big span{font-size:12px;opacity:.72;font-family:ui-monospace,Menlo,monospace}
+.grid{display:flex;gap:10px;flex-wrap:wrap}
+.dot{width:9px;height:9px;border-radius:50%;display:inline-block;margin-right:7px;vertical-align:middle}
+.conn{font-size:13px;color:#7d8fa9;display:flex;align-items:center;gap:6px}
+.params{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px}
+.p{background:#0e1728;border:1px solid #22304a;border-radius:8px;padding:10px 12px}
+.p i{display:block;font-size:11px;color:#7d8fa9;font-style:normal;letter-spacing:.03em;
+ font-family:ui-monospace,Menlo,monospace}
+.p b{display:block;font-size:16px;font-weight:640;margin-top:3px}
+.p.good b{color:#3ddc84}.p.bad b{color:#ff6b6b}.p.unk b{color:#6f8299}
+.banner{border-radius:9px;padding:12px 14px;font-size:13.5px;margin-bottom:14px;
+ display:none;line-height:1.55}
+.banner.show{display:block}
+.banner.alert{background:#33191c;border:1px solid #7d2b33;color:#ffc9cd}
+.banner.info{background:#0f2740;border:1px solid #2a5d86;color:#a9d8f5}
+.banner.demo{background:#2f2a10;border:1px solid #7a6620;color:#ffe8a3}
+/* status chain */
+.chain{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+.st{flex:1 1 130px;border:1px solid #22304a;border-radius:8px;padding:9px 11px;background:#0e1728;
+ font-size:13px;color:#7d8fa9;transition:.15s}
+.st small{display:block;font-size:10.5px;font-family:ui-monospace,Menlo,monospace;opacity:.7}
+.st.on{border-color:#2f7a4f;background:#10301f;color:#a7f3c6;box-shadow:0 0 0 1px #2f7a4f inset}
+.st.climb.on{border-color:#8a6220;background:#33240d;color:#ffce8a}
+.note{font-size:12px;color:#7d8fa9;margin-top:10px}
+.log{background:#08101d;border:1px solid #1c2941;border-radius:8px;height:230px;overflow-y:auto;
+ padding:10px 12px;font:12px/1.7 ui-monospace,SFMono-Regular,Menlo,monospace}
+.log div{white-space:pre-wrap;word-break:break-word}
+.log .t{color:#556b88}
+.log .s{color:#3ddc84}.log .e{color:#ff7070}.log .w{color:#ffce8a}.log .i{color:#7fb8e8}
+details{margin-top:6px}
+summary{cursor:pointer;color:#8fa3bf;font-size:13px;padding:6px 0;outline:none}
+details div{font-size:13px;color:#a9b9cf;line-height:1.75}
+code{background:#0b1424;border:1px solid #22304a;border-radius:4px;padding:1px 6px;
+ font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#a9d8f5}
+pre{background:#0b1424;border:1px solid #22304a;border-radius:7px;padding:11px 13px;overflow-x:auto;
+ font-family:ui-monospace,Menlo,monospace;font-size:12.5px;color:#9fc7e8;margin:8px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Go2 步态控制台</h1>
+<p class="sub">通过 rosbridge 调用 <code>/stair_gait/*</code> 服务，切换爬楼步态。<b>急停一律用遥控器</b>，本页面不替代急停。</p>
+
+<!-- ============ 连接 ============ -->
+<div class="card">
+  <h2>连接</h2>
+  <div class="row">
+    <input type="text" id="url" value="ws://192.168.123.18:9090" spellcheck="false">
+    <button class="btn pri" id="connBtn">连接</button>
+    <button class="btn" id="demoBtn">演示模式</button>
+    <span class="conn" id="connState"><span class="dot" style="background:#556b88"></span>未连接</span>
+  </div>
+  <p class="note">默认指向机载 NX 的 rosbridge。地址按你的网络改，舵机同网段即可。</p>
+</div>
+
+<div class="banner alert" id="gateBanner"></div>
+<div class="banner demo" id="demoBanner">演示模式：按钮不会真的发指令，返回值为本地模拟，只用于看交互。</div>
+
+<!-- ============ 安全门 ============ -->
+<div class="card">
+  <h2>安全门与 ID</h2>
+  <div class="params" id="paramBox">
+    <div class="p unk"><i>enable_actuation</i><b>未读取</b></div>
+    <div class="p unk"><i>switch_gait_api_id</i><b>未读取</b></div>
+    <div class="p unk"><i>mode_api_id</i><b>未读取</b></div>
+    <div class="p unk"><i>auto_switch</i><b>未读取</b></div>
+  </div>
+  <p class="note" id="nsNote">参数命名空间：待探测</p>
+</div>
+
+<!-- ============ 步态 ============ -->
+<div class="card">
+  <h2>步态切换</h2>
+  <div class="grid" id="btns">
+    <button class="btn ok big" data-act="leave">
+      <b>切回 Trot</b><span>leave · gait 1 · 安全方向</span>
+    </button>
+    <button class="btn warn big" data-act="climb" data-confirm>
+      <b>上行爬楼</b><span>enter_climb · gait 3</span>
+    </button>
+    <button class="btn warn big" data-act="descend" data-confirm>
+      <b>下行爬楼</b><span>enter_descend · gait 4</span>
+    </button>
+    <button class="btn warn big" data-act="walkstair" data-confirm>
+      <b>WalkStair 开</b><span>walkstair_mode · api 1049</span>
+    </button>
+  </div>
+  <p class="note">橙色按钮需要连点两次（3 秒内）才发出，防误触。绿色那条不需要确认。</p>
+
+  <h2 style="margin-top:18px">状态</h2>
+  <div class="chain" id="chain">
+    <div class="st" data-st="idle">IDLE<small>gait 0</small></div>
+    <div class="st" data-st="trot">TROT<small>gait 1</small></div>
+    <div class="st climb" data-st="up">爬升<small>gait 3</small></div>
+    <div class="st climb" data-st="down">下行<small>gait 4</small></div>
+    <div class="st" data-st="stair">WALKSTAIR<small>api 1049</small></div>
+  </div>
+  <p class="note"><b>这是命令记录，不是传感器回读。</b>固件不回报当前步态，所以这里只说明"最后一条成功指令是什么"。真状态以狗的动作和遥控器为准。</p>
+</div>
+
+<!-- ============ 日志 ============ -->
+<div class="card">
+  <h2>调用日志</h2>
+  <div class="row" style="margin-bottom:10px">
+    <button class="btn" id="probeBtn">诊断：查服务与参数</button>
+    <button class="btn" id="clearBtn">清空</button>
+  </div>
+  <div class="log" id="log"></div>
+</div>
+
+<!-- ============ 说明 ============ -->
+<div class="card">
+  <h2>现场说明</h2>
+
+  <details>
+    <summary>没装 rosbridge 怎么起</summary>
+    <div>
+      机载 Jetson 上一条命令：
+      <pre>sudo apt install -y ros-noetic-rosbridge-suite
+roslaunch rosbridge_server rosbridge_websocket.launch</pre>
+      默认端口 9090，<code>rosapi</code> 会一起起来，本页面的参数读取依赖它。
+    </div>
+  </details>
+
+  <details>
+    <summary>第一次上真机的验证顺序</summary>
+    <div>
+      狗架空、四腿悬空，人守在遥控器旁。按这个顺序点：
+      <pre>1. 诊断          -> 四个服务都在、enable_actuation 读到 false
+2. 切回 Trot     -> 期望 message 里 code = 0，说明 1011 通了
+3. 上行爬楼      -> 期望 SwitchGait(3) -> 0</pre>
+      第 1 步就要先看 <code>enable_actuation</code>。它是 false 时节点会直接拒绝，
+      返回 <code>"enable_actuation is false"</code>，狗完全不动——这正好用来确认链路通不通，
+      又不用担心它真迈腿。<br>
+      确认 ID 无误后再用 <code>_enable_actuation:=true</code> 重启节点，才真的会切步态。
+    </div>
+  </details>
+
+  <details>
+    <summary>返回码怎么看</summary>
+    <div>
+      <code>0</code> 成功。<code>非 0</code> 是 SDK 的 RPC 返回码，说明指令没被接受，
+      最可能是 ID 在你这版固件上不是 1011/1049。<br>
+      页面里 <code>success=false</code> 也会记一条红色日志，别只看颜色，要读 message。
+    </div>
+  </details>
+
+  <details>
+    <summary>为什么不放"急停"按钮</summary>
+    <div>
+      急停要走固件自己的阻尼/保护通道，这条路没在 <code>stair_gait</code> 里打通，
+      本页面硬造一个反而危险。切回 Trot 只是恢复常规步态，<b>不是</b>急停手段。
+      真出事按遥控器。
+    </div>
+  </details>
+</div>
+
+</div>
+
+<script>
+(function () {
+  'use strict';
+
+  var NS_CANDIDATES = ['/stair_gait', '/stair_gait_node', '/stair_gait/stair_gait'];
+  var SERVICES = {
+    leave:      '/stair_gait/leave',
+    climb:      '/stair_gait/enter_climb',
+    descend:    '/stair_gait/enter_descend',
+    walkstair:  '/stair_gait/walkstair_mode'
+  };
+  var LABEL = { leave: 'leave', climb: 'enter_climb', descend: 'enter_descend', walkstair: 'walkstair_mode' };
+  var PARAM_KEYS = ['enable_actuation', 'switch_gait_api_id', 'mode_api_id', 'auto_switch'];
+
+  var ws = null, seq = 0, pending = {}, demo = false, ns = '/stair_gait';
+  var confirmAct = null, confirmAt = 0;
+  var nodeName = 'stair_gait';
+
+  var $ = function (id) { return document.getElementById(id); };
+
+  function log(kind, msg) {
+    var box = $('log');
+    if (!box) return;
+    var d = document.createElement('div');
+    var t = new Date().toTimeString().slice(0, 8);
+    d.innerHTML = '<span class="t">' + t + '</span> <span class="' + kind + '">' +
+      String(msg).replace(/&/g, '&amp;').replace(/</g, '&lt;') + '</span>';
+    box.appendChild(d);
+    while (box.children.length > 60) box.removeChild(box.firstChild);
+    box.scrollTop = box.scrollHeight;
+  }
+
+  function setConn(ok, text, color) {
+    var el = $('connState');
+    if (!el) return;
+    el.innerHTML = '<span class="dot" style="background:' + color + '"></span>' + text;
+  }
+
+  // ---------- rosbridge transport ----------
+  function call(service, args, cb) {
+    if (demo) {
+      setTimeout(function () { cb({ ok: true, values: mock(service, args) }); }, 260);
+      return;
+    }
+    if (!ws || ws.readyState !== 1) { cb({ ok: false, err: '未连接' }); return; }
+    var id = 'c' + (++seq);
+    var timer = setTimeout(function () {
+      if (pending[id]) { delete pending[id]; cb({ ok: false, err: '3 s 超时' }); }
+    }, 3000);
+    pending[id] = { cb: cb, timer: timer };
+    try {
+      ws.send(JSON.stringify({ op: 'call_service', id: id, service: service, args: args || {} }));
+    } catch (e) {
+      clearTimeout(timer); delete pending[id]; cb({ ok: false, err: '发送失败 ' + e.message });
+    }
+  }
+
+  var MOCK_PARAMS = {
+    enable_actuation: 'false',
+    switch_gait_api_id: '1011',
+    mode_api_id: '1049',
+    auto_switch: 'false'
+  };
+
+  function mock(service, args) {
+    if (service.indexOf('/rosapi/') >= 0) {
+      if (service.indexOf('get_param') >= 0) {
+        var name = String((args && args.name) || '');
+        var key = name.slice(name.lastIndexOf('/') + 1);
+        return { value: MOCK_PARAMS[key] !== undefined ? MOCK_PARAMS[key] : '' };
+      }
+      return { services: ['/rosapi/nodes', '/rosapi/services', '/rosapi/get_param',
+        '/stair_gait/enter_climb', '/stair_gait/enter_descend', '/stair_gait/leave',
+        '/stair_gait/walkstair_mode'] };
+    }
+    if (service.indexOf('leave') >= 0) return { success: true, message: 'SwitchGait(1) -> 0' };
+    if (service.indexOf('enter_climb') >= 0) return { success: true, message: 'SwitchGait(3) -> 0' };
+    if (service.indexOf('enter_descend') >= 0) return { success: true, message: 'SwitchGait(4) -> 0' };
+    return { success: true, message: 'WalkStair(true) -> 0' };
+  }
+
+  function connect() {
+    var url = ($('url').value || '').trim();
+    if (!url) { log('e', '地址为空'); return; }
+    disconnect(true);
+    setConn(false, '连接中…', '#ffce8a');
+    log('i', '连接 ' + url);
+    try { ws = new WebSocket(url); } catch (e) {
+      setConn(false, '地址不合法', '#ff5252'); log('e', 'WS 构造失败：' + e.message); return;
+    }
+
+    ws.onopen = function () {
+      demo = false;
+      $('demoBanner').className = 'banner demo';
+      setConn(true, '已连接', '#3ddc84');
+      log('s', 'rosbridge 已连接');
+      probe();
+    };
+
+    ws.onmessage = function (ev) {
+      var m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.op !== 'service_response') return;
+      var p = pending[m.id];
+      if (!p) return;
+      clearTimeout(p.timer); delete pending[m.id];
+      if (m.result === false || m.values === undefined || m.values === null) {
+        p.cb({ ok: false, err: m.error || '服务无响应' });
+      } else {
+        p.cb({ ok: true, values: m.values });
+      }
+    };
+
+    ws.onerror = function () { log('e', 'WS 错误'); };
+    ws.onclose = function () {
+      setConn(false, '已断开', '#ff5252');
+      log('w', '连接关闭');
+      Object.keys(pending).forEach(function (k) {
+        clearTimeout(pending[k].timer);
+        pending[k].cb({ ok: false, err: '连接中断' });
+        delete pending[k];
+      });
+    };
+  }
+
+  function disconnect(silent) {
+    if (ws) {
+      ws.onclose = null; try { ws.close(); } catch (e) {}
+      ws = null;
+      if (!silent) { setConn(false, '未连接', '#556b88'); log('w', '手动断开'); }
+    }
+  }
+
+  // ---------- params ----------
+  function clearParams() {
+    var box = $('paramBox');
+    if (!box) return;
+    box.innerHTML = PARAM_KEYS.map(function (k) {
+      return '<div class="p unk"><i>' + k + '</i><b>未读取</b></div>';
+    }).join('');
+  }
+
+  function renderParams(vals, missing) {
+    var box = $('paramBox');
+    if (!box) return;
+    box.innerHTML = PARAM_KEYS.map(function (k, i) {
+      var v = vals[i], cls = 'unk', txt = '未读取';
+      if (v !== null && v !== undefined && !missing[i]) {
+        txt = String(v);
+        if (k === 'enable_actuation') { cls = (txt === 'true') ? 'good' : 'bad'; }
+        else if (k === 'switch_gait_api_id' || k === 'mode_api_id') {
+          cls = (txt === '-1' || txt === '') ? 'bad' : 'good';
+          if (k === 'switch_gait_api_id' && txt !== '1011') cls = 'bad';
+          if (k === 'mode_api_id' && txt !== '1049') cls = 'bad';
+        } else { cls = 'good'; }
+      }
+      return '<div class="p ' + cls + '"><i>' + k + '</i><b>' + txt + '</b></div>';
+    }).join('');
+  }
+
+  function probe() {
+    if (!demo && !(ws && ws.readyState === 1)) { log('w', '先连接'); return; }
+    log('i', '诊断：读服务列表与参数');
+
+    call('/rosapi/services', {}, function (r) {
+      if (!r.ok) { log('e', '读服务列表失败：' + r.err); return; }
+      var list = (r.values && r.values.services) || [];
+      var found = list.filter(function (s) { return s.indexOf('/stair_gait') >= 0; });
+      if (found.length === 0) {
+        log('e', '没找到 /stair_gait/* 服务，检查节点是否在跑、rosapi 是否连着同一个 master');
+      } else {
+        log('s', '找到 ' + found.length + ' 个：' + found.join(' '));
+        var need = [SERVICES.leave, SERVICES.climb, SERVICES.descend, '/stair_gait/walkstair_mode'];
+        need.forEach(function (s) {
+          if (list.indexOf(s) < 0) log('w', '缺服务 ' + s);
+        });
+      }
+      detectNs(list);
+    });
+  }
+
+  function detectNs(list) {
+    var i = 0;
+    (function next() {
+      if (i >= NS_CANDIDATES.length) {
+        var n = $('nsNote');
+        if (n) n.textContent = '参数命名空间：没探到，默认 ' + ns;
+        return;
+      }
+      var cand = NS_CANDIDATES[i++];
+      call('/rosapi/get_param', { name: cand + '/enable_actuation' }, function (r) {
+        if (r.ok && r.values && r.values.value !== undefined && r.values.value !== '') {
+          ns = cand;
+          SERVICES.leave = ns + '/leave';
+          SERVICES.climb = ns + '/enter_climb';
+          SERVICES.descend = ns + '/enter_descend';
+          SERVICES.walkstair = ns + '/walkstair_mode';
+          var n2 = $('nsNote');
+          if (n2) n2.textContent = '参数命名空间：' + ns;
+          log('s', '参数命名空间 = ' + ns);
+          readParams();
+        } else { next(); }
+      });
+    })();
+  }
+
+  function readParams() {
+    var vals = [], missing = [], done = 0;
+    PARAM_KEYS.forEach(function (k, i) {
+      call('/rosapi/get_param', { name: ns + '/' + k }, function (r) {
+        if (r.ok && r.values && r.values.value !== undefined && r.values.value !== '') {
+          vals[i] = r.values.value; missing[i] = false;
+        } else { vals[i] = '未读取'; missing[i] = true; }
+        if (++done === PARAM_KEYS.length) {
+          renderParams(vals, missing);
+          gate(vals, missing);
+        }
+      });
+    });
+  }
+
+  function gate(vals, missing) {
+    var banner = $('gateBanner');
+    if (!banner) return;
+    var act = vals[0], sg = vals[1], mid = vals[2];
+    var msgs = [];
+    if (!missing[0] && String(act) !== 'true') {
+      msgs.push('<b>enable_actuation = false。</b>节点会拒绝所有动腿指令，狗不会动。' +
+        '这是默认的安全状态；确认 ID 无误后再用 <code>_enable_actuation:=true</code> 重启节点。');
+    }
+    if (!missing[1] && String(sg) !== '1011') msgs.push('switch_gait_api_id 不是 1011（当前 ' + sg + '）。');
+    if (!missing[2] && String(mid) !== '1049') msgs.push('mode_api_id 不是 1049（当前 ' + mid + '）。');
+    if (msgs.length) { banner.innerHTML = msgs.join('<br>'); banner.className = 'banner alert show'; }
+    else { banner.className = 'banner alert'; }
+  }
+
+  // ---------- actions ----------
+  var STATE_OF = { leave: 'trot', climb: 'up', descend: 'down', walkstair: 'stair' };
+
+  function markState(act) {
+    var target = STATE_OF[act];
+    if (!target) return;
+    var all = document.querySelectorAll('#chain .st');
+    for (var i = 0; i < all.length; i++) {
+      all[i].classList.toggle('on', all[i].getAttribute('data-st') === target);
+    }
+  }
+
+  function run(act) {
+    var svc = SERVICES[act];
+    if (!svc) return;
+    log('i', '→ ' + svc);
+    call(svc, {}, function (r) {
+      if (!r.ok) { log('e', '✗ ' + LABEL[act] + '：' + r.err); return; }
+      var v = r.values || {};
+      var ok = (v.success === true || v.success === 'true');
+      var msg = v.message || '(无 message)';
+      if (ok) { log('s', '✓ ' + LABEL[act] + '：' + msg); markState(act); }
+      else { log('e', '✗ ' + LABEL[act] + '：' + msg); }
+    });
+  }
+
+  // ---------- wiring ----------
+  Array.prototype.forEach.call(document.querySelectorAll('#btns .btn'), function (btn) {
+    btn.addEventListener('click', function () {
+      var act = btn.getAttribute('data-act');
+      if (btn.hasAttribute('data-confirm')) {
+        var now = Date.now();
+        if (confirmAct !== act || now - confirmAt > 3000) {
+          confirmAct = act; confirmAt = now;
+          var orig = btn.querySelector('b').textContent;
+          btn.classList.add('danger');
+          btn.querySelector('b').textContent = '再点一次确认';
+          setTimeout(function () {
+            if (confirmAct !== act) return;
+            btn.classList.remove('danger');
+            btn.querySelector('b').textContent = orig;
+          }, 3000);
+          log('w', LABEL[act] + ' 待确认（3 秒内再点一次）');
+          return;
+        }
+        confirmAct = null;
+        btn.classList.remove('danger');
+        btn.querySelector('b').textContent = { climb: '上行爬楼', descend: '下行爬楼', walkstair: 'WalkStair 开' }[act];
+      }
+      run(act);
+    });
+  });
+
+  $('connBtn').addEventListener('click', connect);
+  $('demoBtn').addEventListener('click', function () {
+    demo = true; disconnect(true);
+    $('demoBanner').className = 'banner demo show';
+    setConn(false, '演示模式（未连接）', '#ffce8a');
+    log('w', '进入演示模式，指令不会发出');
+    renderParams(['false', '1011', '1049', 'false'], [false, false, false, false]);
+    gate(['false', '1011', '1049', 'false'], [false, false, false, false]);
+    $('nsNote').textContent = '参数命名空间：' + ns + '（演示）';
+  });
+  $('probeBtn').addEventListener('click', probe);
+  $('clearBtn').addEventListener('click', function () { $('log').innerHTML = ''; });
+
+  clearParams();
+  log('i', '就绪。先连接，再点「诊断」。');
+})();
+</script>
+</body>
+</html>
