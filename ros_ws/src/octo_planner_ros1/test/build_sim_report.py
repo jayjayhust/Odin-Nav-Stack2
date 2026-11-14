@@ -86,7 +86,7 @@ TEMPLATE = r"""<!DOCTYPE html>
       <canvas id="side"></canvas>
     </div>
     <div class="view wide">
-      <h3>3D 点云（拖拽旋转 · 滚轮缩放 · 双击复位）</h3>
+      <h3>3D 点云（左键拖拽旋转 · 滚轮缩放 · 双击复位）</h3>
       <canvas id="iso"></canvas>
     </div>
   </div>
@@ -273,7 +273,7 @@ function pathColor(iz, lo, hi){
 // painter sort is needed - depth only drives point size and fade. Drag to
 // orbit, wheel to zoom, double click to reset.
 const cloudCache = new Map();
-const CAM0 = { yaw: 2.55, pitch: 1.06, zoom: 1.0 };
+const CAM0 = { yaw: 2.42, pitch: 0.86, zoom: 1.0 };
 const cam = Object.assign({}, CAM0);
 
 function buildCloud(s){
@@ -424,7 +424,11 @@ function drawCloud(s, T){
   if (!cv) return;
   cv.style.cursor = 'grab';
   let drag = null;
+  // Left button orbits, right and middle do nothing. Pitch is deliberately
+  // unlimited: a three-storey stair core has to be inspectable from underneath
+  // and from above, and clamping the elevation only gets in the way.
   cv.addEventListener('mousedown', (e) => {
+    if (e.button !== 0) return;
     drag = { x: e.clientX, y: e.clientY };
     cv.style.cursor = 'grabbing';
     e.preventDefault();
@@ -432,13 +436,15 @@ function drawCloud(s, T){
   window.addEventListener('mousemove', (e) => {
     if (!drag) return;
     cam.yaw += (e.clientX - drag.x) * 0.008;
-    cam.pitch = Math.max(-0.15, Math.min(1.25, cam.pitch + (e.clientY - drag.y) * 0.006));
+    cam.pitch += (e.clientY - drag.y) * 0.006;
     drag.x = e.clientX; drag.y = e.clientY;
     draw();
   });
   window.addEventListener('mouseup', () => { drag = null; cv.style.cursor = 'grab'; });
+  cv.addEventListener('contextmenu', (e) => e.preventDefault());
+  // Wheel zooms in and out; exponential so a notch feels the same at any scale.
   cv.addEventListener('wheel', (e) => {
-    cam.zoom = Math.max(0.35, Math.min(6, cam.zoom * (1 - e.deltaY * 0.0012)));
+    cam.zoom = Math.max(0.25, Math.min(12, cam.zoom * Math.exp(-e.deltaY * 0.0015)));
     e.preventDefault();
     draw();
   }, { passive: false });

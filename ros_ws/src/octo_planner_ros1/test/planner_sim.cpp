@@ -142,43 +142,109 @@ Scenario buildDeskBarrier() {
 }
 
 // --- scene F: three-storey office -------------------------------------------
-// Floor height 3.4 m, one straight 18-step flight between each pair of floors.
-// The two flights sit at different y so they can occupy the same x span, which
-// is how a real building packs two runs into one stair core.
-Scenario buildMultiFloor() {
+// Two switch-back flights per storey, the way a real twin-flight stair is
+// built: each half flight rises 1.7 m over 2.7 m of going, the two runs sit
+// side by side in y, and a 1.2 m landing at the far end turns you 180 degrees
+// before the second run comes back. The well is open through every floor slab
+// so the robot walks the same U-shaped route a person does.
+Scenario buildMultiFloor(bool curb) {
   Scenario sc;
-  sc.name = "multi_floor";
-  sc.desc = "3 层办公楼：层高 3.4 m，折返楼梯井两段 18 级（踢面 0.189 / 踏面 0.30），起点在 1 层、目标在 3 层";
+  sc.name = curb ? "multi_floor" : "multi_floor_glass";
+  sc.desc = curb
+    ? "3 层办公楼（现场楼梯按实拍复核并加了 0.22 m 连续挡边）：双跑每层两段 9 级（踢面 0.189 / 踏面 0.30）+ 端部 1.2 m 转弯平台，玻璃栏板夹不锈钢立柱，梯井贯通三层，起点 1 层、目标 3 层"
+    : "同一栋楼，但不做任何改造：只有夹胶玻璃栏板 + 1.35 m 间距的不锈钢立柱，玻璃对 lidar 近乎透明——用来复现现场真实的感知缺口";
   sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 12.0, 6.0, 10.6, 0.3);
 
   const double FL = 3.4;
-  const double TX0 = 3.0, TX1 = 8.4;   // stair run, 5.4 m horizontally
-  const double TY_A0 = 1.5, TY_A1 = 3.0;  // the two flights share one core
-  const int N = 18;
-  const double RISE = FL / N, TREAD = (TX1 - TX0) / N;
+  const int    N = 9;                            // steps per half flight
+  const double RISE = FL / (2 * N);              // 0.189 m
+  const double TX0 = 3.0, TX1 = 5.7;             // one run: 2.7 m of going
+  const double TREAD = (TX1 - TX0) / N;          // 0.30 m
+  const double LX0 = TX1, LX1 = 6.9;             // landing, 1.2 m deep
+  const double TY_R0 = 1.8, TY_R1 = 3.0;         // outbound run (upper half)
+  const double TY_L0 = 0.6, TY_L1 = 1.8;         // return run  (lower half)
 
+  // Floor slabs, leaving the stair well open. The ground floor stays solid
+  // because the first run starts from it; the two slabs above are holed so the
+  // well runs through the building.
   for (int f = 0; f < 3; ++f) {
-    addPlate(sc.grid, 0.0, 12.0, 0.0, 6.0, f * FL);
-  }
-
-  // Flight 1 climbs +x, flight 2 climbs -x from the same landing: the classic
-  // switch-back core, where each floor's flight sits directly above the one
-  // below. They never collide because the z bands are disjoint.
-  for (int f = 0; f < 2; ++f) {
-    for (int i = 0; i < N; ++i) {
-      const double xa = (f == 0) ? TX0 + i * TREAD : TX1 - (i + 1) * TREAD;
-      const double xb = (f == 0) ? TX0 + (i + 1) * TREAD : TX1 - i * TREAD;
-      addPlate(sc.grid, xa, xb, TY_A0, TY_A1, f * FL + (i + 1) * RISE);
+    for (double x = 0.0; x <= 12.0 + 1e-9; x += 0.05) {
+      for (double y = 0.0; y <= 6.0 + 1e-9; y += 0.05) {
+        const bool in_well = (f > 0) &&
+                             x > TX0 - 1e-9 && x < LX1 + 1e-9 &&
+                             y > TY_L0 - 1e-9 && y < TY_R1 + 1e-9;
+        if (in_well) continue;
+        sc.grid.insertSurfacePoint(x, y, f * FL, 20);
+      }
     }
   }
 
+  for (int f = 0; f < 2; ++f) {
+    // outbound run climbs +x along the upper half of the well
+    for (int i = 0; i < N; ++i) {
+      addPlate(sc.grid, TX0 + i * TREAD, TX0 + (i + 1) * TREAD, TY_R0, TY_R1,
+               f * FL + (i + 1) * RISE);
+    }
+    // the turn: a flat landing spanning both halves at half-landing height
+    addPlate(sc.grid, LX0, LX1, TY_L0, TY_R1, f * FL + N * RISE);
+    // return run climbs -x along the lower half, up to the next floor
+    for (int i = 0; i < N; ++i) {
+      addPlate(sc.grid, TX1 - (i + 1) * TREAD, TX1 - i * TREAD, TY_L0, TY_L1,
+               f * FL + N * RISE + (i + 1) * RISE);
+    }
+  }
+
+  // Outer shell.
   addWallY(sc.grid, 0.0, 0.0, 6.0, 0.0, 10.6);
   addWallY(sc.grid, 12.0, 0.0, 6.0, 0.0, 10.6);
   addWallX(sc.grid, 0.0, 0.0, 12.0, 0.0, 10.6);
   addWallX(sc.grid, 6.0, 0.0, 12.0, 0.0, 10.6);
 
-  sc.start = makeKeyAt(sc.grid, 10.00, 2.25, 0.35);
-  sc.goal = makeKeyAt(sc.grid, 1.50, 2.25, 7.00);
+  // Shaft walls on both sides of the well, full height, plus the wall behind
+  // the landing. Only the two landings are open, so the robot enters and leaves
+  // the flight exactly where a person would.
+  addWallX(sc.grid, TY_L0 - 0.05, TX0, LX1, 0.0, 10.6);
+  addWallX(sc.grid, TY_R1 + 0.05, TX0, LX1, 0.0, 10.6);
+  addWallY(sc.grid, LX1 + 0.05, TY_L0, TY_R1, 0.0, 10.6);
+
+  // Real stair from the site photographs: frameless glass balustrade between
+  // stainless posts at roughly 1.2 m centres, a round tube handrail on top, and
+  // a solid wall along the outer side of each flight.
+  //
+  // The glass is the whole problem. A lidar beam largely passes through a
+  // tempered glass panel, so the panel contributes almost nothing to the point
+  // cloud; only the posts and the tube come back, and the posts sit 1.2 m apart.
+  // The middle divider between the two flights is therefore nearly invisible to
+  // perception - which is precisely the edge the robot must not stray past.
+  for (int f = 0; f < 2; ++f) {
+    for (int k = 0; k <= 2; ++k) {
+      const double xo = TX0 + k * (TX1 - TX0) * 0.5;
+      const double zo = f * FL + k * (FL * 0.5);
+      for (double z = zo; z <= zo + 1.02 + 1e-9; z += 0.05)
+        sc.grid.insertSurfacePoint(xo, TY_R0 + 0.04, z, 2);
+      const double xr = TX1 - k * (TX1 - TX0) * 0.5;
+      const double zr = f * FL + N * RISE + k * (FL * 0.5);
+      for (double z = zr; z <= zr + 1.02 + 1e-9; z += 0.05)
+        sc.grid.insertSurfacePoint(xr, TY_L1 - 0.04, z, 2);
+    }
+    for (double t = 0.0; t <= 1.0 + 1e-9; t += 0.02) {
+      const double xo = TX0 + t * (TX1 - TX0);
+      sc.grid.insertSurfacePoint(xo, TY_R0 + 0.04, f * FL + t * FL + 1.0, 1);
+      if (curb) {
+        for (double z = f * FL + t * FL; z <= f * FL + t * FL + 0.22 + 1e-9; z += 0.05)
+          sc.grid.insertSurfacePoint(xo, TY_R0 + 0.04, z, 1);
+      }
+      const double xr = TX1 - t * (TX1 - TX0);
+      sc.grid.insertSurfacePoint(xr, TY_L1 - 0.04, f * FL + N * RISE + t * FL + 1.0, 1);
+      if (curb) {
+        for (double z = f * FL + N * RISE + t * FL; z <= f * FL + N * RISE + t * FL + 0.22 + 1e-9; z += 0.05)
+          sc.grid.insertSurfacePoint(xr, TY_L1 - 0.04, z, 1);
+      }
+    }
+  }
+
+  sc.start = makeKeyAt(sc.grid, 10.00, 2.40, 0.35);
+  sc.goal = makeKeyAt(sc.grid, 1.50, 2.40, 7.00);
   return sc;
 }
 
@@ -186,8 +252,8 @@ Scenario buildMultiFloor() {
 Scenario buildStairs() {
   Scenario sc;
   sc.name = "stairs";
-  sc.desc = "8 级台阶（踏面 0.30 m / 踢面 0.17 m）+ 上层平台";
-  sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 6.4, 2.6, 2.0, 0.3);
+  sc.desc = "8 级台阶（踏面 0.30 m / 踢面 0.17 m）+ 上层平台，两侧梯井墙与扶手";
+  sc.grid.configureFromBounds(0.10, 0.0, 0.0, 0.0, 6.4, 2.6, 2.6, 0.3);
 
   addPlate(sc.grid, 0.0, 2.4, 0.0, 2.6, 0.0);
   const double tread = 0.30;
@@ -196,9 +262,30 @@ Scenario buildStairs() {
     addPlate(sc.grid, 2.4 + i * tread, 2.4 + (i + 1) * tread, 0.0, 2.6, rise * (i + 1));
   }
   addPlate(sc.grid, 2.4 + 8 * tread, 6.0, 0.0, 2.6, rise * 8);
-  // Side walls keep the search inside the stair flight (they run along x).
-  addWallX(sc.grid, 0.0, 0.0, 6.4, 0.0, 2.0);
-  addWallX(sc.grid, 2.6, 0.0, 6.4, 0.0, 2.0);
+  // Flank walls keep the search inside the flight; the treads themselves are
+  // 2.6 m wide here, so the walls run at y = 0 and y = 2.6 for their full height.
+  addWallX(sc.grid, 0.0, 0.0, 6.4, 0.0, 2.6);
+  addWallX(sc.grid, 2.6, 0.0, 6.4, 0.0, 2.6);
+
+  // Same railing logic as the multi-storey scene: a baluster at each nose so a
+  // lidar sweep puts occupied cells along the flight edge, plus the continuous
+  // kick plate, mid rail and handrail.
+  for (int i = 0; i <= 8; ++i) {
+    const double x = 2.4 + i * tread;
+    for (double hy : {0.03, 2.57}) {
+      for (double z = rise * i; z <= rise * i + 0.95 + 1e-9; z += 0.05)
+        sc.grid.insertSurfacePoint(x, hy, z, 2);
+    }
+  }
+  for (double x = 2.4; x <= 6.4 + 1e-9; x += 0.02) {
+    const double ramp = std::min(1.0, (x - 2.4) / (8 * tread));
+    const double z = rise * 8 * ramp;
+    for (double hy : {0.03, 2.57}) {
+      sc.grid.insertSurfacePoint(x, hy, z + 0.95, 1);
+      sc.grid.insertSurfacePoint(x, hy, z + 0.45, 1);
+      sc.grid.insertSurfacePoint(x, hy, z + 0.06, 1);
+    }
+  }
 
   sc.start = makeKey(sc.grid, 1.00, 1.30);
   sc.goal = makeKey(sc.grid, 5.50, 1.30);
@@ -285,14 +372,26 @@ void printScenario(const Scenario& sc, bool last) {
   std::printf("\"start\":[%d,%d,%d],", sc.start.x, sc.start.y, sc.start.z);
   std::printf("\"goal\":[%d,%d,%d],", sc.goal.x, sc.goal.y, sc.goal.z);
 
-  // Occupied cells, thinned 2x2x2 so the report stays small.
+  // Occupied cells, thinned so the report stays small. Sampling every second
+  // index drops any single-cell-thick wall that happens to sit on an odd
+  // index, so each 2x2x2 block contributes its first occupied cell instead.
   std::printf("\"occ\":[");
   bool first = true;
   for (int iz = 0; iz < sc.grid.nz(); iz += 2) {
     for (int iy = 0; iy < sc.grid.ny(); iy += 2) {
       for (int ix = 0; ix < sc.grid.nx(); ix += 2) {
-        if (sc.grid.at(ix, iy, iz) != VoxelGrid::kOccupied) continue;
-        std::printf("%s[%d,%d,%d]", first ? "" : ",", ix, iy, iz);
+        int hx = -1, hy = -1, hz = -1;
+        for (int dz = 0; dz < 2 && hx < 0; ++dz) {
+          for (int dy = 0; dy < 2 && hx < 0; ++dy) {
+            for (int dx = 0; dx < 2 && hx < 0; ++dx) {
+              const int X = ix + dx, Y = iy + dy, Z = iz + dz;
+              if (X >= sc.grid.nx() || Y >= sc.grid.ny() || Z >= sc.grid.nz()) continue;
+              if (sc.grid.at(X, Y, Z) == VoxelGrid::kOccupied) { hx = X; hy = Y; hz = Z; }
+            }
+          }
+        }
+        if (hx < 0) continue;
+        std::printf("%s[%d,%d,%d]", first ? "" : ",", hx, hy, hz);
         first = false;
       }
     }
@@ -334,7 +433,8 @@ int main() {
   scenarios.push_back(buildPit());
   scenarios.push_back(buildOffice(true));
   scenarios.push_back(buildDeskBarrier());
-  scenarios.push_back(buildMultiFloor());
+  scenarios.push_back(buildMultiFloor(true));
+  scenarios.push_back(buildMultiFloor(false));
 
   for (auto& sc : scenarios) {
     const clock_t t0 = clock();
