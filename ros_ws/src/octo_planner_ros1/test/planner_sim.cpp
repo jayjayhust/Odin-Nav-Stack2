@@ -423,7 +423,7 @@ int main() {
   AStar3D::Params params;
   params.max_iterations = 500000;
   params.require_ground_support = true;
-  params.ground_support_xy_radius_cells = 1;
+  params.ground_support_xy_radius_cells = 0;
   params.snap_search_radius_cells = 12;
   params.max_step_z_cells = 3;
 
@@ -500,7 +500,7 @@ int main() {
 
   std::printf("{\"generated\":\"planner_sim\",\"params\":{\"resolution\":0.1,"
               "\"robot_radius\":0.25,\"max_iterations\":%d,"
-              "\"require_ground_support\":true,\"ground_support_xy_radius_cells\":1,"
+              "\"require_ground_support\":true,\"ground_support_xy_radius_cells\":0,"
               "\"snap_search_radius_cells\":12,\"max_step_z_cells\":3},\"scenarios\":[",
               params.max_iterations);
   for (size_t i = 0; i < scenarios.size(); ++i) {

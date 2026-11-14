@@ -45,7 +45,7 @@ class OctoPlannerNode {
     pnh_.param<int>("inflation_z_cells", inflation_z_cells_, 0);
     pnh_.param<int>("max_iterations", max_iterations_, 500000);
     pnh_.param<bool>("require_ground_support", require_ground_support_, true);
-    pnh_.param<int>("ground_support_xy_radius_cells", ground_support_xy_radius_cells_, 1);
+    pnh_.param<int>("ground_support_xy_radius_cells", ground_support_xy_radius_cells_, 0);
     pnh_.param<int>("snap_search_radius_cells", snap_search_radius_cells_, 12);
     pnh_.param<int>("max_step_z_cells", max_step_z_cells_, 3);
     pnh_.param<double>("z_bias", z_bias_, 0.0);
@@ -351,7 +351,7 @@ class OctoPlannerNode {
   int clearance_cells_ = 20;
   int inflation_z_cells_ = 2;
   int max_iterations_ = 500000;
-  int ground_support_xy_radius_cells_ = 1;
+  int ground_support_xy_radius_cells_ = 0;
   int snap_search_radius_cells_ = 12;
   int max_step_z_cells_ = 3;
   int max_points_per_cloud_ = 20000;

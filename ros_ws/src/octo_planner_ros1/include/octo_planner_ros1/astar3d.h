@@ -22,7 +22,7 @@ class AStar3D {
   struct Params {
     int max_iterations = 500000;
     bool require_ground_support = true;
-    int ground_support_xy_radius_cells = 1;
+    int ground_support_xy_radius_cells = 0;
     int snap_search_radius_cells = 12;
     bool allow_diagonal = true;
     // A single expansion may climb at most this many cells in z. Keeps the

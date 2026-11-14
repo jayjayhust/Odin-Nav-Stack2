@@ -100,7 +100,7 @@ TEMPLATE = r"""<!DOCTYPE html>
   <div class="legend">
     <span><i class="sw" style="background:#6b7fa8"></i>占据体素</span>
     <span><i class="sw" style="background:#1e3a5f"></i>A* 已展开</span>
-    <span><i class="sw" style="background:linear-gradient(90deg,#25d0c0,#f59a22)"></i>规划路径（按高度着色）</span>
+    <span><i class="sw" style="background:linear-gradient(90deg,#25d0c0,#f59a22)"></i>规划路径（按高度着色，侧视淡色段在切片外）</span>
     <span><i class="sw" style="background:#3ddc84"></i>起点</span>
     <span><i class="sw" style="background:#f2b24a"></i>目标</span>
   </div>
@@ -235,7 +235,7 @@ function draw(){
   c2.clearRect(0,0,side.w,side.h);
   const agg = aggregate(s);
   $('sideTitle').textContent = '侧视 X–Z（y ≈ ' +
-      (s.origin[1] + (agg.cy+0.5)*res).toFixed(2) + ' m 切片）';
+      (s.origin[1] + (agg.cy+0.5)*res).toFixed(2) + ' m 切片 · 淡色段在此切片外）';
   const bw = Math.max(1.6, m2.sc*res);
   for(const [ix, col] of agg.map){
     c2.fillStyle = '#3d4c6b';
@@ -249,7 +249,7 @@ function draw(){
     const k=s.trace[i];
     c2.fillRect(m2.x(k[0]*res), m2.y((k[2]+1)*res), Math.max(1.6,bw*0.9), Math.max(1.6,m2.sc*res*0.9));
   }
-  drawPath(c2, s.path, pathN, (k,p)=>[m2.x((k[0]+0.5)*res), m2.y((k[2]+0.5)*res)], zmin, zmax);
+  drawPath(c2, s.path, pathN, (k,p)=>[m2.x((k[0]+0.5)*res), m2.y((k[2]+0.5)*res)], zmin, zmax, agg.cy);
   dot(c2, m2.x((s.start[0]+0.5)*res), m2.y((s.start[2]+0.5)*res), 3.8, '#3ddc84');
   dot(c2, m2.x((s.goal[0]+0.5)*res), m2.y((s.goal[2]+0.5)*res), 3.8, '#f2b24a');
 
@@ -325,28 +325,35 @@ function drawCloud(s, T){
   const ctx = cv.ctx;
   ctx.clearRect(0, 0, cv.w, cv.h);
 
-  const D = cache.span * 3.8 / cam.zoom;
+  // D is the eye-to-centre distance, so the wheel moves the camera instead of
+  // scaling the picture. It is floored at 0.62 span so a close zoom cannot push
+  // the eye inside the bounding sphere.
+  const D0 = cache.span * 3.8;
+  const D = Math.max(cache.span * 0.62, D0 / cam.zoom);
   const cyaw = Math.cos(cam.yaw), syaw = Math.sin(cam.yaw);
   const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
-  const cxw = cv.w/2, cyw = cv.h/2;
 
-  // Camera-space coordinates (f = 1). The frustum is fitted to the bounding
-  // box before drawing, so orbiting never pushes geometry off the canvas.
-  const project = (x, y, z) => {
+  // Camera-space coordinates (f = 1), parameterised by eye distance.
+  const mkProj = (dist) => (x, y, z) => {
     const X = x*cyaw - y*syaw;
     const Y = x*syaw + y*cyaw;
     const Y2 = Y*cp + z*sp;
     const Z2 = -Y*sp + z*cp;
-    const d = D + Z2;
+    const d = dist + Z2;
     if (d < 0.05) return null;
     return { u: X/d, v: -Y2/d, d: d };
   };
+  // Fit the frustum once, at the reference distance, then hold that scale. Refit
+  // per frame and the new scale cancels the shorter D exactly - the wheel then
+  // changes nothing you can see, which is precisely how it felt.
+  const projectRef = mkProj(D0);
+  const project = mkProj(D);
 
   const ptsArr = cache.pts, nPts = ptsArr.length;
   let umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
   const step = 4 * Math.max(1, Math.floor((nPts/4) / 900));
   for (let i = 0; i < nPts; i += step) {
-    const p = project(ptsArr[i], ptsArr[i+1], ptsArr[i+2]);
+    const p = projectRef(ptsArr[i], ptsArr[i+1], ptsArr[i+2]);
     if (!p) continue;
     if (p.u < umin) umin = p.u; if (p.u > umax) umax = p.u;
     if (p.v < vmin) vmin = p.v; if (p.v > vmax) vmax = p.v;
@@ -444,7 +451,7 @@ function drawCloud(s, T){
   cv.addEventListener('contextmenu', (e) => e.preventDefault());
   // Wheel zooms in and out; exponential so a notch feels the same at any scale.
   cv.addEventListener('wheel', (e) => {
-    cam.zoom = Math.max(0.25, Math.min(12, cam.zoom * Math.exp(-e.deltaY * 0.0015)));
+    cam.zoom = Math.max(0.25, Math.min(6, cam.zoom * Math.exp(-e.deltaY * 0.0015)));
     e.preventDefault();
     draw();
   }, { passive: false });
@@ -453,14 +460,21 @@ function drawCloud(s, T){
   });
 })();
 
-function drawPath(ctx, path, n, proj, zLo, zHi){
+// cy is the slice centre in grid units. In the elevation view the voxels are
+// only drawn for a band around it, so any path segment outside that band lands
+// on empty canvas and reads as hovering in mid-air. Fade those back instead of
+// drawing them at full strength.
+function drawPath(ctx, path, n, proj, zLo, zHi, cy){
   if(n<1) return;
   ctx.lineWidth=2.4; ctx.lineJoin='round';
+  const sliced = (typeof cy === 'number');
   for(let i=1;i<n;i++){
+    ctx.globalAlpha = (!sliced || Math.abs(path[i][1]-cy) <= 3) ? 1.0 : 0.16;
     const a = proj(path[i-1]), b = proj(path[i]);
     ctx.strokeStyle = pathColor(path[i][2], zLo, zHi);
     ctx.beginPath(); ctx.moveTo(a[0],a[1]); ctx.lineTo(b[0],b[1]); ctx.stroke();
   }
+  ctx.globalAlpha = 1.0;
 }
 
 function dot(ctx, x, y, r, color){
