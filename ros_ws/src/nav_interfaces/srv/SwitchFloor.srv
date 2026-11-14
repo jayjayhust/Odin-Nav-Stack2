@@ -1,0 +1,12 @@
+# Switch the active navigation floor.
+# The robot must already be physically on `floor` (lift/stairs handled outside
+# the navigation stack). floor_manager then swaps the Odin1 relocalization
+# map, reloads the 2D occupancy grid, clears the sliding obstacle memory and
+# waits for a stable map->base_link transform before returning success.
+string floor
+bool keep_mission_paused
+---
+bool success
+string message
+string floor
+float64 elapsed_sec

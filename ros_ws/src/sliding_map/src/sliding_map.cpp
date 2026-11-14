@@ -97,6 +97,27 @@ SlidingMapNode::SlidingMapNode() : nh_(), pnh_("~"), tf_listener_(tf_buffer_) {
   } else {
     ROS_INFO("[sliding_map] follow-target masking disabled (default)");
   }
+
+  // Floor switch hook: floor_manager calls this after the robot has been moved
+  // to another floor. Service name resolves to /sliding_map/clear.
+  clear_srv_ = pnh_.advertiseService("clear", &SlidingMapNode::clearCb, this);
+}
+
+bool SlidingMapNode::clearCb(std_srvs::Trigger::Request& req,
+                             std_srvs::Trigger::Response& res) {
+  (void)req;
+  const std::size_t cells = map_.data.size();
+  // -1 == unknown: the new floor starts with a blank obstacle memory.
+  map_.data.assign(cells, -1);
+  cell_stamp_.assign(cells, ros::Time(0));
+  last_decay_check_ = ros::Time(0);
+  map_.header.stamp = ros::Time::now();
+  map_pub_.publish(map_);
+  ROS_INFO("[sliding_map] obstacle memory cleared (%zu cells) for floor switch",
+           cells);
+  res.success = true;
+  res.message = "sliding_map cleared";
+  return true;
 }
 
 void SlidingMapNode::scanCallback(const sensor_msgs::LaserScan::ConstPtr &msg) {

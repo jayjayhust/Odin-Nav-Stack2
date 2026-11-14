@@ -25,6 +25,8 @@
 #include <tf2/LinearMath/Quaternion.h>
 #include <tf2/utils.h>
 
+#include <XmlRpcValue.h>
+
 MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
     : nh_(nh), private_nh_(private_nh), tf_listener_(tf_buffer_) {
   private_nh_.param("map_frame", map_frame_, map_frame_);
@@ -55,6 +57,57 @@ MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
   private_nh_.param("alignment_watchdog_timeout_sec", alignment_watchdog_timeout_sec_, alignment_watchdog_timeout_sec_);
   private_nh_.param("handover_settle_sec", handover_settle_sec_, handover_settle_sec_);
   private_nh_.param("enable_alignment", enable_alignment_, enable_alignment_);
+  // ---- Multi-floor support (disabled by default) ----
+  private_nh_.param("enable_multifloor", enable_multifloor_, enable_multifloor_);
+  private_nh_.param("floor_status_topic", floor_status_topic_, floor_status_topic_);
+  private_nh_.param("initial_floor", initial_floor_, initial_floor_);
+  private_nh_.param("elevator_arrive_tolerance_m", elevator_arrive_tolerance_m_,
+                    elevator_arrive_tolerance_m_);
+  private_nh_.param("elevator_wait_timeout_sec", elevator_wait_timeout_sec_,
+                    elevator_wait_timeout_sec_);
+  if (enable_multifloor_) {
+    current_floor_ = initial_floor_;
+    XmlRpc::XmlRpcValue floors;
+    if (private_nh_.getParam("floors", floors) &&
+        floors.getType() == XmlRpc::XmlRpcValue::TypeArray) {
+      auto asDouble = [](const XmlRpc::XmlRpcValue &value) -> double {
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeDouble) {
+          return static_cast<double>(value);
+        }
+        if (value.getType() == XmlRpc::XmlRpcValue::TypeInt) {
+          return static_cast<int>(value);
+        }
+        return 0.0;
+      };
+      for (int i = 0; i < floors.size(); ++i) {
+        XmlRpc::XmlRpcValue &entry = floors[i];
+        if (entry.getType() != XmlRpc::XmlRpcValue::TypeStruct ||
+            !entry.hasMember("id") || !entry.hasMember("elevator")) {
+          continue;
+        }
+        const std::string id = static_cast<std::string>(entry["id"]);
+        XmlRpc::XmlRpcValue &elevator = entry["elevator"];
+        if (elevator.getType() != XmlRpc::XmlRpcValue::TypeStruct) continue;
+        geometry_msgs::PoseStamped pose;
+        pose.header.frame_id = map_frame_;
+        if (elevator.hasMember("x")) pose.pose.position.x = asDouble(elevator["x"]);
+        if (elevator.hasMember("y")) pose.pose.position.y = asDouble(elevator["y"]);
+        const double yaw =
+            elevator.hasMember("yaw") ? asDouble(elevator["yaw"]) : 0.0;
+        tf2::Quaternion quaternion;
+        quaternion.setRPY(0.0, 0.0, yaw);
+        pose.pose.orientation = tf2::toMsg(quaternion);
+        floor_elevators_[id] = pose;
+      }
+      ROS_INFO("[mission_manager] multi-floor enabled: %zu lift lobbies, initial floor '%s'",
+               floor_elevators_.size(), current_floor_.c_str());
+    } else {
+      ROS_WARN("[mission_manager] enable_multifloor=true but no ~floors list was "
+               "loaded; floor transitions will fail");
+    }
+    floor_status_sub_ = nh_.subscribe(floor_status_topic_, 1,
+                                      &MissionManager::floorStatusCb, this);
+  }
   // Dynamic target following mode (disabled by default).
   private_nh_.param("enable_dynamic_mode", enable_dynamic_mode_, enable_dynamic_mode_);
   private_nh_.param("dynamic_replan_cooldown_sec", dynamic_replan_cooldown_sec_,
@@ -338,6 +391,10 @@ void MissionManager::process() {
     }
   }
   processRecoveryShadow();
+  if (state_ == State::ELEVATOR_TRANSIT) {
+    processElevatorTransit();
+    return;
+  }
   if (state_ == State::DYNAMIC || state_ == State::DYNAMIC_SEARCHING) {
     processDynamicMode();
     return;
@@ -431,6 +488,12 @@ void MissionManager::process() {
     }
     if (route_segment_enable_ && navigation_mode_ == "replan_periodic" &&
         !route_segment_final_) {
+      return;
+    }
+    // Arrived at the lift lobby, not at the real waypoint: park and wait.
+    if (floor_transit_active_) {
+      floor_transit_active_ = false;
+      enterElevatorTransit(transit_target_floor_);
       return;
     }
     transitionTo(State::ARRIVED);
@@ -527,6 +590,8 @@ bool MissionManager::startMissionCb(nav_interfaces::StartMission::Request &req,
   }
 
   waypoints_ = req.waypoints;
+  floor_transit_active_ = false;
+  target_floor_.clear();
   loop_ = req.loop;
   returning_home_ = false;
   current_index_ = 0;
@@ -671,6 +736,8 @@ bool MissionManager::cancelCb(std_srvs::Trigger::Request &,
     return true;
   }
   stopNavigation();
+  floor_transit_active_ = false;
+  target_floor_.clear();
   waypoints_.clear();
   current_index_ = -1;
   loop_ = false;
@@ -695,6 +762,8 @@ bool MissionManager::resetCb(std_srvs::Trigger::Request &,
     exitDynamicMode("Dynamic mode exited by reset");
   }
   stopNavigation();
+  floor_transit_active_ = false;
+  target_floor_.clear();
   waypoints_.clear();
   current_index_ = -1;
   loop_ = false;
@@ -1527,7 +1596,7 @@ void MissionManager::processPeriodicReplan() {
   last_periodic_replan_at_ = now;
   EC_TRACE(ec::REPLAN_TRIGGER, "periodic_replan", "wp=%d", current_index_);
   periodic_replan_running_ = true;
-  geometry_msgs::PoseStamped goal = waypointPose(waypoints_[current_index_]);
+  geometry_msgs::PoseStamped goal = currentGoalPose();
   if (route_segment_enable_ && !global_route_.poses.empty()) {
     goal = global_route_.poses[route_segment_anchor_index_];
   }
@@ -1685,7 +1754,7 @@ void MissionManager::recoveryRequestCb(
   }
 
   const nav_interfaces::RecoveryRequest request = *msg;
-  const geometry_msgs::PoseStamped goal = waypointPose(waypoints_[current_index_]);
+  const geometry_msgs::PoseStamped goal = currentGoalPose();
   const std::string mission_id = mission_id_;
   const int waypoint_index = current_index_;
   const std::string service_name = plan_service_name_;
@@ -2065,6 +2134,45 @@ void MissionManager::skipCurrentWaypointOrFail(const std::string &fail_reason) {
 bool MissionManager::startCurrentWaypoint() {
   clearRouteSegment();
   resetInstallGateState("waypoint");
+
+  // Multi-floor gate: a waypoint tagged with another floor cannot be planned
+  // on the current map. Drive to the lift lobby first, then park in
+  // ELEVATOR_TRANSIT until floor_manager reports the new floor is ready.
+  if (enable_multifloor_ && !waypoints_.empty() && current_index_ >= 0 &&
+      current_index_ < static_cast<int>(waypoints_.size()) && !floor_transit_active_) {
+    const nav_interfaces::Waypoint &waypoint = waypoints_[current_index_];
+    const std::string target_floor =
+        waypoint.floor.empty() ? current_floor_ : waypoint.floor;
+    if (!target_floor.empty() && !current_floor_.empty() &&
+        target_floor != current_floor_) {
+      geometry_msgs::PoseStamped lobby;
+      if (!elevatorPoseForFloor(current_floor_, lobby)) {
+        transitionTo(State::FAILED,
+                     "no lift lobby configured for floor " + current_floor_);
+        return false;
+      }
+      geometry_msgs::PoseStamped robot;
+      bool already_at_lobby = false;
+      if (getRobotPose(robot)) {
+        const double dx = robot.pose.position.x - lobby.pose.position.x;
+        const double dy = robot.pose.position.y - lobby.pose.position.y;
+        already_at_lobby = std::hypot(dx, dy) <= elevator_arrive_tolerance_m_;
+      }
+      if (already_at_lobby) {
+        ROS_INFO("[mission_manager] already at the %s lift lobby; waiting for floor '%s'",
+                 current_floor_.c_str(), target_floor.c_str());
+        enterElevatorTransit(target_floor);
+        return true;
+      }
+      floor_transit_active_ = true;
+      transit_target_floor_ = target_floor;
+      transit_goal_ = lobby;
+      ROS_INFO("[mission_manager] waypoint %d belongs to floor '%s': driving to the "
+               "%s lift lobby first",
+               current_index_, target_floor.c_str(), current_floor_.c_str());
+    }
+  }
+
   if (local_planner_mode_ == "goal_pose") {
     return startSruWaypoint();
   }
@@ -2175,7 +2283,7 @@ bool MissionManager::planCurrentWaypoint(nav_msgs::Path &path, std::string &fail
     return false;
   }
   nav_interfaces::PlanPath service;
-  service.request.goal = waypointPose(waypoints_[current_index_]);
+  service.request.goal = currentGoalPose();
   service.request.shadow_only =
       route_segment_enable_ && navigation_mode_ == "replan_periodic";
   if (!plan_client_.call(service)) {
@@ -2577,7 +2685,7 @@ void MissionManager::publishStatus() const {
   status.current_waypoint_idx = current_index_ < 0 ? 0 : current_index_;
   status.total_waypoints = waypoints_.size();
   if (current_index_ >= 0 && current_index_ < static_cast<int>(waypoints_.size())) {
-    status.current_target = waypointPose(waypoints_[current_index_]).pose;
+    status.current_target = currentGoalPose().pose;
   } else if (dynamic_mode_ && dynamic_goal_valid_) {
     status.current_target = dynamic_goal_.pose;
   }
@@ -2622,6 +2730,87 @@ void MissionManager::publishOperatorCommand(const std::string &command_id,
   operator_command_pub_.publish(msg);
 }
 
+// ---- Multi-floor support ----
+
+void MissionManager::floorStatusCb(
+    const nav_interfaces::FloorStatusConstPtr &msg) {
+  if (!enable_multifloor_) return;
+  std::lock_guard<std::mutex> lock(floor_status_mutex_);
+  floor_status_ = *msg;
+  floor_status_valid_ = true;
+  // Do not adopt a new floor while parked at the lift: the ELEVATOR_TRANSIT
+  // handler must observe the transition itself and resume the mission.
+  if (state_ != State::ELEVATOR_TRANSIT && !msg->switching &&
+      !msg->current_floor.empty()) {
+    current_floor_ = msg->current_floor;
+  }
+}
+
+bool MissionManager::elevatorPoseForFloor(
+    const std::string &floor, geometry_msgs::PoseStamped &pose) const {
+  auto it = floor_elevators_.find(floor);
+  if (it == floor_elevators_.end()) return false;
+  pose = it->second;
+  pose.header.stamp = ros::Time::now();
+  return true;
+}
+
+void MissionManager::enterElevatorTransit(const std::string &target_floor) {
+  stopNavigation();
+  target_floor_ = target_floor;
+  elevator_wait_started_at_ = ros::Time::now();
+  transitionTo(State::ELEVATOR_TRANSIT,
+               "waiting at the lift lobby for floor " + target_floor);
+  publishEvent("WAITING_ELEVATOR",
+               "move the robot to floor " + target_floor +
+                   " and call /floor_manager/arrived_at_floor " + target_floor);
+}
+
+void MissionManager::processElevatorTransit() {
+  nav_interfaces::FloorStatus status;
+  bool status_valid = false;
+  {
+    std::lock_guard<std::mutex> lock(floor_status_mutex_);
+    status = floor_status_;
+    status_valid = floor_status_valid_;
+  }
+
+  if (elevator_wait_timeout_sec_ > 0.0 && !elevator_wait_started_at_.isZero() &&
+      (ros::Time::now() - elevator_wait_started_at_).toSec() >
+          elevator_wait_timeout_sec_) {
+    skipCurrentWaypointOrFail("elevator wait timed out on floor " + current_floor_);
+    return;
+  }
+
+  if (!status_valid) return;
+  if (status.switching || status.current_floor != target_floor_) return;
+
+  ROS_INFO("[mission_manager] floor switch confirmed: '%s' -> '%s'",
+           current_floor_.c_str(), target_floor_.c_str());
+  current_floor_ = target_floor_;
+  target_floor_.clear();
+  floor_transit_active_ = false;
+  // The cached home pose belongs to the previous floor's map frame.
+  home_pose_valid_ = false;
+  publishEvent("FLOOR_SWITCHED", "active floor is now " + current_floor_);
+  if (!startCurrentWaypoint()) {
+    stopNavigation();
+    transitionTo(State::FAILED,
+                 "failed to resume the mission after the floor switch");
+  }
+}
+
+geometry_msgs::PoseStamped MissionManager::currentGoalPose() const {
+  if (floor_transit_active_) return transit_goal_;
+  if (current_index_ < 0 ||
+      current_index_ >= static_cast<int>(waypoints_.size())) {
+    geometry_msgs::PoseStamped pose;
+    pose.header.frame_id = map_frame_;
+    return pose;
+  }
+  return waypointPose(waypoints_[current_index_]);
+}
+
 std::string MissionManager::stateName(State state) const {
   switch (state) {
     case State::IDLE: return "IDLE";
@@ -2636,6 +2825,7 @@ std::string MissionManager::stateName(State state) const {
     case State::FAILED: return "FAILED";
     case State::DYNAMIC: return "DYNAMIC";
     case State::DYNAMIC_SEARCHING: return "DYNAMIC_SEARCHING";
+    case State::ELEVATOR_TRANSIT: return "ELEVATOR_TRANSIT";
   }
   return "UNKNOWN";
 }
@@ -2656,9 +2846,9 @@ double MissionManager::distanceToTarget() const {
   if (current_index_ >= 0 && current_index_ < static_cast<int>(waypoints_.size())) {
     geometry_msgs::PoseStamped current;
     if (getRobotPose(current)) {
-      const nav_interfaces::Waypoint &target = waypoints_[current_index_];
-      return std::hypot(target.x - current.pose.position.x,
-                        target.y - current.pose.position.y);
+      const geometry_msgs::PoseStamped goal = currentGoalPose();
+      return std::hypot(goal.pose.position.x - current.pose.position.x,
+                        goal.pose.position.y - current.pose.position.y);
     }
   }
   const double feedback = distance_remaining_.load();

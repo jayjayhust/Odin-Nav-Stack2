@@ -1,0 +1,7 @@
+# Confirm that the robot has physically reached `floor` (e.g. after a
+# human-assisted lift ride). Triggers the actual map/bin swap.
+string floor
+---
+bool success
+string message
+string floor

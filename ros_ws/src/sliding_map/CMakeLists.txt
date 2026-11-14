@@ -20,13 +20,14 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   sensor_msgs
   std_msgs
+  std_srvs
   tf2_geometry_msgs
   tf2_ros
 )
 
 catkin_package(
   INCLUDE_DIRS include
-  CATKIN_DEPENDS geometry_msgs nav_interfaces nav_msgs roscpp sensor_msgs std_msgs tf2_geometry_msgs tf2_ros
+  CATKIN_DEPENDS geometry_msgs nav_interfaces nav_msgs roscpp sensor_msgs std_msgs std_srvs tf2_geometry_msgs tf2_ros
 )
 
 include_directories(

@@ -25,6 +25,7 @@
 #include <nav_interfaces/PlanSequence.h>
 #include <memory>
 #include <nav_interfaces/FollowSearch.h>
+#include <nav_interfaces/FloorStatus.h>
 #include <nav_interfaces/MissionEvent.h>
 #include <nav_interfaces/MissionStatus.h>
 #include <nav_interfaces/OperatorCommand.h>
@@ -48,6 +49,8 @@
 #include "mission_manager/replan_install_gate.h"
 
 #include <string>
+#include <map>
+#include <mutex>
 #include <thread>
 #include <vector>
 
@@ -74,7 +77,11 @@ private:
     DYNAMIC,
     // Substate of DYNAMIC: in-place stepped rotation search triggered via follow_search
     // when the target is lost, until a new dynamic_goal is received or limits are reached.
-    DYNAMIC_SEARCHING
+    DYNAMIC_SEARCHING,
+    // Multi-floor: parked at the current floor's lift lobby, waiting for the
+    // operator (or a lift integration) to move the robot and confirm arrival
+    // through floor_manager. No velocity commands are issued in this state.
+    ELEVATOR_TRANSIT
   };
 
   // Search termination reason passed atomically from worker thread to main loop
@@ -174,6 +181,18 @@ private:
   std::vector<mission_manager_gate::Pt> pathToPoints(
       const nav_msgs::Path &path) const;
 
+  // ---- Multi-floor support (waypoint.floor driven) ----
+  void floorStatusCb(const nav_interfaces::FloorStatusConstPtr &msg);
+  bool elevatorPoseForFloor(const std::string &floor,
+                            geometry_msgs::PoseStamped &pose) const;
+  // Park at the current floor's lift lobby and wait for floor_manager to
+  // report that the robot is on `target_floor` with a stable relocalization.
+  void enterElevatorTransit(const std::string &target_floor);
+  void processElevatorTransit();
+  // Goal actually planned right now: the lift lobby while transiting to
+  // another floor, otherwise the active waypoint.
+  geometry_msgs::PoseStamped currentGoalPose() const;
+
   bool startCurrentWaypoint();
   // Shared per-waypoint failure recovery: skips the current waypoint and
   // starts the next one (or loops back to 0), instead of failing the whole
@@ -249,6 +268,25 @@ private:
 
   State state_{State::IDLE};
   State paused_from_{State::IDLE};
+
+  // ---- Multi-floor state ----
+  bool enable_multifloor_{false};
+  std::string floor_status_topic_{"/floor_manager/status"};
+  std::string initial_floor_;
+  std::string current_floor_;
+  std::string target_floor_;
+  std::string transit_target_floor_;
+  bool floor_transit_active_{false};          // currently heading to the lift lobby
+  geometry_msgs::PoseStamped transit_goal_;
+  double elevator_arrive_tolerance_m_{0.30};
+  double elevator_wait_timeout_sec_{0.0};     // 0 = wait forever
+  ros::Time elevator_wait_started_at_;
+  std::map<std::string, geometry_msgs::PoseStamped> floor_elevators_;
+  ros::Subscriber floor_status_sub_;
+  nav_interfaces::FloorStatus floor_status_;
+  bool floor_status_valid_{false};
+  mutable std::mutex floor_status_mutex_;
+
   std::vector<nav_interfaces::Waypoint> waypoints_;
   int current_index_{-1};
   bool loop_{false};

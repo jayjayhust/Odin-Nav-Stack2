@@ -18,6 +18,7 @@
 #include <nav_interfaces/FollowTarget.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <sensor_msgs/LaserScan.h>
+#include <std_srvs/Trigger.h>
 #include <tf2_ros/transform_listener.h>
 #include <tf2/LinearMath/Transform.h>
 
@@ -54,10 +55,17 @@ private:
   // Only occupied cells decay; free cells are kept permanently so once a corridor
   // has been observed clear it stays usable for fake-scan raycasts.
   void decayStaleCells(const ros::Time& now);
+  // Floor switch support: drop every remembered obstacle cell and its
+  // timestamp. Called by floor_manager after the robot has been moved to a
+  // different floor, because cells from the previous floor are meaningless in
+  // the new map frame (and would otherwise be planned around for up to
+  // cell_decay_sec_).
+  bool clearCb(std_srvs::Trigger::Request& req, std_srvs::Trigger::Response& res);
 
   ros::NodeHandle nh_;
   ros::NodeHandle pnh_;
   ros::Subscriber scan_sub_;
+  ros::ServiceServer clear_srv_;
   ros::Subscriber follow_sub_;
   ros::Subscriber dynamic_goal_sub_;
   ros::Publisher map_pub_;

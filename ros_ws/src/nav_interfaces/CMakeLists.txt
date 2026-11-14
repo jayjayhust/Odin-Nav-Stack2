@@ -34,6 +34,7 @@ add_message_files(
   FollowTarget.msg
   RecoveryRequest.msg
   RecoveryCommand.msg
+  FloorStatus.msg
 )
 
 add_service_files(
@@ -43,6 +44,8 @@ add_service_files(
   FollowSearch.srv
   PlanPath.srv
   PlanSequence.srv
+  SwitchFloor.srv
+  ArrivedAtFloor.srv
 )
 
 add_action_files(

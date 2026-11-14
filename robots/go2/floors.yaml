@@ -1,0 +1,34 @@
+# Multi-floor map registry for ONS2 / Unitree Go2.
+#
+# ${REPO_ROOT} is expanded by floor_manager from its ~repo_root parameter
+# (launch scripts export GO2_ROOT, which is used as the fallback).
+#
+# Every floor needs THREE files with matching stems:
+#   <stem>.yaml + <stem>.pgm   -> 2D occupancy grid for map_planner
+#   <stem>.bin                 -> Odin1 relocalization map (customer_file/)
+#
+# `elevator` is the pose (in THAT floor's map frame) where the robot waits
+# before a human-assisted lift ride. Keep it at least 1.2 m clear of the
+# lift door so NeuPAN has room to stop and turn.
+default_floor: "1F"   # used when initial_floor is not overridden
+
+floors:
+  - id: "1F"
+    map_yaml: "${REPO_ROOT}/ros_ws/src/map_planner/maps/floor1.yaml"
+    reloc_bin: "${REPO_ROOT}/customer_file/floor1.bin"
+    elevator: {x: 6.20, y: 1.80, yaw: 0.0}
+
+  - id: "2F"
+    map_yaml: "${REPO_ROOT}/ros_ws/src/map_planner/maps/floor2.yaml"
+    reloc_bin: "${REPO_ROOT}/customer_file/floor2.bin"
+    elevator: {x: 6.20, y: 1.80, yaw: 0.0}
+
+  - id: "3F"
+    map_yaml: "${REPO_ROOT}/ros_ws/src/map_planner/maps/floor3.yaml"
+    reloc_bin: "${REPO_ROOT}/customer_file/floor3.bin"
+    elevator: {x: 6.20, y: 1.80, yaw: 0.0}
+
+  - id: "4F"
+    map_yaml: "${REPO_ROOT}/ros_ws/src/map_planner/maps/floor4.yaml"
+    reloc_bin: "${REPO_ROOT}/customer_file/floor4.bin"
+    elevator: {x: 6.20, y: 1.80, yaw: 0.0}

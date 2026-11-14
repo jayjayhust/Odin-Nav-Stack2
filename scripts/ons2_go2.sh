@@ -21,6 +21,19 @@ RELOC_WAIT_SEC="${RELOC_WAIT_SEC:-180}"
 MAP_FILE_NAME="${MAP_NAME:-map_opt}"
 ODIN_CFG="${REPO_ROOT}/ros_ws/src/odin_ros_driver/config/control_command.yaml"
 
+# Multi-floor mode: floor_manager owns /map, so map_server is disabled and the
+# mission layer gets the floor list + lift-lobby poses.
+MULTIFLOOR="${MULTIFLOOR:-0}"
+INITIAL_FLOOR="${INITIAL_FLOOR:-1F}"
+FLOORS_CONFIG="${FLOORS_CONFIG:-${REPO_ROOT}/robots/go2/floors.yaml}"
+if [[ "${MULTIFLOOR}" -eq 1 ]]; then
+  BRINGUP_MAP_ARGS="enable_map_server:=false"
+  MULTIFLOOR_ARGS="enable_multifloor:=true initial_floor:=${INITIAL_FLOOR} floors_config:=${FLOORS_CONFIG}"
+else
+  BRINGUP_MAP_ARGS="enable_map_server:=true"
+  MULTIFLOOR_ARGS="enable_multifloor:=false"
+fi
+
 if [[ -n "${MAP_NAME}" ]]; then
   MAP_YAML="${REPO_ROOT}/ros_ws/src/map_planner/maps/${MAP_NAME}.yaml"
   MAP_PGM="${REPO_ROOT}/ros_ws/src/map_planner/maps/${MAP_NAME}.pgm"
@@ -81,7 +94,7 @@ fi
 
 tmux new-window -t "${SESSION}" -n go2 'bash --norc'
 tmux send-keys -t "${SESSION}:go2" \
-  "${ENV_PREFIX} && roslaunch ons2_bringup go2.launch map_file_name:=${MAP_FILE_NAME} navigation_mode:=${NAVIGATION_MODE} global_planner:=${GLOBAL_PLANNER} local_planner:=${LOCAL_PLANNER} neupan_config:=${NEUPAN_CONFIG} ${BRINGUP_ARGS} 2>&1 | tee ${LOG_DIR}/go2.log" C-m
+  "${ENV_PREFIX} && roslaunch ons2_bringup go2.launch map_file_name:=${MAP_FILE_NAME} navigation_mode:=${NAVIGATION_MODE} global_planner:=${GLOBAL_PLANNER} local_planner:=${LOCAL_PLANNER} neupan_config:=${NEUPAN_CONFIG} ${BRINGUP_MAP_ARGS} ${BRINGUP_ARGS} 2>&1 | tee ${LOG_DIR}/go2.log" C-m
 ons2_log "w2 starting Go2 navigation stack (global_planner=${GLOBAL_PLANNER}, local_planner=${LOCAL_PLANNER}, mode=${LOCAL_PLANNER_MODE})..."
 sleep 25
 ons2_wait_for "rosnode list" '/vel_to_sdk$' 30 "unitree chassis bridge vel_to_sdk"
@@ -98,9 +111,18 @@ else
 fi
 tmux new-window -t "${SESSION}" -n mission 'bash --norc'
 tmux send-keys -t "${SESSION}:mission" \
-  "${ENV_PREFIX} && ${MISSION_WAIT}roslaunch mission_manager mission_manager.launch enable_atomic_move:=true enable_alignment:=true route_segment_enable:=true route_segment_length_m:=10.0 route_segment_overlap_m:=3.0 navigation_mode:=${NAVIGATION_MODE} periodic_replan_sec:=${PERIODIC_REPLAN_SEC} local_planner:=${LOCAL_PLANNER} local_planner_mode:=${LOCAL_PLANNER_MODE} ${MISSION_IFACE_ARGS} 2>&1 | tee ${LOG_DIR}/mission.log" C-m
+  "${ENV_PREFIX} && ${MISSION_WAIT}roslaunch mission_manager mission_manager.launch enable_atomic_move:=true enable_alignment:=true route_segment_enable:=true route_segment_length_m:=10.0 route_segment_overlap_m:=3.0 navigation_mode:=${NAVIGATION_MODE} periodic_replan_sec:=${PERIODIC_REPLAN_SEC} local_planner:=${LOCAL_PLANNER} local_planner_mode:=${LOCAL_PLANNER_MODE} ${MULTIFLOOR_ARGS} ${MISSION_IFACE_ARGS} 2>&1 | tee ${LOG_DIR}/mission.log" C-m
 ons2_log "w4 starting mission_manager..."
 sleep 12
+
+if [[ "${MULTIFLOOR}" -eq 1 ]]; then
+  tmux new-window -t "${SESSION}" -n floor 'bash --norc'
+  tmux send-keys -t "${SESSION}:floor" \
+    "${ENV_PREFIX} && roslaunch floor_manager floor_manager.launch initial_floor:=${INITIAL_FLOOR} floors_config:=${FLOORS_CONFIG} repo_root:=${REPO_ROOT} 2>&1 | tee ${LOG_DIR}/floor_manager.log" C-m
+  ons2_log "w5 starting floor_manager (initial_floor=${INITIAL_FLOOR})..."
+  sleep 8
+  ons2_wait_for "rosservice list" '/floor_manager/switch_floor$' 30 "floor_manager"
+fi
 
 ons2_start_window "${SESSION}" waypoint "${ENV_PREFIX} && python3 ${REPO_ROOT}/ros_ws/scripts/waypoint_goal_bridge.py 2>&1 | tee ${LOG_DIR}/waypoint.log"
 ons2_start_window "${SESSION}" rosbridge "${ENV_PREFIX} && roslaunch rosbridge_server rosbridge_websocket.launch port:=9090 max_message_size:=100000000 2>&1 | tee ${LOG_DIR}/rosbridge.log"

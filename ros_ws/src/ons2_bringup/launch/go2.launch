@@ -1,6 +1,8 @@
 <?xml version="1.0"?>
 <launch>
   <arg name="map_file_name" default="map_opt"/>
+  <!-- Multi-floor mode lets floor_manager own /map; map_server must then stay off. -->
+  <arg name="enable_map_server" default="true"/>
   <arg name="navigation_mode" default="replan_periodic"/>
   <arg name="bridge_pkg" default="unitree_control"/>
   <arg name="bridge_launch" default="unitree_control.launch"/>
@@ -47,7 +49,8 @@
   </include>
 
   <!-- Map / scan / planner -->
-  <include file="$(find ons2_bringup)/launch/map_server.launch">
+  <include if="$(arg enable_map_server)"
+           file="$(find ons2_bringup)/launch/map_server.launch">
     <arg name="map_file_name" value="$(arg map_file_name)"/>
   </include>
 
