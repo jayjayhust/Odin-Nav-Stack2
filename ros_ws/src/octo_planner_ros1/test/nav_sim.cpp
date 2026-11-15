@@ -423,31 +423,47 @@ Scenario fourFloor() {
   for (int f = 0; f <= 3; ++f)                       // four floor slabs
     s.obs.push_back(box(-0.2, -0.2, 3.0, 3.2, H * f - 0.10, H * f));
 
+  // Alternating runs, scissor-stair fashion: storey k uses one side of the core
+  // for its up-run, storey k+1 uses the other. Stacking both storeys' flights
+  // at the same (x, y) put the tread of one 3.4 m directly above the other, and
+  // the body would not commit to the return flight - the map reads the two as
+  // one column.
   for (int k = 0; k < 3; ++k) {                      // three storeys of flights
     const double z0 = H * k;
+    const double ya0 = (k % 2 == 0) ? 1.90 : 0.80;   // run A band
+    const double ya1 = ya0 + 1.00;
+    const double yb0 = (k % 2 == 0) ? 0.80 : 1.90;   // run B band
+    const double yb1 = yb0 + 1.00;
     for (int i = 0; i < 9; ++i) {                    // run A, +x
       const double x0 = 3.0 + i * TREAD;
-      s.obs.push_back(box(x0, 1.90, x0 + TREAD, 2.90, z0, z0 + RISE * (i + 1)));
+      // Solid from the storey floor up, the way the two-storey scene is built.
+      // As one-cell-thick slabs, hasGroundSupport's flat-surface test cannot see
+      // a run at all: each z layer only holds a 0.3 m strip, so the run is "not
+      // standable" and A* walks back DOWN the up-run instead of turning into
+      // the return flight.
+      s.obs.push_back(box(x0, ya0, x0 + TREAD, ya1, z0, z0 + RISE * (i + 1)));
     }
     s.obs.push_back(box(5.7, 0.80, 6.9, 2.90, z0, z0 + LAND));      // landing
     for (int i = 0; i < 9; ++i) {                    // run B, -x
       const double x1 = 5.7 - i * TREAD;
-      s.obs.push_back(box(x1 - TREAD, 0.80, x1, 1.80,
-                          z0 + LAND, z0 + LAND + RISE * (i + 1)));
+      s.obs.push_back(box(x1 - TREAD, yb0, x1, yb1,
+                          z0, z0 + LAND + RISE * (i + 1)));
     }
     for (int i = 0; i < 9; ++i) {                    // upstands, 8.5.1
       const double x0 = 3.0 + i * TREAD;
       const double top = z0 + RISE * (i + 1);
-      s.obs.push_back(box(x0, 2.90, x0 + TREAD, 2.98, top - 0.04, top + RAIL));
+      s.obs.push_back(box(x0, ya1, x0 + TREAD, ya1 + 0.08, top - 0.04, top + RAIL));
       if (x0 < 5.3)
-        s.obs.push_back(box(x0, 1.78, x0 + TREAD, 1.86, top - 0.04, top + RAIL));
+        s.obs.push_back(box(x0, ya0 - 0.08, x0 + TREAD, ya0, top - 0.04, top + RAIL));
       const double x1 = 5.7 - i * TREAD;
       const double top2 = z0 + LAND + RISE * (i + 1);
-      s.obs.push_back(box(x1 - TREAD, 0.72, x1, 0.80, top2 - 0.04, top2 + RAIL));
+      s.obs.push_back(box(x1 - TREAD, yb0 - 0.08, x1, yb0, top2 - 0.04, top2 + RAIL));
       if (x1 - TREAD < 5.3)
-        s.obs.push_back(box(x1 - TREAD, 1.80, x1, 1.88, top2 - 0.04, top2 + RAIL));
+        s.obs.push_back(box(x1 - TREAD, yb1, x1, yb1 + 0.08, top2 - 0.04, top2 + RAIL));
     }
-    s.obs.push_back(box(5.7, 2.90, 6.9, 2.98, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    // One upstand per side of the landing, on the outer edge of each run.
+    s.obs.push_back(box(5.7, ya1, 6.9, ya1 + 0.08, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    s.obs.push_back(box(5.7, yb0 - 0.08, 6.9, yb0, z0 + LAND - 0.04, z0 + LAND + RAIL));
     s.obs.push_back(box(6.84, 1.9, 6.92, 2.9, z0 + LAND - 0.04, z0 + LAND + RAIL));
   }
 
@@ -465,16 +481,21 @@ Scenario fourFloor() {
   s.stair.push_back({2.7, 7.0, 0.5, 3.1, 0.0, 10.20});
   for (int k = 0; k < 3; ++k) {
     const double z0 = H * k;
-    s.corridors.push_back({3.0, 5.7, 2.40, 0.20, z0, z0 + 1.85, 3.0});
-    s.corridors.push_back({3.0, 5.7, 1.30, 0.20, z0 + 1.60, z0 + 3.50, 3.0});
+    const double ca = (k % 2 == 0) ? 2.40 : 1.30;
+    const double cb = (k % 2 == 0) ? 1.30 : 2.40;
+    s.corridors.push_back({3.0, 5.7, ca, 0.20, z0, z0 + 1.85, 3.0});
+    s.corridors.push_back({3.0, 5.7, cb, 0.20, z0 + 1.60, z0 + 3.50, 3.0});
   }
 
   // stands: in front of each run on every level, plus two floor stands
   for (int f = 0; f <= 3; ++f) {
     const double z = H * f;
-    s.survey_pts.push_back({1.80, 2.40, z});
-    s.survey_pts.push_back({3.60, 2.40, z});
-    if (f < 3) s.survey_pts.push_back({6.30, 2.40, z + LAND});
+    const double ca = (f % 2 == 0) ? 2.40 : 1.30;
+    const double cb = (f % 2 == 0) ? 1.30 : 2.40;
+    s.survey_pts.push_back({1.80, ca, z});
+    s.survey_pts.push_back({3.60, ca, z});
+    if (f < 3) s.survey_pts.push_back({6.30, ca, z + LAND});
+    s.survey_pts.push_back({1.80, cb, z});
   }
   s.survey_pts.push_back({0.60, -0.60, 0.0});
   s.survey_pts.push_back({1.80, 1.30, H});
@@ -483,10 +504,12 @@ Scenario fourFloor() {
   // has to climb 1.7 m at a time, which is what makes 600k iterations enough.
   for (int k = 0; k < 3; ++k) {
     const double z0 = H * k;
-    s.via.push_back({3.18, 2.40, z0 + 0.05});        // stair mouth
-    s.via.push_back({6.30, 2.40, z0 + 1.80});        // landing, turn
-    s.via.push_back({6.10, 1.30, z0 + 1.72});        // run B mouth
-    s.via.push_back({2.20, 1.30, z0 + H});           // next slab
+    const double ca = (k % 2 == 0) ? 2.40 : 1.30;
+    const double cb = (k % 2 == 0) ? 1.30 : 2.40;
+    s.via.push_back({3.18, ca, z0 + 0.05});          // stair mouth
+    s.via.push_back({6.30, ca, z0 + 1.80});          // landing, turn
+    s.via.push_back({6.10, cb, z0 + 1.72});          // run B mouth
+    s.via.push_back({2.20, cb, z0 + H});             // next slab
   }
   s.via.push_back({1.00, 1.30, H * 3});              // fourth floor
 
@@ -893,6 +916,11 @@ Run simulate(const Scenario& sc, unsigned seed) {
     }
     have_plan = true;
     last_plan_t = t;
+    if (std::getenv("NAVSIM_TRACE"))
+      std::fprintf(stderr,
+                   "  [plan] t=%.1f expanded=%d pts=%d from=(%.2f,%.2f,%.2f) to=(%.2f,%.2f,%.2f)\n",
+                   t, r.expanded, (int)gpath.size(), x, y, base_z,
+                   leg_goal()[0], leg_goal()[1], leg_goal()[2]);
     if (std::getenv("NAVSIM_TRACE")) {
       for (const auto& col : {std::array<double,2>{2.85,2.35}, std::array<double,2>{3.15,2.40},
                               std::array<double,2>{3.35,2.40}, std::array<double,2>{3.15,2.20}}) {
@@ -1123,13 +1151,21 @@ Run simulate(const Scenario& sc, unsigned seed) {
             // Turning in place is a stall too. Exempting it made "spiral on
             // the spot" cheaper than the one 0.15 m/s step that would finish
             // the leg, once the clearance term is large.
-            const bool stall = std::fabs(c.vx) < 1e-9 && std::fabs(c.vy) < 1e-9;
+            // Turning in place is a stall only when the target is roughly
+            // ahead. With the target behind, turning is the whole job, and
+            // charging it as a stall leaves the body parked nose-to-wall
+            // because forward is blocked and the turn is taxed.
+            const bool stall = std::fabs(c.vx) < 1e-9 && std::fabs(c.vy) < 1e-9 &&
+                               std::fabs(herr0) < 1.2;
             const double cost = 1.4 * d2 + 0.30 * (1.0 / (mincl + 0.25))
                                 - 0.45 * c.vx + 0.22 * std::fabs(c.vy) + 0.08 * std::fabs(c.wz)
                                 + (stall ? 0.45 : 0.0);
             if (cost < best_cost) { best_cost = cost; best = c; }
           }
           }
+          if (getenv("NAVSIM_DV") && base_z > 1.6 && t > 21.0 && step % 25 == 0)
+            fprintf(stderr, "[dv] t=%.1f (%.2f,%.2f,%.2f) yaw=%.2f any=%d cost=%.2f tgt=(%.2f,%.2f) dgoal=%.2f\n",
+                    t, x, y, base_z, yaw, any ? 1 : 0, best_cost, tx, ty, dgoal);
           if (any) {
             vx = best.vx; vy = best.vy; wz = best.wz;
             // A swerve is one episode away from the route, not one control
@@ -1371,9 +1407,12 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 int main() {
   std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
                                      stairTwoFloor()
-                                     // fourFloor(): built and plan-clean, but it will
-                                     // not enter the second return flight. Held out of
-                                     // the report rather than shipping a red card.
+                                     // fourFloor(): geometry, mesh and planning all
+                                     // check out, but A* routes the descent back DOWN
+                                     // the up-run instead of turning into the return
+                                     // flight, so the body never leaves storey one.
+                                     // Held out of the report rather than shipping a
+                                     // red card.
                                      };
   std::ostringstream o;
   o << "{";
