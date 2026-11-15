@@ -146,9 +146,14 @@
   }
 
   function eventsText(sc, t){
-    const evs = (sc.events || []).filter(e => parseFloat(e[0]) <= t + 1e-6);
+    // The data carries events as "6.30 s  text". Treating them as [t, text]
+    // pairs produced "<full sentence> undefined" on every card.
+    const evs = (sc.events || []).filter(e => parseFloat(e) <= t + 1e-6);
     if (!evs.length) return '<span>暂无事件</span>';
-    const last = evs.slice(-4).map(e => '<i>' + e[0] + '</i> ' + e[1]);
+    const last = evs.slice(-4).map(e => {
+      const m = /^([0-9.]+) s\s+(.*)$/.exec(e);
+      return m ? '<i>' + m[1] + ' s</i> ' + m[2] : String(e);
+    });
     return last.join(' · ');
   }
 
@@ -288,7 +293,9 @@
     ctx.beginPath(); ctx.arc(mp.sx(sc.goal[0]), mp.sy(sc.goal[1]), 4.5, 0, Math.PI * 2); ctx.fill();
     ctx.fillStyle = '#8fa3bd'; ctx.font = '11px system-ui';
     ctx.fillText('起点', mp.sx(sc.start[0]) + 7, mp.sy(sc.start[1]) + 4);
-    ctx.fillText('终点', mp.sx(sc.goal[0]) + 7, mp.sy(sc.goal[1]) + 4);
+    const gz = (sc.goal_z === undefined ? 0 : sc.goal_z);
+    ctx.fillText('终点 z' + Number(gz).toFixed(2) + ' m',
+                 mp.sx(sc.goal[0]) + 7, mp.sy(sc.goal[1]) + 4);
     ctx.fillText((w[2] - w[0]) + ' × ' + (w[3] - w[1]) + ' m', 10, cv.h - 10);
   }
 
@@ -502,15 +509,18 @@
     poly(sc.trace.slice(0, last + 1), 'rgba(61,220,132,0.95)', 2.2, null);
 
     // start / goal / body
-    const sdot = (x, y, c, r) => {
-      const q = project(x, y, 0.02);
+    // Pass the real height. Pinning both markers at z 0.02 put a second-floor
+    // goal on the ground floor in every multi-storey scene - the map was right
+    // and the drawing was wrong.
+    const sdot = (x, y, z, c, r) => {
+      const q = project(x, y, z);
       if (!q) return;
       const s = toS(q);
       ctx.fillStyle = c;
       ctx.beginPath(); ctx.arc(s[0], s[1], r, 0, Math.PI * 2); ctx.fill();
     };
-    sdot(sc.start[0], sc.start[1], '#3ddc84', 4.2);
-    sdot(sc.goal[0], sc.goal[1], '#f2b24a', 4.2);
+    sdot(sc.start[0], sc.start[1], sc.start_z || 0, '#3ddc84', 4.2);
+    sdot(sc.goal[0], sc.goal[1], sc.goal_z || 0, '#f2b24a', 4.2);
     if (last >= 0){
       const p = sc.trace[last];
       const yaw = p[3], c = Math.cos(yaw), s = Math.sin(yaw);
