@@ -373,6 +373,7 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | **Reproduce a scenario in simulation** (Real2Sim) | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
 | **Run a mission across floors** — lift, stairs or ramp (ROS 1, Go2) | [Multi-floor overview](docs/multifloor/README.zh-CN.md) · [Design](docs/multifloor/design.zh-CN.md) |
 | **Watch the 3D planner offline** — seven scenes, HTML replay | [3D planner and stairs](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [Open the replay](docs/multifloor/sim/planner_sim.html) |
+| **Watch the closed-loop nav sim** — point cloud → replanning → local avoidance → true-footprint collision | [Chapter 11](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [Open the replay](docs/multifloor/sim/nav_sim.html) |
 | **Deploy with Docker** (Jetson, ROS1) | [docker/docker-compose.yml](docker/docker-compose.yml) |
 
 > **Chinese docs:** every guide in this repository has a `*.zh-CN.md` sibling (usage guides,

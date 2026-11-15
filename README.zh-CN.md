@@ -364,6 +364,7 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | **在仿真中复现场景**（Real2Sim） | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
 | **跨楼层跑任务** —— 电梯、楼梯或坡道（ROS 1，Go2） | [跨层总览](docs/multifloor/README.zh-CN.md) · [设计方案](docs/multifloor/design.zh-CN.md) |
 | **离线看 3D 规划器怎么走** —— 七个场景、HTML 回放 | [3D 规划器与楼梯](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [打开回放页面](docs/multifloor/sim/planner_sim.html) |
+| **看闭环导航仿真** —— 点云建图 → 实时重规划 → 局部避障 → 真值包络碰撞 | [第 11 章](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [打开回放页面](docs/multifloor/sim/nav_sim.html) |
 | **用 Docker 部署**（Jetson，ROS1） | [docker/docker-compose.yml](docker/docker-compose.yml) |
 
 > **中英文档：** 本仓所有指南都提供 `*.zh-CN.md` 中文版与英文版同目录并排（使用指南、调参指南、
