@@ -140,6 +140,12 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
         if (ny < 0 || ny >= grid.ny()) continue;
         for (int dx = -1; dx <= 1; ++dx) {
           if (dx == 0 && dy == 0 && dz == 0) continue;
+          // A pure vertical step - same cell column, z only - is never a way
+          // up in a building. It only appears when a sparse vertical surface
+          // (the last riser's end face, a wall) leaves an occupied cell every
+          // other layer, and then the planner happily climbs the wall. Height
+          // changes must come with horizontal travel.
+          if (dz != 0 && dx == 0 && dy == 0) continue;
           const int nx = cx + dx;
           if (nx < 0 || nx >= grid.nx()) continue;
           if (!params.allow_diagonal && std::abs(dx) + std::abs(dy) > 1) continue;

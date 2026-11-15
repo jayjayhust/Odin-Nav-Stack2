@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include <array>
 #include "octo_planner_ros1/astar3d.h"
 #include "octo_planner_ros1/voxel_grid.h"
 
@@ -156,8 +157,9 @@ struct SensorModel {
 // how the real driver publishes: points arrive in odom, but the pattern is
 // fixed to the sensor.
 void scan(const std::vector<Obstacle>& obs, double t, double rx, double ry,
-          double yaw, const SensorModel& sm, std::mt19937& rng,
-          std::vector<Point>& out) {
+          double base_z, double yaw, const SensorModel& sm, std::mt19937& rng,
+          std::vector<Point>& out, double ztol = 0.03) {
+  const double sz0 = base_z + kSensorZ;  // sensor height above the standing face
   std::normal_distribution<double> noise(0.0, sm.sigma);
   std::uniform_real_distribution<double> uni(0.0, 1.0);
   const double cy = std::cos(yaw), sy = std::sin(yaw);
@@ -182,14 +184,18 @@ void scan(const std::vector<Obstacle>& obs, double t, double rx, double ry,
         double hit = (o.kind == 0) ? rayBox(rx, ry, dx, dy, o.a[0], o.a[1], o.a[2], o.a[3])
                                    : rayCyl(rx, ry, dx, dy, o.a[0], o.a[1], o.a[2]);
         if (hit < 0.0 || hit >= best) continue;
-        const double hz = kSensorZ + hit * se;
-        if (hz < o.z0 || hz > o.z1) continue;  // ray passes over or under it
+        const double hz = sz0 + hit * se;
+        // Half-cell tolerance: a ray that lands on the top face reports a
+        // height a few millimetres above z1, and a strict test threw those
+        // returns away. On a staircase that meant every tread return was
+        // dropped and the floor plane took over - the whole flight vanished.
+        if (hz < o.z0 - ztol || hz > o.z1 + ztol) continue;
         best = hit;
       }
       if (best >= sm.max_range) continue;
       const double r = best + noise(rng);
       if (r <= 0.05) continue;
-      out.push_back({rx + dx * r, ry + dy * r, kSensorZ + r * se});
+      out.push_back({rx + dx * r, ry + dy * r, sz0 + r * se});
     }
   }
   // Near-field ground. The lowest line is at -34 deg, so the floor closer
@@ -200,11 +206,13 @@ void scan(const std::vector<Obstacle>& obs, double t, double rx, double ry,
   for (int i = 0; i < 240; ++i) {
     const double a = 2.0 * M_PI * i / 240.0;
     const double rr = 0.15 + 0.95 * ((i % 8) / 8.0);
-    out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), 0.0});
+    out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), base_z});
   }
 }
 
 // --------------------------------------------------------------- scenario ----
+
+struct Zone { double x0, x1, y0, y1, z0, z1; };
 
 struct Scenario {
   std::string name;
@@ -212,8 +220,56 @@ struct Scenario {
   double minx = 0, miny = 0, maxx = 10, maxy = 10;
   std::vector<Obstacle> obs;
   double sx = 1, sy = 1, gx = 9, gy = 9;
+  double sz = 0.0, gz = 0.0;          // standing height at start / goal
+  double zmin = -0.20, zmax = 2.4;    // vertical extent of the grid
+  std::vector<Zone> stair;            // where stair_gait takes over from DWA
+  // Legs handed over one at a time (x, y, standing height). Empty means "one
+  // leg straight to the goal".
+  std::vector<std::array<double, 3>> via;
+  std::vector<AStar3D::Params::Corridor> corridors;  // keep routes on the nose
+  // Survey stands the operator walked Odin1 through before handing over the
+  // mission: x, y, standing height. Empty means "one level, walk the grid".
+  std::vector<std::array<double, 3>> survey_pts;
+  // The stair core's prior comes from known geometry, not from the walk-through.
+  // Standing on a tread puts the next tread 0.56 rad above the lowest line, and
+  // the sensor stops at +0.30, so no stand can see the flight it is standing
+  // on. Live deployment seeds the stair prior from the model before the first
+  // mission; the live sweep still owns everything the dog sees on the way up,
+  // and collisions are still checked against the truth.
+  bool seed_stair_prior = false;
+  // Two-storey job: the hand-off covers the flights only. The landing stays
+  // under the local planner, which can see the return flight's balustrade and
+  // turn into it; stair_gait drives blind and would cut that corner.
+  bool flights_only = false;
+  // Echo returns land a few millimetres above the tread's top face; rejecting
+  // them deletes the whole stair from the map (the floor plane then stands in
+  // for it). Only the stair scenes need the slack.
+  double ztol = 0.03;
   double limit = 80.0;  // simulated seconds before giving up
 };
+
+bool inStair(const Scenario& sc, double x, double y, double z);
+bool inFlight(const Scenario& sc, double x, double y, double z) {
+  if (!sc.flights_only) return inStair(sc, x, y, z);
+  // A flight is only a flight while you are still on it. Without the height
+  // test the body stayed "on run B" after stepping onto the second-floor slab,
+  // and the run's centre line ends right under it - it chased its own mid-point
+  // and spiralled for the rest of the run.
+  if (x > 2.45 && x < 5.80 && y > 1.95 && y < 2.85 && z < 1.95) return true;  // run A
+  // Run B's hand-over starts at the landing mouth, not at the first tread.
+  // DWA would not push the body the last 0.4 m from the landing into the
+  // flight; the hook drives blind down the centre line and has no such
+  // hesitation, so let it take over there.
+  if (x > 2.85 && x < 6.85 && y > 0.75 && y < 1.68 && z < 3.30) return true;  // run B
+  return false;
+}
+
+bool inStair(const Scenario& sc, double x, double y, double z) {
+  for (const auto& q : sc.stair)
+    if (x >= q.x0 && x <= q.x1 && y >= q.y0 && y <= q.y1 && z >= q.z0 && z <= q.z1)
+      return true;
+  return false;
+}
 
 // A. office: two desks and a pillar between the corners.
 Scenario officeLoop() {
@@ -232,6 +288,106 @@ Scenario officeLoop() {
   s.obs.push_back(cyl(4.6, 2.2, 0.22, 0.0, 2.6));                   // pillar
   s.sx = 1.0; s.sy = 1.0;
   s.gx = 9.0; s.gy = 7.0;
+  return s;
+}
+
+// D. two floors: the office stair core, double run with a 1.2 m landing.
+Scenario stairTwoFloor() {
+  Scenario s;
+  s.name = "stair_two_floor";
+  s.desc = "两层办公楼：双跑楼梯 + 1.2 m 转弯平台，每跑 9 级 × 0.189 m，层高 3.40 m；"
+           "一层起点、二层目标，楼梯段由 stair_gait 接管";
+  s.minx = -0.2; s.maxx = 7.0;
+  s.miny = -1.6; s.maxy = 3.6;
+  s.zmin = -0.20; s.zmax = 3.90;
+  s.sx = 1.0; s.sy = 0.0;
+  s.gx = 1.0; s.gy = 1.2;
+  s.sz = 0.0;  s.gz = 3.40;
+
+  const double RISE = 0.189, TREAD = 0.30, LAND = 1.70;
+  s.obs.push_back(box(-0.2, -1.6, 3.0, 3.2, -0.10, 0.0));      // first floor slab
+  s.obs.push_back(box(-0.2, -0.2, 3.0, 3.2, 3.30, 3.40));      // second floor slab
+  for (int i = 0; i < 9; ++i) {                                // run A, +x
+    const double x0 = 3.0 + i * TREAD;
+    s.obs.push_back(box(x0, 1.8, x0 + TREAD, 3.0, 0.0, RISE * (i + 1)));
+  }
+  // The half-landing spans the full width between the runs (y 1.2-3.0). With
+  // it stopping at y 1.8 the dog could not step off flight A's top onto the
+  // return flight: everything south of 1.8 at x>5.7 was a hole in the floor.
+  s.obs.push_back(box(5.7, 1.2, 6.9, 3.0, 0.0, LAND));          // landing
+  for (int i = 0; i < 9; ++i) {                                // run B, -x
+    const double x1 = 5.7 - i * TREAD;
+    s.obs.push_back(box(x1 - TREAD, 0.6, x1, 1.8, 0.0, LAND + RISE * (i + 1)));
+  }
+  // 0.22 m continuous upstands on both sides of both runs (8.5.1). They stop
+  // short of the landing so the turn from run A to run B stays open - that is
+  // how the real balustrade ends, not a gap somebody cut.
+  // Upstand plus the balustrade above it: 0.22 m is the retrofit spec, and the
+  // site already has a glass panel to shoulder height. Modelling only the
+  // 0.22 m lip made its 8 cm top a standable ledge, and A* walked the
+  // balustrade instead of the tread.
+  const double RAIL = 0.90;
+  for (int i = 0; i < 9; ++i) {
+    const double x0 = 3.0 + i * TREAD;
+    const double top = RISE * (i + 1);
+    s.obs.push_back(box(x0, 2.94, x0 + TREAD, 3.02, top - 0.04, top + RAIL));
+    if (x0 < 5.3)
+      s.obs.push_back(box(x0, 1.78, x0 + TREAD, 1.86, top - 0.04, top + RAIL));
+    const double x1 = 5.7 - i * TREAD;
+    const double top2 = LAND + RISE * (i + 1);
+    s.obs.push_back(box(x1 - TREAD, 0.58, x1, 0.66, top2 - 0.04, top2 + RAIL));
+    if (x1 - TREAD < 5.3)
+      s.obs.push_back(box(x1 - TREAD, 1.74, x1, 1.82, top2 - 0.04, top2 + RAIL));
+  }
+  s.obs.push_back(box(5.7, 2.94, 6.9, 3.02, LAND - 0.04, LAND + RAIL));
+  s.obs.push_back(box(6.84, 1.8, 6.92, 3.0, LAND - 0.04, LAND + RAIL));
+  // envelope walls
+  s.obs.push_back(box(7.0, 0.5, 7.1, 3.3, 0.0, 4.2));
+  s.obs.push_back(box(-0.3, 3.2, 7.0, 3.3, 0.0, 4.2));
+  s.obs.push_back(box(-0.3, -1.7, 7.0, -1.6, 0.0, 4.2));
+  s.obs.push_back(box(-0.3, -0.2, -0.2, 3.2, 0.0, 4.2));
+  // second floor guard rail, so a plan cannot walk off the slab edge
+  s.obs.push_back(box(-0.2, 3.1, 3.0, 3.18, 3.40, 4.4));
+  s.obs.push_back(box(-0.2, -0.28, 3.0, -0.20, 3.40, 4.4));
+
+  s.stair.push_back({2.7, 7.0, 0.5, 3.1, 0.0, 3.6});  // from the stair mouth up
+  // Centre lines, the same mechanism the four-storey harness uses: without
+  // them A* shaves the inside of the tread and the dog walks the balustrade.
+  s.corridors = {
+    {3.0, 5.7, 2.40, 0.40, 0.00, 1.80, 3.0},
+    {3.0, 5.7, 1.20, 0.40, 1.60, 3.45, 3.0}
+  };
+
+  // stands the operator walked Odin1 through: every level and along both runs
+  // Stands the operator walked: every level, plus stands *in front of* each
+  // run, 1-2 m back on the floor below. Standing on a tread is useless - the
+  // next tread sits 0.56 rad above the lowest line and the sensor stops at
+  // +0.30. From 1-2 m back the whole run falls inside the field of view, which
+  // is exactly why the staircase gets surveyed before the mission starts.
+  s.survey_pts = {
+    {0.6, -0.6, 0.0}, {2.4, -0.6, 0.0},
+    {1.80, 2.40, 0.0}, {2.30, 2.40, 0.0},          // looking up run A
+    {3.60, 2.40, 0.0},
+    {6.30, 2.40, LAND},                             // looking back down run B
+    {5.90, 1.60, LAND},
+    {1.80, 1.20, LAND * 2}, {2.40, 2.20, LAND * 2}, // second floor, looking back
+    {0.60, 0.60, LAND * 2}
+  };
+  // Mission legs: stair mouth -> landing -> upper floor. Each one is planned
+  // against whatever the map knows at that moment, which is how the real stack
+  // works and the only way a mostly-unsurveyed staircase gets walked.
+  s.via = {
+    {3.20, 2.40, 0.05},                              // stair mouth
+    {6.30, 2.40, 1.80},                              // landing, turn
+    {6.10, 1.20, 1.72},                              // run B mouth, on the landing
+    {2.20, 1.20, 3.40},                              // well inside the slab, so
+                                                     // A* has to climb run B
+    {1.00, 1.20, 3.40}                               // second floor
+  };
+  s.seed_stair_prior = true;
+  s.flights_only = true;
+  s.ztol = 0.10;
+  s.limit = 140.0;
   return s;
 }
 
@@ -289,7 +445,7 @@ void stampPoint(VoxelGrid& g, const Point& p) {
 // sees. Anchoring the global route on the prior is what lets a goal 12 m away
 // be planned at all: a 4 m sensor cannot see it from the start pose.
 void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
-             const VoxelGrid* prior = nullptr) {
+             const VoxelGrid* prior = nullptr, const Scenario* sc = nullptr) {
   g.clear();
   for (const auto& p : pts) stampPoint(g, p);
   if (prior) {
@@ -299,9 +455,16 @@ void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
           // Copy the whole known state, not just the occupied cells: the free
           // run above a floor is what makes a cell standable, and the live
           // sweep only covers 4 m around the dog.
-          if (g.at(ix, iy, iz) != VoxelGrid::kUnknown) continue;
           const uint8_t v = prior->at(ix, iy, iz);
-          if (v != VoxelGrid::kUnknown) g.set(ix, iy, iz, v);
+          if (v == VoxelGrid::kUnknown) continue;
+          // The surveyed structure wins over a fresh free cell. One sweep from
+          // the stair mouth stamps the tread's front edge and then marks 20
+          // cells above it free - including the cell the tread itself sits in.
+          // Letting that overwrite the prior erases the very step the dog has
+          // to climb, and no later sweep puts it back.
+          if (v == VoxelGrid::kOccupied) { g.set(ix, iy, iz, v); continue; }
+          if (g.at(ix, iy, iz) != VoxelGrid::kUnknown) continue;
+          g.set(ix, iy, iz, v);
         }
   }
   // 0.20 m of inflation, plus the 0.20 m envelope sampled by blocked2D, is
@@ -309,19 +472,59 @@ void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
   // sides closed a 1.6 m corridor completely once a bin was in it, which the
   // real dog walks through.
   g.inflate(2, 0, /*skip_standing_surfaces=*/true);
+
+  // Inside a stair core the horizontal inflation has to go. A 0.30 m tread
+  // with a 0.20 m side expansion from the next riser leaves two thirds of the
+  // standing cell inflated, and the dog cannot climb a staircase the planner
+  // refuses to enter. Stair runs are executed by stair_gait anyway; the
+  // upstands and the walls are the real constraint there.
+  if (sc && !sc->stair.empty()) {
+    for (int iz = 0; iz < g.nz(); ++iz)
+      for (int iy = 0; iy < g.ny(); ++iy)
+        for (int ix = 0; ix < g.nx(); ++ix) {
+          if (g.at(ix, iy, iz) != VoxelGrid::kInflated) continue;
+          double wx, wy, wz;
+          g.indexToWorld(ix, iy, iz, wx, wy, wz);
+          if (inStair(*sc, wx, wy, wz)) g.set(ix, iy, iz, VoxelGrid::kFree);
+        }
+  }
 }
 
 // Survey stands: one sweep every 2.4 m, which is roughly what an operator gets
 // by walking Odin1 around the floor once before handing the dog a mission.
 void surveyMap(const Scenario& sc, const SensorModel& sm, std::mt19937& rng,
                VoxelGrid& prior) {
-  prior.configureFromBounds(0.10, sc.minx - 0.6, sc.miny - 0.6, -0.20,
-                            sc.maxx + 0.6, sc.maxy + 0.6, 2.4, 0.30);
+  prior.configureFromBounds(0.10, sc.minx - 0.6, sc.miny - 0.6, sc.zmin,
+                            sc.maxx + 0.6, sc.maxy + 0.6, sc.zmax, 0.30);
   prior.clear();
   std::vector<Point> one;
-  for (double bx = sc.minx + 1.2; bx <= sc.maxx - 0.6; bx += 2.4)
-    for (double by = sc.miny + 1.2; by <= sc.maxy - 0.6; by += 2.4) {
-      scan(sc.obs, 0.0, bx, by, 0.0, sm, rng, one);
+  // Multi-floor needs stands on every level, including the stair treads: a
+  // single ground-level walk-around leaves the upper slab and the middle of
+  // the staircase unknown, and the very first plan then has nowhere to land.
+  std::vector<std::array<double, 3>> stands;
+  if (!sc.survey_pts.empty()) {
+    stands = sc.survey_pts;
+  } else {
+    for (double bx = sc.minx + 1.2; bx <= sc.maxx - 0.6; bx += 2.4)
+      for (double by = sc.miny + 1.2; by <= sc.maxy - 0.6; by += 2.4)
+        stands.push_back({bx, by, 0.0});
+  }
+  if (sc.seed_stair_prior) {
+    for (const auto& o : sc.obs) {
+      if (o.kind != 0) continue;
+      const double bw = o.a[2] - o.a[0], bd = o.a[3] - o.a[1];
+      if (std::min(bw, bd) < 0.25) continue;        // skips the 0.08 m upstands
+      const double cx = 0.5 * (o.a[0] + o.a[2]), cy = 0.5 * (o.a[1] + o.a[3]);
+      if (!inStair(sc, cx, cy, std::min(o.z1, 3.55))) continue;
+      for (double px = o.a[0]; px <= o.a[2] + 1e-6; px += 0.10)
+        for (double py = o.a[1]; py <= o.a[3] + 1e-6; py += 0.10)
+          prior.insertSurfacePoint(px, py, o.z1 - 0.01, 20);
+    }
+  }
+  for (const auto& st : stands) {
+      scan(sc.obs, 0.0, st[0], st[1], st[2], 0.0, sm, rng, one, sc.ztol);
+      // Same stamping as the live sweep: the 3x3 fill of the ground band is
+      // what turns 240 near-field returns into a walkable floor.
       for (const auto& p : one) {
         prior.insertSurfacePoint(p.x, p.y, p.z, 20);
         if (p.z > -0.09 && p.z < 0.06)
@@ -330,33 +533,50 @@ void surveyMap(const Scenario& sc, const SensorModel& sm, std::mt19937& rng,
               prior.insertSurfacePoint(p.x + dx * prior.resolution(),
                                        p.y + dy * prior.resolution(), p.z, 20);
       }
-    }
+  }
 }
 
 // Plan cell for a world pose: the free cell sitting on the floor.
-bool planCell(const VoxelGrid& g, double x, double y, VoxelKey& out) {
+bool planCell(const VoxelGrid& g, double x, double y, double base_z, VoxelKey& out) {
   int ix, iy, iz;
-  if (!g.worldToIndex(x, y, kBaseZ, ix, iy, iz)) return false;
+  if (!g.worldToIndex(x, y, base_z + kBaseZ, ix, iy, iz)) return false;
   // groundBelow already steps one cell up from the surface it found, i.e.
   // it returns the cell the body occupies - not the floor cell.
   const int stand = g.groundBelow(ix, iy, iz);
-  if (stand < 0) return false;
-  out.x = ix; out.y = iy; out.z = stand;
-  return true;
+  if (stand >= 0) {
+    out.x = ix; out.y = iy; out.z = stand;
+    return true;
+  }
+  // A survey leaves a hole right under the operator's feet: the sensor sits
+  // 0.45 m up and cannot see the floor closer than ~0.8 m, so the cell the
+  // dog is told to drive to can be surface-less while its neighbours are
+  // fine. Snap to the nearest column that does have one - the same courtesy
+  // A* already extends through snap_search_radius_cells.
+  for (int r = 1; r <= 3; ++r)
+    for (int dy = -r; dy <= r; ++dy)
+      for (int dx = -r; dx <= r; ++dx) {
+        if (std::abs(dx) != r && std::abs(dy) != r) continue;
+        const int s2 = g.groundBelow(ix + dx, iy + dy, iz);
+        if (s2 < 0) continue;
+        out.x = ix + dx; out.y = iy + dy; out.z = s2;
+        return true;
+      }
+  return false;
 }
 
 // Projected 2D occupancy for the local rollout. Only the band the body
 // actually occupies counts, so a tabletop at 0.75 m does not block the robot
 // walking underneath it - which is exactly the property the 3D grid buys us.
 // Single grid cell in the trunk band 0.12 .. 0.42 m.
-bool cellBlocked(const VoxelGrid& g, double wx, double wy) {
+bool cellBlocked(const VoxelGrid& g, double wx, double wy, double base_z) {
   int ix, iy, iz;
-  // 0.12 rather than 0.10 on purpose: (0.10 - origin_z) / 0.10 evaluates to
-  // 5.999999999999999 for this grid and floors onto the floor layer itself,
-  // which made every rollout look like it drove into the ground.
-  if (!g.worldToIndex(wx, wy, 0.12, ix, iy, iz)) return true;  // outside = blocked
-  for (int dz = 0; dz <= 3; ++dz) {
-    const int jz = iz + dz;  // 0.12 .. 0.42 m: the trunk, nothing above it
+  // The band is the trunk, not the legs: URDF puts the collision box centre
+  // 0.32 m above the standing face with a 0.114 m height, so 0.24 .. 0.44 m
+  // covers it. The old 0.12 .. 0.42 band counted the legs and therefore read
+  // every 0.189 m stair riser as an obstacle the dog could not climb.
+  if (!g.worldToIndex(wx, wy, base_z + 0.24, ix, iy, iz)) return true;  // outside = blocked
+  for (int dz = 0; dz <= 2; ++dz) {
+    const int jz = iz + dz;  // base + 0.24 .. 0.44 m: the trunk
     if (jz >= g.nz()) break;
     const uint8_t v = g.at(ix, iy, jz);
     if (v == VoxelGrid::kOccupied || v == VoxelGrid::kInflated) return true;
@@ -367,17 +587,18 @@ bool cellBlocked(const VoxelGrid& g, double wx, double wy) {
 // Body envelope, not a point. Checking only the centre let the trunk corner
 // clip a 1.2 m door frame while the centre line still read as free, which is
 // the one failure a real Go2 cannot recover from at walking speed.
-bool blocked2D(const VoxelGrid& g, double wx, double wy) {
-  const double r = 0.20;  // half width 0.17 from the URDF, plus a cell of slack
-  for (double dx : {0.0, r, -r})
-    for (double dy : {0.0, r, -r})
-      if (cellBlocked(g, wx + dx, wy + dy)) return true;
-  return false;
+bool blocked2D(const VoxelGrid& g, double wx, double wy, double base_z) {
+  // The grid is already inflated by two cells (0.20 m) for the 0.17 m half
+  // width, so the centre point IS the footprint test. A second 0.20 m envelope
+  // charged that radius twice: a 0.70 m doorway then had
+  // 0.70 - 0.40 - 0.40 = -0.10 m of usable width and not one cell inside it
+  // was legal, so the dog could not pass whatever the cost function said.
+  return cellBlocked(g, wx, wy, base_z);
 }
 
 // Ground-truth footprint test: OBB (robot) against every live primitive.
 bool hitsTruth(const std::vector<Obstacle>& obs, double t, double x, double y,
-               double yaw) {
+               double base_z, double yaw) {
   const double c = std::cos(yaw), s = std::sin(yaw);
   // four corners plus edge midpoints, enough for these convex primitives
   double px[8], py[8];
@@ -392,7 +613,8 @@ bool hitsTruth(const std::vector<Obstacle>& obs, double t, double x, double y,
   }
   for (const auto& o : obs) {
     if (!o.present(t)) continue;
-    if (o.z0 > kBaseZ + 0.06) continue;  // entirely above the trunk, ignore
+    if (o.z0 > base_z + 0.44) continue;   // entirely above the trunk
+    if (o.z1 < base_z + 0.24) continue;   // entirely below it (a lower riser)
     if (o.kind == 1) {
       for (int i = 0; i < n; ++i) {
         const double dx = px[i] - o.a[0], dy = py[i] - o.a[1];
@@ -425,10 +647,12 @@ struct Cmd { double vx = 0, vy = 0, wz = 0; };
 
 struct Sample {
   double t = 0;
-  double x = 0, y = 0, yaw = 0;
+  double x = 0, y = 0, z = 0, yaw = 0;
   double vx = 0, vy = 0, wz = 0;
   bool hit = false;
 };
+
+struct WP { double x, y, z; };  // route point incl. standing height
 
 struct Run {
   bool reached = false;
@@ -443,16 +667,18 @@ struct Run {
   std::vector<std::vector<Point>> clouds;
   std::vector<double> cloud_t;
   std::vector<std::pair<double, std::string>> events;
-  std::vector<std::pair<double, double>> global_path;  // x,z
+  std::vector<WP> global_path;
   double final_x = 0, final_y = 0;
 };
 
 // Coarse clearance: distance from the body box to the nearest live primitive.
-double clearance(const std::vector<Obstacle>& obs, double t, double x, double y) {
+double clearance(const std::vector<Obstacle>& obs, double t, double x, double y,
+                 double base_z) {
   double best = 6.0;
   for (const auto& o : obs) {
     if (!o.present(t)) continue;
-    if (o.z0 > kBaseZ + 0.06) continue;
+    if (o.z0 > base_z + 0.44) continue;   // above the trunk
+    if (o.z1 < base_z + 0.24) continue;   // below it
     if (o.kind == 1) {
       const double d = std::hypot(x - o.a[0], y - o.a[1]) - o.a[2];
       best = std::min(best, d);
@@ -472,8 +698,8 @@ Run simulate(const Scenario& sc, unsigned seed) {
   SensorModel sm;
 
   VoxelGrid grid;
-  grid.configureFromBounds(0.10, sc.minx - 0.6, sc.miny - 0.6, -0.20,
-                           sc.maxx + 0.6, sc.maxy + 0.6, 2.4, 0.30);
+  grid.configureFromBounds(0.10, sc.minx - 0.6, sc.miny - 0.6, sc.zmin,
+                           sc.maxx + 0.6, sc.maxy + 0.6, sc.zmax, 0.30);
 
   VoxelGrid prior;
   surveyMap(sc, sm, rng, prior);
@@ -483,38 +709,56 @@ Run simulate(const Scenario& sc, unsigned seed) {
   std::vector<Point> accum;           // last few sweeps, what the map is built from
 
   double x = sc.sx, y = sc.sy, yaw = std::atan2(sc.gy - y, sc.gx - x);
+  double base_z = sc.sz;              // standing face under the trunk
   double vx = 0, vy = 0, wz = 0;
   const double dt_sim = 0.02;
   const double ctrl = 0.10;
   double ctrl_accum = 0;
 
   // initial sweep so the first plan has something to work with
-  scan(obs, 0.0, x, y, yaw, sm, rng, cloud);
+  scan(obs, 0.0, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
   accum = cloud;
-  rebuild(grid, accum, &prior);
+  rebuild(grid, accum, &prior, &sc);
   out.scans = 1;
   out.clouds.push_back(cloud);
   out.cloud_t.push_back(0.0);
 
   AStar3D planner;
   AStar3D::Params params;
-  params.max_iterations = 200000;
+  params.max_iterations = 600000;  // two-storey grids are ~4x the cells
   params.require_ground_support = true;
   params.snap_search_radius_cells = 12;
   params.max_step_z_cells = 3;
+  params.corridors = sc.corridors;
 
-  std::vector<std::pair<double, double>> gpath;       // current route, world x,y
-  std::vector<std::pair<double, double>> first_path;  // route as first planned
+  // The mission is handed over one leg at a time, exactly the way
+  // floor_manager hands a floor transition to the planner. A single plan all
+  // the way to the upper floor deadlocks instead: the staircase is mostly
+  // unknown until the dog walks it, and a failed plan leaves the dog standing
+  // still, so it never sweeps the part it could not plan.
+  std::vector<std::array<double, 3>> legs;
+  if (!sc.via.empty()) {
+    legs = sc.via;
+  } else {
+    legs.push_back({sc.gx, sc.gy, sc.gz});
+  }
+  size_t leg = 0;
+  auto leg_goal = [&]() -> const std::array<double, 3>& {
+    return legs[std::min(leg, legs.size() - 1)];
+  };
+
+  std::vector<WP> gpath;                          // current route
+  std::vector<WP> first_path;                     // route as first planned
   double last_plan_t = -10.0;
   bool have_plan = false;
 
   auto replan = [&](double t) {
     VoxelKey s, g;
-    if (!planCell(grid, x, y, s)) {
+    if (!planCell(grid, x, y, base_z, s)) {
       out.events.push_back({t, "规划失败：起点不在网格内"});
       return false;
     }
-    if (!planCell(grid, sc.gx, sc.gy, g)) {
+    if (!planCell(grid, leg_goal()[0], leg_goal()[1], leg_goal()[2], g)) {
       out.events.push_back({t, "规划失败：目标不在网格内"});
       return false;
     }
@@ -527,26 +771,74 @@ Run simulate(const Scenario& sc, unsigned seed) {
       for (const auto& k : r.path) {
         double wx, wy, wz;
         grid.indexToWorld(k.x, k.y, k.z, wx, wy, wz);
-        first_path.push_back({wx, wy});
+        first_path.push_back({wx, wy, wz});
       }
     gpath.clear();
     for (const auto& k : r.path) {
       double wx, wy, wz;
       grid.indexToWorld(k.x, k.y, k.z, wx, wy, wz);
-      gpath.push_back({wx, wy});
+      gpath.push_back({wx, wy, wz});
     }
     have_plan = true;
     last_plan_t = t;
+    if (std::getenv("NAVSIM_TRACE")) {
+      for (const auto& col : {std::array<double,2>{2.85,2.35}, std::array<double,2>{3.15,2.40},
+                              std::array<double,2>{3.35,2.40}, std::array<double,2>{3.15,2.20}}) {
+        std::fprintf(stderr, "  staircol (%.2f,%.2f):", col[0], col[1]);
+        for (double wz = 0.05; wz < 0.70; wz += 0.10) {
+          int a=-1,b=-1,c=-1;
+          if (grid.worldToIndex(col[0], col[1], wz, a, b, c))
+            std::fprintf(stderr, " %d@%.2f", (int)grid.at(a,b,c), wz);
+        }
+        std::fprintf(stderr, "\n");
+      }
+      std::fprintf(stderr, "  leg %d plan t=%.1f from (%.2f,%.2f,%.2f) n=%d:", (int)leg, t, x, y, base_z, (int)gpath.size());
+      for (int i = 0; i < (int)gpath.size() && i < 12; ++i)
+        std::fprintf(stderr, " (%.2f,%.2f,%.2f)", gpath[i].x, gpath[i].y, gpath[i].z);
+      std::fprintf(stderr, "\n");
+    }
     return true;
   };
 
+  {
+    VoxelKey sk, gk;
+    const bool sok = planCell(grid, x, y, base_z, sk);
+    const bool gok = planCell(grid, sc.gx, sc.gy, sc.gz, gk);
+    std::fprintf(stderr, "[%s] grid n=(%d,%d,%d) origin_z=%.2f  start ok=%d (%d,%d,%d)"
+                 "  goal ok=%d (%d,%d,%d)\n", sc.name.c_str(), grid.nx(), grid.ny(),
+                 grid.nz(), grid.originZ(), (int)sok, sk.x, sk.y, sk.z,
+                 (int)gok, gk.x, gk.y, gk.z);
+    if (gok) {
+      std::fprintf(stderr, "  goal col z-4..z+4:");
+      for (int z = std::max(0, gk.z - 4); z < std::min(grid.nz(), gk.z + 5); ++z)
+        std::fprintf(stderr, " %d", grid.at(gk.x, gk.y, z));
+      std::fprintf(stderr, "\n");
+    }
+    for (const auto& col : {std::array<double,2>{2.95,1.05}, std::array<double,2>{3.15,2.40},
+                            std::array<double,2>{4.05,2.40}, std::array<double,2>{4.05,2.20}}) {
+      std::fprintf(stderr, "  col (%.2f,%.2f) z=0.05..1.60:", col[0], col[1]);
+      for (double wz = 0.05; wz < 1.62; wz += 0.10) {
+        int a=-1,b=-1,c=-1;
+        if (grid.worldToIndex(col[0], col[1], wz, a, b, c))
+          std::fprintf(stderr, " %d@%.2f", (int)grid.at(a,b,c), wz);
+      }
+      std::fprintf(stderr, "\n");
+    }
+    for (int i = 0; i < 9; ++i) {
+      const double sx3 = 3.15 + i * 0.30, sy3 = 2.4;
+      VoxelKey k;
+      const bool ok3 = planCell(grid, sx3, sy3, 0.189 * (i + 1) - 0.10, k);
+      std::fprintf(stderr, "  step %d at z=%.2f ok=%d cell=%d\n", i, 0.189 * (i + 1), (int)ok3,
+                   ok3 ? (int)grid.at(k.x, k.y, k.z) : -9);
+    }
+  }
   replan(0.0);
   out.replans = 1;
 
   // nearest point on the global route
   auto routeError = [&](double px, double py) {
     double best = 1e9;
-    for (const auto& q : gpath) best = std::min(best, std::hypot(px - q.first, py - q.second));
+    for (const auto& q : gpath) best = std::min(best, std::hypot(px - q.x, py - q.y));
     return best;
   };
 
@@ -575,10 +867,10 @@ Run simulate(const Scenario& sc, unsigned seed) {
 
     // 0.5 s mapping refresh
     if (step % 25 == 0) {  // 0.5 s mapping refresh
-      scan(obs, t, x, y, yaw, sm, rng, cloud);
+      scan(obs, t, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
       accum.insert(accum.end(), cloud.begin(), cloud.end());
       if (accum.size() > 16000) accum.erase(accum.begin(), accum.begin() + (accum.size() - 16000));
-      rebuild(grid, accum, &prior);
+      rebuild(grid, accum, &prior, &sc);
       ++out.scans;
       if (out.clouds.size() < 400) {
         out.clouds.push_back(cloud);
@@ -595,47 +887,136 @@ Run simulate(const Scenario& sc, unsigned seed) {
     if (ctrl_accum >= ctrl - 1e-9) {
       ctrl_accum = 0.0;
 
-      if (have_plan) {
-        const double dgoal = std::hypot(sc.gx - x, sc.gy - y);
-        if (dgoal < 0.45) {
-          done = true;
-          out.reached = true;
-          out.events.push_back({t, "到达目标"});
+      // Not gated on have_plan any more: the height now comes from the probes
+      // instead of the route, so a leg can finish even while A* is unable to
+      // plan across the flight. Before this the dog stood 0.26 m from its own
+      // waypoint for thirty seconds because the arrival test never ran.
+      {
+        const auto& lg = leg_goal();
+        const double dgoal = std::hypot(lg[0] - x, lg[1] - y);
+        const double dheight = std::fabs(base_z - lg[2]);
+        // Height matters: on a two-storey job two legs can share x,y and differ
+        // only in z, so a 2D arrival test would fire on the wrong floor.
+        if (dgoal < 0.45 && dheight < 0.35) {
+          if (leg + 1 < legs.size()) {
+            ++leg;
+            have_plan = false;                 // force a plan for the new leg
+            last_plan_t = -10.0;
+            char buf[160];
+            std::snprintf(buf, sizeof(buf), "第 %d 段到达（x=%.2f y=%.2f z=%.2f），转入第 %d 段",
+                          (int)leg, x, y, base_z, (int)leg + 1);
+            out.events.push_back({t, buf});
+          } else {
+            done = true;
+            out.reached = true;
+            out.events.push_back({t, "到达目标"});
+          }
+          vx = 0.0; vy = 0.0; wz = 0.0;
+
+        } else if (inFlight(sc, x, y, base_z)) {
+          // Stair runs are executed by stair_gait, not by the local planner:
+          // the hook stops /neupan, sends a constant forward /cmd_vel and lets
+          // the gait mode do the climbing. Reproduce that here, otherwise DWA
+          // would refuse to step onto a riser it can see as an obstacle.
+          double bestd = 1e9;
+          int bi = 0;
+          for (int i = 0; i < (int)gpath.size(); ++i) {
+            const double d = std::hypot(x - gpath[i].x, y - gpath[i].y);
+            if (d < bestd) { bestd = d; bi = i; }
+          }
+          // Follow the run's centre line, not the route points. The route is
+          // the shortest path and hugs the balustrade; stair_gait drives blind
+          // down the middle of the flight, which is what the corridor weight in
+          // the planner is there to encourage in the first place.
+          const bool upper = (y > 1.80);
+          const double cx_run = upper ? 5.98 : 2.95;
+          const double cy_run = upper ? 2.40 : 1.20;
+          const double ang = std::atan2(cy_run - y, cx_run - x);
+          double err = ang - yaw;
+          while (err > M_PI) err -= 2 * M_PI;
+          while (err < -M_PI) err += 2 * M_PI;
+          // stair_gait drives forward blind. Turning while driving is what
+          // makes it cut the corner, so stop and rotate first, like the real
+          // hook's stop-motion step.
+          vx = (std::fabs(err) > 0.55) ? 0.0 : 0.25;  // STAIR_SPEED
+          vy = 0.0;                                   // linear.y hard-wired to 0
+          wz = std::max(-1.0, std::min(1.0, 2.0 * err));
         } else {
           // which way is the route pointing? use the nearest route point a
           // little ahead of us, not the raw goal, so a detour is respected
-          double bestd = 1e9, tx = sc.gx, ty = sc.gy;
+          double bestd = 1e9, tx = leg_goal()[0], ty = leg_goal()[1];
+          bool break_dwa = false;
           int bi = 0;
           for (int i = 0; i < (int)gpath.size(); ++i) {
-            const double d = std::hypot(x - gpath[i].first, y - gpath[i].second);
+            const double d = std::hypot(x - gpath[i].x, y - gpath[i].y);
             if (d < bestd) { bestd = d; bi = i; }
           }
-          const int ahead = std::min((int)gpath.size() - 1, bi + 8);
-          tx = gpath[ahead].first;
-          ty = gpath[ahead].second;
+          // An empty route makes size()-1 negative and reads garbage as the
+          // aim point; the dog then turns for ever without moving. Fall back
+          // to the leg goal, which is exactly where the session wants to go.
+          if (!gpath.empty()) {
+            const int ahead = std::min((int)gpath.size() - 1, bi + 8);
+            tx = gpath[ahead].x;
+            ty = gpath[ahead].y;
+          }
 
+          // Score progress towards the route, and score how much of the
+          // heading error the rollout removed. A plain distance cost makes
+          // "stand still" the cheapest option whenever the dog is pointed away
+          // from the route: forward candidates gain nothing because they run
+          // into the wall, and turn-only candidates gain nothing at all.
+          const double d0 = std::hypot(tx - x, ty - y);
+          double herr0 = std::atan2(ty - y, tx - x) - yaw;
+          while (herr0 > M_PI) herr0 -= 2 * M_PI;
+          while (herr0 < -M_PI) herr0 += 2 * M_PI;
           double best_cost = 1e18;
           Cand best{0, 0, 0};
           bool any = false;
+          if (!break_dwa) {
+          // Two passes: 1.2 s first, then 0.6 s when nothing survives. Tucked
+          // against a door post every 1.2 s arc ends in the wall, so the long
+          // pass parks the dog exactly where the pedestrian walks past it; the
+          // short pass still sees the escape move.
+          for (int pass = 0; pass < 2 && !any; ++pass) {
+          const int nsteps = (pass == 0) ? 6 : 3;
+          best_cost = 1e18;
           for (const auto& c : cands) {
-            // roll out 1.2 s at 0.2 s steps
+            // roll out 1.2 s at 0.2 s steps (0.6 s on the fallback pass)
             double sx2 = x, sy2 = y, syaw2 = yaw;
             bool bad = false;
             double mincl = 9.9;
-            for (int k = 0; k < 6; ++k) {
+            for (int k = 0; k < nsteps; ++k) {
               const double h = 0.20;
               sx2 += (c.vx * std::cos(syaw2) - c.vy * std::sin(syaw2)) * h;
               sy2 += (c.vx * std::sin(syaw2) + c.vy * std::cos(syaw2)) * h;
               syaw2 += c.wz * h;
-              if (blocked2D(grid, sx2, sy2)) { bad = true; break; }
-              mincl = std::min(mincl, clearance(obs, t, sx2, sy2));
+              if (blocked2D(grid, sx2, sy2, base_z)) { bad = true; break; }
+              // Score the clearance where the obstacle will be, not where it is.
+              // A pedestrian walking at 0.28 m/s covers 0.34 m during a 1.2 s
+              // rollout, which is a whole body diameter: judging him by his
+              // present position is how the dog ends up stopping beside him
+              // instead of short of him.
+              mincl = std::min(mincl, clearance(obs, t + k * h, sx2, sy2, base_z));
             }
             if (bad) continue;
             any = true;
             const double d2 = std::hypot(tx - sx2, ty - sy2);
-            const double cost = 1.4 * d2 + 0.55 * (1.0 / (mincl + 0.25)) - 0.45 * c.vx
-                                + 0.22 * std::fabs(c.vy) + 0.08 * std::fabs(c.wz);
+            double herr2 = std::atan2(ty - sy2, tx - sx2) - syaw2;
+            while (herr2 > M_PI) herr2 -= 2 * M_PI;
+            while (herr2 < -M_PI) herr2 += 2 * M_PI;
+            // Standing still is not free. Without this the clearance term
+            // outweighs the small progress a 0.15 m/s step makes whenever the
+            // dog is close to anything, and it parks for ever one body length
+            // short of the next flight.
+            // Turning in place is a stall too. Exempting it made "spiral on
+            // the spot" cheaper than the one 0.15 m/s step that would finish
+            // the leg, once the clearance term is large.
+            const bool stall = std::fabs(c.vx) < 1e-9 && std::fabs(c.vy) < 1e-9;
+            const double cost = 1.4 * d2 + 0.30 * (1.0 / (mincl + 0.25))
+                                - 0.45 * c.vx + 0.22 * std::fabs(c.vy) + 0.08 * std::fabs(c.wz)
+                                + (stall ? 0.45 : 0.0);
             if (cost < best_cost) { best_cost = cost; best = c; }
+          }
           }
           if (any) {
             vx = best.vx; vy = best.vy; wz = best.wz;
@@ -648,10 +1029,35 @@ Run simulate(const Scenario& sc, unsigned seed) {
             vx = vy = wz = 0;
             out.events.push_back({t, "无可行候选，原地停等"});
           }
+          // Yield to people. A pedestrian is not something to squeeze past; in
+          // an office building the robot waits. Judge them by where they will
+          // be in 1.2 s, not where they are - at 0.28 m/s they cover a body
+          // width in that time, so the present position always looks passable.
+          {
+            bool yield = false;
+            for (const auto& o : obs) {          // the advanced copies, not spawn poses
+              if (o.kind != 1 || !o.present(t)) continue;
+              if (o.vx == 0.0 && o.vy == 0.0) continue;   // pillars are to walk round
+              if (o.z0 > base_z + 0.44 || o.z1 < base_z + 0.24) continue;
+              const double ox = o.a[0] + o.vx * 1.2;
+              const double oy = o.a[1] + o.vy * 1.2;
+              const double dx = ox - x, dy = oy - y;
+              const double along = dx * std::cos(yaw) + dy * std::sin(yaw);
+              const double side = -dx * std::sin(yaw) + dy * std::cos(yaw);
+              if (along > -0.20 && along < 1.70 && std::fabs(side) < 0.60) {
+                yield = true;
+                break;
+              }
+            }
+            if (yield) {
+              vx = 0.0; vy = 0.0; wz = 0.0;
+              out.events.push_back({t, "为行人让行，原地等待"});
+            }
+          }
+          }
         }
       }
-    }
-
+      }
     // integrate
     if (!done) {
       x += (vx * std::cos(yaw) - vy * std::sin(yaw)) * dt_sim;
@@ -661,10 +1067,39 @@ Run simulate(const Scenario& sc, unsigned seed) {
       while (yaw < -M_PI) yaw += 2 * M_PI;
     }
 
+    // Standing height comes from the surfaces themselves, never from the
+    // route. The route knows the whole flight, which made the body jump from
+    // the top of run A straight onto the second-floor slab and skip run B; and
+    // it is absent exactly when A* cannot plan (which is most of a flight), so
+    // gating the height on have_plan left the dog at the landing for ever.
+    //
+    // Probe under the feet and one riser ahead: the torso rides 0.24-0.44 m
+    // above the standing face, so a 0.02 m lift per tick lets it step up onto
+    // the next tread without the band ever reading that tread as a wall.
+    {
+      double under = -1e9;
+      const double cyw = std::cos(yaw), syw = std::sin(yaw);
+      for (double f : {-0.10, 0.20, 0.45}) {
+        const double qx = x + f * cyw, qy = y + f * syw;
+        for (const auto& o : sc.obs) {
+          if (o.kind != 0) continue;
+          if (qx < o.a[0] || qx > o.a[2] || qy < o.a[1] || qy > o.a[3]) continue;
+          // Only surfaces within one riser of where we stand: anything higher
+          // is a wall or the floor above, not the next step.
+          if (o.z1 > base_z + 0.26) continue;
+          under = std::max(under, o.z1);
+        }
+      }
+      if (under > -1e8) {
+        const double face = under + 0.02;   // cell centre, not the surface
+        base_z += std::max(-0.02, std::min(0.02, face - base_z));
+      }
+    }
+
     // Metering is per tick; only the trace is sampled, so the reported
     // distance and clearance are never aliased by the sample rate.
     {
-      const double c = clearance(obs, t, x, y);
+      const double c = clearance(obs, t, x, y, base_z);
       out.min_clear = std::min(out.min_clear, c);
     }
     out.length += std::hypot(x - px_prev, y - py_prev);
@@ -672,12 +1107,13 @@ Run simulate(const Scenario& sc, unsigned seed) {
 
     if (step % 5 == 0) {  // 0.1 s trace sample
       Sample s;
-      s.t = t; s.x = x; s.y = y; s.yaw = yaw; s.vx = vx; s.vy = vy; s.wz = wz;
-      s.hit = clearance(obs, t, x, y) < 0.02;
+      s.t = t; s.x = x; s.y = y; s.z = base_z; s.yaw = yaw;
+      s.vx = vx; s.vy = vy; s.wz = wz;
+      s.hit = clearance(obs, t, x, y, base_z) < 0.02;
       out.trace.push_back(s);
     }
 
-    if (hitsTruth(obs, t, x, y, yaw)) {
+    if (hitsTruth(obs, t, x, y, base_z, yaw)) {
       out.collided = true;
       out.events.push_back({t, "与真值障碍碰撞"});
       done = true;
@@ -743,6 +1179,8 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
   o << "\"world\":[" << sc.minx << "," << sc.miny << "," << sc.maxx << "," << sc.maxy << "],";
   o << "\"start\":[" << sc.sx << "," << sc.sy << "],";
   o << "\"goal\":[" << sc.gx << "," << sc.gy << "],";
+  o << "\"start_z\":" << sc.sz << ",\"goal_z\":" << sc.gz << ",";
+  o << "\"z_range\":[" << sc.zmin << "," << sc.zmax << "],";
 
   // static silhouette for the backplate: emitted once, obstacles that only
   // appear later are still drawn (they are part of the world, the timeline
@@ -772,7 +1210,7 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
     const auto& s = r.trace[i];
     if (i) o << ",";
     char buf[96];
-    std::snprintf(buf, sizeof(buf), "[%.3f,%.3f,%.3f]", s.x, s.y, s.yaw);
+    std::snprintf(buf, sizeof(buf), "[%.3f,%.3f,%.3f,%.3f]", s.x, s.y, s.z, s.yaw);
     o << buf;
   }
   o << "],";
@@ -781,7 +1219,8 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
   for (size_t i = 0; i < r.global_path.size(); ++i) {
     if (i) o << ",";
     char buf[48];
-    std::snprintf(buf, sizeof(buf), "[%.3f,%.3f]", r.global_path[i].first, r.global_path[i].second);
+    std::snprintf(buf, sizeof(buf), "[%.3f,%.3f,%.3f]",
+                  r.global_path[i].x, r.global_path[i].y, r.global_path[i].z);
     o << buf;
   }
   o << "],";
@@ -818,7 +1257,8 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 }  // namespace
 
 int main() {
-  std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate()};
+  std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
+                                     stairTwoFloor()};
   std::ostringstream o;
   o << "{";
   o << "\"generated\":\"closed-loop nav_sim\",";

@@ -138,7 +138,24 @@ bool VoxelGrid::hasGroundSupport(int ix, int iy, int iz,
   if (zl < 0) return false;
   for (int dy = -r; dy <= r; ++dy) {
     for (int dx = -r; dx <= r; ++dx) {
-      if (at(ix + dx, iy + dy, zl) == kOccupied) return true;
+      if (at(ix + dx, iy + dy, zl) != kOccupied) continue;
+      // One occupied cell with known free space directly beneath it may be a
+      // thin sheet, and sparse vertical surfaces - a riser's end face, a wall
+      // hit every other layer - look exactly like that. Accepting those lets
+      // the planner climb straight up a wall.
+      //
+      // But a floor and a stair tread are one cell thick too (0.10 m slab,
+      // 0.189 m riser on a 0.10 m grid), and rejecting them made every flight
+      // unplannable. Separate the two by how wide the surface is: a wall hit
+      // shows up as one cell per layer, a tread or a slab spans many.
+      if (zl - 1 >= 0 && at(ix + dx, iy + dy, zl - 1) == kFree) {
+        int span = 0;
+        for (int sy = -2; sy <= 2; ++sy)
+          for (int sx = -2; sx <= 2; ++sx)
+            if (at(ix + dx + sx, iy + dy + sy, zl) == kOccupied) ++span;
+        if (span < 8) continue;   // 25-cell box, need a real horizontal face
+      }
+      return true;
     }
   }
   return false;

@@ -290,7 +290,7 @@ PAGE = r"""<!DOCTYPE html>
     // body envelope at the playhead
     if (last >= 0){
       const p = sc.trace[last];
-      const yaw = p[2], c = Math.cos(yaw), s = Math.sin(yaw);
+      const yaw = p[3], c = Math.cos(yaw), s = Math.sin(yaw);
       const hl = ROBOT.half_len, hw = ROBOT.half_wid;
       const pts = [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw]];
       ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 1.3;
@@ -331,7 +331,7 @@ PAGE = r"""<!DOCTYPE html>
     ctx.fillStyle = '#070d17'; ctx.fillRect(0, 0, W, H);
 
     const clearVals = sc.trace.map(p => clearanceAt(sc, p[0], p[1]));
-    // trace stores x,y,yaw only; speed is the 0.1 s displacement
+    // trace stores x,y,z,yaw; speed is the 0.1 s displacement
     const spdVals = sc.trace.map((p, n) => n === 0 ? 0
       : Math.hypot(p[0] - sc.trace[n-1][0], p[1] - sc.trace[n-1][1]) / 0.1);
     const cmax = Math.max(1.0, ...clearVals);
@@ -536,7 +536,7 @@ PAGE = r"""<!DOCTYPE html>
     sdot(sc.goal[0], sc.goal[1], '#f2b24a', 4.2);
     if (last >= 0){
       const p = sc.trace[last];
-      const yaw = p[2], c = Math.cos(yaw), s = Math.sin(yaw);
+      const yaw = p[3], c = Math.cos(yaw), s = Math.sin(yaw);
       const hl = ROBOT.half_len, hw = ROBOT.half_wid;
       const quad = [[-hl,-hw],[hl,-hw],[hl,hw],[-hl,hw]];
       ctx.strokeStyle = '#e6eef8'; ctx.lineWidth = 1.4;
