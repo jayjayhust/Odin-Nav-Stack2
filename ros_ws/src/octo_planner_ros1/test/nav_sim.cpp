@@ -206,7 +206,12 @@ void scan(const std::vector<Obstacle>& obs, double t, double rx, double ry,
   for (int i = 0; i < 240; ++i) {
     const double a = 2.0 * M_PI * i / 240.0;
     const double rr = 0.15 + 0.95 * ((i % 8) / 8.0);
-    out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), base_z});
+    // Stamp it at the face the body stands ON, not at base_z. base_z already
+    // carries the survey's +0.02 lift, so on a flight the ring landed 2 cm
+    // above the real tread and became a floor the body could stand on for
+    // ever: it never reached the next riser, and on a four storey climb it
+    // parked one step short of every slab.
+    out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), base_z - 0.02});
   }
 }
 
@@ -452,17 +457,22 @@ Scenario fourFloor() {
       s.obs.push_back(box(x1 - TREAD, yb0, x1, yb1,
                           z0 + LAND + RISE * i, z0 + LAND + RISE * (i + 1)));
     }
+    const bool no_up = getenv("NAVSIM_NO_RAIL") != nullptr;
     for (int i = 0; i < 9; ++i) {                    // upstands, 8.5.1
       const double x0 = 3.0 + i * TREAD;
       const double top = z0 + RISE * (i + 1);
-      s.obs.push_back(box(x0, ya1, x0 + TREAD, ya1 + 0.08, top - 0.04, top + RAIL));
-      if (x0 < 5.3)
-        s.obs.push_back(box(x0, ya0 - 0.08, x0 + TREAD, ya0, top - 0.04, top + RAIL));
+      if (!no_up) {
+        s.obs.push_back(box(x0, ya1, x0 + TREAD, ya1 + 0.08, top - 0.04, top + RAIL));
+        if (x0 < 5.3)
+          s.obs.push_back(box(x0, ya0 - 0.08, x0 + TREAD, ya0, top - 0.04, top + RAIL));
+      }
       const double x1 = 5.7 - i * TREAD;
       const double top2 = z0 + LAND + RISE * (i + 1);
-      s.obs.push_back(box(x1 - TREAD, yb0 - 0.08, x1, yb0, top2 - 0.04, top2 + RAIL));
-      if (x1 - TREAD < 5.3)
-        s.obs.push_back(box(x1 - TREAD, yb1, x1, yb1 + 0.08, top2 - 0.04, top2 + RAIL));
+      if (!no_up) {
+        s.obs.push_back(box(x1 - TREAD, yb0 - 0.08, x1, yb0, top2 - 0.04, top2 + RAIL));
+        if (x1 - TREAD < 5.3)
+          s.obs.push_back(box(x1 - TREAD, yb1, x1, yb1 + 0.08, top2 - 0.04, top2 + RAIL));
+      }
     }
     // One upstand per side of the landing, on the outer edge of each run.
     s.obs.push_back(box(5.7, ya1, 6.9, ya1 + 0.08, z0 + LAND - 0.04, z0 + LAND + RAIL));
@@ -1292,11 +1302,10 @@ Run simulate(const Scenario& sc, unsigned seed) {
           int ax, ay, az;
           const double qx = x - 0.10 * (-gx);
           if (!grid.worldToIndex(qx, y, base_z + 0.24, ax, ay, az)) continue;
-          int occ = 0, hi = -99;
-          for (int d = -3; d <= 12; ++d)
-            if (grid.at(ax, ay, az + d)) { ++occ; if (hi < d) hi = d; }
-          fprintf(stderr, "  x%.2f occ=%d top=%.2f", qx, occ,
-                  grid.originZ() + (az + hi + 0.5) * grid.resolution());
+          fprintf(stderr, "  x%.2f z%.2f:", qx,
+                  grid.originZ() + (az - 3 + 0.5) * grid.resolution());
+          for (int d = -3; d <= 20; ++d)
+            fprintf(stderr, "%d", static_cast<int>(grid.at(ax, ay, az + d)));
         }
         fprintf(stderr, "\n    truth at (%.2f,%.2f):", x - 0.6, y);
         for (const auto& o : sc.obs) {
