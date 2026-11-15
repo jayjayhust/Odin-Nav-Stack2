@@ -150,6 +150,7 @@ PAGE = r"""<!DOCTYPE html>
             '<span><b style="background:#3ddc84"></b>实际轨迹</span>' +
             '<span><b style="background:#e8574a"></b>真值障碍</span>' +
             '<span><b style="background:#f2b24a"></b>膨胀禁区 +0.20 m</span>' +
+            '<span><b style="background:#5aafff"></b>局部窗口 2 m</span>' +
           '</div></div>' +
         '<div class="view"><h3>时序剖面 · 净距 / 地速</h3><canvas id="prof' + i + '"></canvas>' +
           '<div class="legend">' +
@@ -214,6 +215,40 @@ PAGE = r"""<!DOCTYPE html>
       }
     }
     return best;
+  }
+
+  // The window the local planner may use, nearest in time to the playhead.
+  function nearestWin(sc, t){
+    const lc = sc.local_costmap;
+    if (!lc || !lc.frames || !lc.frames.length) return null;
+    let k = 0;
+    for (let n = 1; n < lc.frames.length; ++n)
+      if (Math.abs(lc.frames[n].t - t) < Math.abs(lc.frames[k].t - t)) k = n;
+    return lc.frames[k];
+  }
+
+  // Only the box travels. Inside it, everything solid - body plus the two cells
+  // of inflation - is what the candidate rollouts are tested against; outside
+  // it the local planner has no opinion at all.
+  function drawLocalWindow(ctx, mp, sc, t){
+    const lc = sc.local_costmap;
+    const lw = nearestWin(sc, t);
+    if (!lc || !lw) return;
+    const r = lc.r, res = lc.res;
+    const x0 = mp.sx(lw.cx - r), x1 = mp.sx(lw.cx + r);
+    const y0 = mp.sy(lw.cy + r), y1 = mp.sy(lw.cy - r);
+    ctx.fillStyle = 'rgba(90,175,255,0.05)';
+    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+    ctx.fillStyle = 'rgba(242,178,74,0.40)';
+    for (const c of lw.cells){
+      const wx = lw.cx - r + c[0] * res, wy = lw.cy - r + c[1] * res;
+      ctx.fillRect(mp.sx(wx) - 1.0, mp.sy(wy) - 1.0, 2.0, 2.0);
+    }
+    ctx.strokeStyle = 'rgba(90,175,255,0.85)';
+    ctx.lineWidth = 1.3;
+    ctx.setLineDash([5, 4]);
+    ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.stroke();
+    ctx.setLineDash([]);
   }
 
   function nearestCloud(sc, t){
@@ -308,6 +343,8 @@ PAGE = r"""<!DOCTYPE html>
           dotText(ctx, (x0 + x1) / 2, y0 - 6, '箱子 · t=' + o.appear + 's');
       }
     }
+
+    drawLocalWindow(ctx, mp, sc, t);
 
     // global route
     ctx.strokeStyle = 'rgba(242,178,74,0.85)'; ctx.lineWidth = 1.6;

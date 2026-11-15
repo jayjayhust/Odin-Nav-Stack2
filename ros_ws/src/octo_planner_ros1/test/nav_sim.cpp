@@ -900,6 +900,15 @@ struct Run {
   // do not.
   double probe_t = -1, probe_y = 1.30;
   std::vector<std::vector<int>> probe_cells;   // rows: z descending, cols: x
+  // The local cost window: what the local planner is allowed to look at, and
+  // only inside it are obstacles inflated. Samples are sparse in time (one per
+  // mapping refresh) and store cells as offsets on a 0.10 m lattice, so the
+  // page can rebuild the same square while the run plays back.
+  struct LocalWin {
+    double t = 0, cx = 0, cy = 0, r = 2.0;
+    std::vector<std::array<int, 2>> cells;     // dx, dy from the window corner
+  };
+  std::vector<LocalWin> wins;
 };
 
 // Coarse clearance: distance from the body box to the nearest live primitive.
@@ -1105,7 +1114,36 @@ Run simulate(const Scenario& sc, unsigned seed) {
     for (auto& o : obs) o.advance(t);
 
     // 0.5 s mapping refresh
-    if (step % 25 == 0) {  // 0.5 s mapping refresh
+    if (step % 25 == 0) {  // 0.5 s: mapping refresh, and one local window
+      {
+        // Only the box travels: the global grid is inflated once, but what the
+        // local planner may use is the part of it inside 2 m of the robot. This
+        // records exactly that slice, including which cells are solid (a tread
+        // is solid, the space above it is not).
+        Run::LocalWin lw;
+        lw.t = t; lw.cx = x; lw.cy = y; lw.r = 2.0;
+        const double step_m = 0.10;
+        const int side = static_cast<int>(std::floor(2.0 * lw.r / step_m)) + 1;
+        lw.cells.reserve(64);
+        for (int a = 0; a < side; ++a) {
+          for (int b = 0; b < side; ++b) {
+            const double wx = lw.cx - lw.r + a * step_m;
+            const double wy = lw.cy - lw.r + b * step_m;
+            if (std::hypot(wx - lw.cx, wy - lw.cy) > lw.r) continue;
+            int ix = 0, iy = 0, iz = 0;
+            if (!grid.worldToIndex(wx, wy, base_z + 0.24, ix, iy, iz)) continue;
+            bool solid = false;
+            for (int dz = 0; dz <= 2; ++dz) {
+              const int jz = iz + dz;
+              if (jz >= grid.nz()) break;
+              const uint8_t v = grid.at(ix, iy, jz);
+              if (v == VoxelGrid::kOccupied || v == VoxelGrid::kInflated) { solid = true; break; }
+            }
+            if (solid) lw.cells.push_back({a, b});
+          }
+        }
+        out.wins.push_back(lw);
+      }
       scan(obs, t, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
       accum.insert(accum.end(), cloud.begin(), cloud.end());
       if (accum.size() > 16000) accum.erase(accum.begin(), accum.begin() + (accum.size() - 16000));
@@ -1599,6 +1637,20 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
     o << "\"" << r.events[i].second << "\"";
   }
   o << "]";
+  {
+    o << ",\"local_costmap\":{\"r\":2.0,\"res\":0.10,\"frames\":[";
+    for (size_t i = 0; i < r.wins.size(); ++i) {
+      if (i) o << ",";
+      const auto& w = r.wins[i];
+      o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy << ",\"cells\":[";
+      for (size_t j = 0; j < w.cells.size(); ++j) {
+        if (j) o << ",";
+        o << "[" << w.cells[j][0] << "," << w.cells[j][1] << "]";
+      }
+      o << "]}";
+    }
+    o << "]}";
+  }
   if (r.probe_t > 0) {
     o << ",\"map_probe\":{\"t\":" << r.probe_t << ",\"y\":" << r.probe_y
       << ",\"x0\":2.70,\"x_step\":0.10,\"z0\":4.30,\"z_step\":-0.10,\"cells\":[";
