@@ -1270,6 +1270,31 @@ Run simulate(const Scenario& sc, unsigned seed) {
           Cand best{0, 0, 0};
           bool any = false;
           if (!break_dwa) {
+          // Who is in the way, judged where he will be in 1.2 s. The rollouts
+          // below only look 1.2 s ahead, but a pedestrian closing head-on
+          // collides after about 3 s, so his future position never enters a
+          // candidate's clearance - which is how dropping the old stop rule
+          // made the dog walk straight into him. Instead of stopping him
+          // afterwards, take "keep going" out of the candidate set and let the
+          // cost function choose among stopping, shuffling sideways and
+          // backing off.
+          bool ped_ahead = false;
+          {
+            for (const auto& o : obs) {          // the advanced copies, not spawn poses
+              if (o.kind != 1 || !o.present(t)) continue;
+              if (o.vx == 0.0 && o.vy == 0.0) continue;   // pillars are to walk round
+              if (o.z0 > base_z + 0.44 || o.z1 < base_z + 0.24) continue;
+              const double ox = o.a[0] + o.vx * 1.2;
+              const double oy = o.a[1] + o.vy * 1.2;
+              const double dx = ox - x, dy = oy - y;
+              const double along = dx * std::cos(yaw) + dy * std::sin(yaw);
+              const double side = -dx * std::sin(yaw) + dy * std::cos(yaw);
+              if (along > -0.20 && along < 1.70 && std::fabs(side) < 0.60) {
+                ped_ahead = true;
+                break;
+              }
+            }
+          }
           // Two passes: 1.2 s first, then 0.6 s when nothing survives. Tucked
           // against a door post every 1.2 s arc ends in the wall, so the long
           // pass parks the dog exactly where the pedestrian walks past it; the
@@ -1278,6 +1303,10 @@ Run simulate(const Scenario& sc, unsigned seed) {
           const int nsteps = (pass == 0) ? 6 : 3;
           best_cost = 1e18;
           for (const auto& c : cands) {
+            // Going forward is off the table while a pedestrian is closing:
+            // the 1.2 s horizon cannot see the meeting point, so a candidate
+            // that looks clear now is the one that hits him.
+            if (ped_ahead && c.vx > 0.0) continue;
             // roll out 1.2 s at 0.2 s steps (0.6 s on the fallback pass)
             double sx2 = x, sy2 = y, syaw2 = yaw;
             bool bad = false;
@@ -1314,9 +1343,18 @@ Run simulate(const Scenario& sc, unsigned seed) {
             // because forward is blocked and the turn is taxed.
             const bool stall = std::fabs(c.vx) < 1e-9 && std::fabs(c.vy) < 1e-9 &&
                                std::fabs(herr0) < 1.2;
-            const double cost = 1.4 * d2 + 0.30 * (1.0 / (mincl + 0.25))
+            // With a pedestrian closing head-on, standing still in the opening
+            // is the one choice that guarantees the collision: he keeps walking
+            // and the dog does not. Clearing the gap means moving out of it,
+            // so distance to the target stops mattering for a moment and a full
+            // stop is charged instead of being the cheap default.
+            const bool pure_stop = std::fabs(c.vx) < 1e-9 && std::fabs(c.vy) < 1e-9 &&
+                                   std::fabs(c.wz) < 1e-9;
+            const double cost = (ped_ahead ? 0.15 : 1.4) * d2
+                                + 0.30 * (1.0 / (mincl + 0.25))
                                 - 0.45 * c.vx + 0.22 * std::fabs(c.vy) + 0.08 * std::fabs(c.wz)
-                                + (stall ? 0.45 : 0.0);
+                                + (stall ? 0.45 : 0.0)
+                                + (ped_ahead && pure_stop ? 1.2 : 0.0);
             if (cost < best_cost) { best_cost = cost; best = c; }
           }
           }
@@ -1334,29 +1372,13 @@ Run simulate(const Scenario& sc, unsigned seed) {
             vx = vy = wz = 0;
             out.events.push_back({t, "无可行候选，原地停等"});
           }
-          // Yield to people. A pedestrian is not something to squeeze past; in
-          // an office building the robot waits. Judge them by where they will
-          // be in 1.2 s, not where they are - at 0.28 m/s they cover a body
-          // width in that time, so the present position always looks passable.
+          // Only the event log is left here: what the local planner did about
+          // him (stop, shuffle sideways, back off) has already been decided.
           {
-            bool yield = false;
-            for (const auto& o : obs) {          // the advanced copies, not spawn poses
-              if (o.kind != 1 || !o.present(t)) continue;
-              if (o.vx == 0.0 && o.vy == 0.0) continue;   // pillars are to walk round
-              if (o.z0 > base_z + 0.44 || o.z1 < base_z + 0.24) continue;
-              const double ox = o.a[0] + o.vx * 1.2;
-              const double oy = o.a[1] + o.vy * 1.2;
-              const double dx = ox - x, dy = oy - y;
-              const double along = dx * std::cos(yaw) + dy * std::sin(yaw);
-              const double side = -dx * std::sin(yaw) + dy * std::cos(yaw);
-              if (along > -0.20 && along < 1.70 && std::fabs(side) < 0.60) {
-                yield = true;
-                break;
-              }
-            }
-            if (yield) {
-              vx = 0.0; vy = 0.0; wz = 0.0;
-              out.events.push_back({t, "为行人让行，原地等待"});
+            const bool stopped = (vx == 0.0 && vy == 0.0 && wz == 0.0);
+            if (ped_ahead && stopped &&
+                (out.events.empty() || t - out.events.back().first > 1.2)) {
+              out.events.push_back({t, "前方有行人，局部规划选择停等"});
             }
           }
           }
