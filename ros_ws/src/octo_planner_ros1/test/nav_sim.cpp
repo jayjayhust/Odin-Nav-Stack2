@@ -255,12 +255,24 @@ bool inFlight(const Scenario& sc, double x, double y, double z) {
   // test the body stayed "on run B" after stepping onto the second-floor slab,
   // and the run's centre line ends right under it - it chased its own mid-point
   // and spiralled for the rest of the run.
-  if (x > 2.45 && x < 5.80 && y > 1.95 && y < 2.85 && z < 1.95) return true;  // run A
+  // Storeys stack at 3.40 m and repeat the same double-run layout. Check every
+  // storey rather than the one the height merely floors into: the body stands
+  // on the slab at 3.42 m, which floors to storey 1, while still finishing the
+  // run that belongs to storey 0. Picking one storey kept it "on the flight"
+  // forever, chasing a centre line that ends under its feet.
+  const double H = 3.40;
+  for (int k = 0; k < 5; ++k) {
+  const double z0 = H * k;
+  if (z < z0 - 0.05 || z > z0 + 3.35) continue;
+  if (x > 2.45 && x < 5.80 && y > 1.95 && y < 2.85 &&
+      z > z0 + 0.10 && z < z0 + 1.95) return true;  // run A
   // Run B's hand-over starts at the landing mouth, not at the first tread.
   // DWA would not push the body the last 0.4 m from the landing into the
   // flight; the hook drives blind down the centre line and has no such
   // hesitation, so let it take over there.
-  if (x > 2.85 && x < 6.85 && y > 0.75 && y < 1.68 && z < 3.30) return true;  // run B
+  if (x > 2.85 && x < 6.85 && y > 0.75 && y < 1.68 &&
+      z > z0 + 1.60 && z < z0 + 3.30) return true;  // run B
+  }
   return false;
 }
 
@@ -295,7 +307,7 @@ Scenario officeLoop() {
 Scenario stairTwoFloor() {
   Scenario s;
   s.name = "stair_two_floor";
-  s.desc = "两层办公楼：双跑楼梯 + 1.2 m 转弯平台，每跑 9 级 × 0.189 m，层高 3.40 m；"
+  s.desc = "两层办公楼：双跑楼梯（净宽 1.0 m）+ 1.70 m 转弯平台，每跑 9 级 × 0.189 m，层高 3.40 m；"
            "一层起点、二层目标，楼梯段由 stair_gait 接管";
   s.minx = -0.2; s.maxx = 7.0;
   s.miny = -1.6; s.maxy = 3.6;
@@ -309,15 +321,15 @@ Scenario stairTwoFloor() {
   s.obs.push_back(box(-0.2, -0.2, 3.0, 3.2, 3.30, 3.40));      // second floor slab
   for (int i = 0; i < 9; ++i) {                                // run A, +x
     const double x0 = 3.0 + i * TREAD;
-    s.obs.push_back(box(x0, 1.8, x0 + TREAD, 3.0, 0.0, RISE * (i + 1)));
+    s.obs.push_back(box(x0, 1.90, x0 + TREAD, 2.90, 0.0, RISE * (i + 1)));
   }
   // The half-landing spans the full width between the runs (y 1.2-3.0). With
   // it stopping at y 1.8 the dog could not step off flight A's top onto the
   // return flight: everything south of 1.8 at x>5.7 was a hole in the floor.
-  s.obs.push_back(box(5.7, 1.2, 6.9, 3.0, 0.0, LAND));          // landing
+  s.obs.push_back(box(5.7, 0.80, 6.9, 2.90, 0.0, LAND));        // landing
   for (int i = 0; i < 9; ++i) {                                // run B, -x
     const double x1 = 5.7 - i * TREAD;
-    s.obs.push_back(box(x1 - TREAD, 0.6, x1, 1.8, 0.0, LAND + RISE * (i + 1)));
+    s.obs.push_back(box(x1 - TREAD, 0.80, x1, 1.80, 0.0, LAND + RISE * (i + 1)));
   }
   // 0.22 m continuous upstands on both sides of both runs (8.5.1). They stop
   // short of the landing so the turn from run A to run B stays open - that is
@@ -330,17 +342,17 @@ Scenario stairTwoFloor() {
   for (int i = 0; i < 9; ++i) {
     const double x0 = 3.0 + i * TREAD;
     const double top = RISE * (i + 1);
-    s.obs.push_back(box(x0, 2.94, x0 + TREAD, 3.02, top - 0.04, top + RAIL));
+    s.obs.push_back(box(x0, 2.90, x0 + TREAD, 2.98, top - 0.04, top + RAIL));
     if (x0 < 5.3)
       s.obs.push_back(box(x0, 1.78, x0 + TREAD, 1.86, top - 0.04, top + RAIL));
     const double x1 = 5.7 - i * TREAD;
     const double top2 = LAND + RISE * (i + 1);
-    s.obs.push_back(box(x1 - TREAD, 0.58, x1, 0.66, top2 - 0.04, top2 + RAIL));
+    s.obs.push_back(box(x1 - TREAD, 0.72, x1, 0.80, top2 - 0.04, top2 + RAIL));
     if (x1 - TREAD < 5.3)
-      s.obs.push_back(box(x1 - TREAD, 1.74, x1, 1.82, top2 - 0.04, top2 + RAIL));
+      s.obs.push_back(box(x1 - TREAD, 1.80, x1, 1.88, top2 - 0.04, top2 + RAIL));
   }
-  s.obs.push_back(box(5.7, 2.94, 6.9, 3.02, LAND - 0.04, LAND + RAIL));
-  s.obs.push_back(box(6.84, 1.8, 6.92, 3.0, LAND - 0.04, LAND + RAIL));
+  s.obs.push_back(box(5.7, 2.90, 6.9, 2.98, LAND - 0.04, LAND + RAIL));
+  s.obs.push_back(box(6.84, 1.9, 6.92, 2.9, LAND - 0.04, LAND + RAIL));
   // envelope walls
   s.obs.push_back(box(7.0, 0.5, 7.1, 3.3, 0.0, 4.2));
   s.obs.push_back(box(-0.3, 3.2, 7.0, 3.3, 0.0, 4.2));
@@ -354,8 +366,8 @@ Scenario stairTwoFloor() {
   // Centre lines, the same mechanism the four-storey harness uses: without
   // them A* shaves the inside of the tread and the dog walks the balustrade.
   s.corridors = {
-    {3.0, 5.7, 2.40, 0.40, 0.00, 1.80, 3.0},
-    {3.0, 5.7, 1.20, 0.40, 1.60, 3.45, 3.0}
+    {3.0, 5.7, 2.40, 0.20, 0.00, 1.80, 3.0},
+    {3.0, 5.7, 1.30, 0.20, 1.60, 3.45, 3.0}
   };
 
   // stands the operator walked Odin1 through: every level and along both runs
@@ -369,8 +381,8 @@ Scenario stairTwoFloor() {
     {1.80, 2.40, 0.0}, {2.30, 2.40, 0.0},          // looking up run A
     {3.60, 2.40, 0.0},
     {6.30, 2.40, LAND},                             // looking back down run B
-    {5.90, 1.60, LAND},
-    {1.80, 1.20, LAND * 2}, {2.40, 2.20, LAND * 2}, // second floor, looking back
+    {5.90, 1.40, LAND},
+    {1.80, 1.30, LAND * 2}, {2.40, 2.20, LAND * 2}, // second floor, looking back
     {0.60, 0.60, LAND * 2}
   };
   // Mission legs: stair mouth -> landing -> upper floor. Each one is planned
@@ -379,15 +391,109 @@ Scenario stairTwoFloor() {
   s.via = {
     {3.20, 2.40, 0.05},                              // stair mouth
     {6.30, 2.40, 1.80},                              // landing, turn
-    {6.10, 1.20, 1.72},                              // run B mouth, on the landing
-    {2.20, 1.20, 3.40},                              // well inside the slab, so
+    {6.10, 1.30, 1.72},                              // run B mouth, on the landing
+    {2.20, 1.30, 3.40},                              // well inside the slab, so
                                                      // A* has to climb run B
-    {1.00, 1.20, 3.40}                               // second floor
+    {1.00, 1.30, 3.40}                               // second floor
   };
   s.seed_stair_prior = true;
   s.flights_only = true;
   s.ztol = 0.10;
   s.limit = 140.0;
+  return s;
+}
+
+// E. four storeys: the same office stair core, stacked three times. This is the
+// case the branch is actually built for - a four-storey office block - and it
+// exercises the part a single flight cannot: a hand-over zone that has to know
+// which storey it is on, and a mission that has to chain three of them.
+Scenario fourFloor() {
+  Scenario s;
+  s.name = "four_floor";
+  s.desc = "四层办公楼：同一楼梯芯垂直叠三层（双跑 × 9 级 × 0.189 m、净宽 1.0 m、层高 3.40 m），"
+           "一层起点 → 四层目标，连爬三个层间，共 6 跑 54 级";
+  s.minx = -0.2; s.maxx = 7.0;
+  s.miny = -1.6; s.maxy = 3.6;
+  s.zmin = -0.20; s.zmax = 10.70;
+  s.sx = 1.0; s.sy = 0.0; s.sz = 0.0;
+  s.gx = 1.0; s.gy = 1.30; s.gz = 10.20;
+
+  const double RISE = 0.189, TREAD = 0.30, LAND = 1.70, H = 3.40, RAIL = 0.90;
+
+  for (int f = 0; f <= 3; ++f)                       // four floor slabs
+    s.obs.push_back(box(-0.2, -0.2, 3.0, 3.2, H * f - 0.10, H * f));
+
+  for (int k = 0; k < 3; ++k) {                      // three storeys of flights
+    const double z0 = H * k;
+    for (int i = 0; i < 9; ++i) {                    // run A, +x
+      const double x0 = 3.0 + i * TREAD;
+      s.obs.push_back(box(x0, 1.90, x0 + TREAD, 2.90, z0, z0 + RISE * (i + 1)));
+    }
+    s.obs.push_back(box(5.7, 0.80, 6.9, 2.90, z0, z0 + LAND));      // landing
+    for (int i = 0; i < 9; ++i) {                    // run B, -x
+      const double x1 = 5.7 - i * TREAD;
+      s.obs.push_back(box(x1 - TREAD, 0.80, x1, 1.80,
+                          z0 + LAND + RISE * i, z0 + LAND + RISE * (i + 1)));
+    }
+    for (int i = 0; i < 9; ++i) {                    // upstands, 8.5.1
+      const double x0 = 3.0 + i * TREAD;
+      const double top = z0 + RISE * (i + 1);
+      s.obs.push_back(box(x0, 2.90, x0 + TREAD, 2.98, top - 0.04, top + RAIL));
+      if (x0 < 5.3)
+        s.obs.push_back(box(x0, 1.78, x0 + TREAD, 1.86, top - 0.04, top + RAIL));
+      const double x1 = 5.7 - i * TREAD;
+      const double top2 = z0 + LAND + RISE * (i + 1);
+      s.obs.push_back(box(x1 - TREAD, 0.72, x1, 0.80, top2 - 0.04, top2 + RAIL));
+      if (x1 - TREAD < 5.3)
+        s.obs.push_back(box(x1 - TREAD, 1.80, x1, 1.88, top2 - 0.04, top2 + RAIL));
+    }
+    s.obs.push_back(box(5.7, 2.90, 6.9, 2.98, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    s.obs.push_back(box(6.84, 1.9, 6.92, 2.9, z0 + LAND - 0.04, z0 + LAND + RAIL));
+  }
+
+  // envelope walls, full height
+  s.obs.push_back(box(7.0, 0.5, 7.1, 3.3, 0.0, 10.60));
+  s.obs.push_back(box(-0.3, 3.2, 7.0, 3.3, 0.0, 10.60));
+  s.obs.push_back(box(-0.3, -1.7, 7.0, -1.6, 0.0, 10.60));
+  s.obs.push_back(box(-0.3, -0.2, -0.2, 3.2, 0.0, 10.60));
+  for (int f = 1; f <= 3; ++f) {                     // slab guard rails
+    const double z = H * f;
+    s.obs.push_back(box(-0.2, 3.1, 3.0, 3.18, z, z + 1.0));
+    s.obs.push_back(box(-0.2, -0.28, 3.0, -0.20, z, z + 1.0));
+  }
+
+  s.stair.push_back({2.7, 7.0, 0.5, 3.1, 0.0, 10.20});
+  for (int k = 0; k < 3; ++k) {
+    const double z0 = H * k;
+    s.corridors.push_back({3.0, 5.7, 2.40, 0.20, z0, z0 + 1.85, 3.0});
+    s.corridors.push_back({3.0, 5.7, 1.30, 0.20, z0 + 1.60, z0 + 3.50, 3.0});
+  }
+
+  // stands: in front of each run on every level, plus two floor stands
+  for (int f = 0; f <= 3; ++f) {
+    const double z = H * f;
+    s.survey_pts.push_back({1.80, 2.40, z});
+    s.survey_pts.push_back({3.60, 2.40, z});
+    if (f < 3) s.survey_pts.push_back({6.30, 2.40, z + LAND});
+  }
+  s.survey_pts.push_back({0.60, -0.60, 0.0});
+  s.survey_pts.push_back({1.80, 1.30, H});
+
+  // Mission legs, three storeys worth. Each run is its own leg so A* only ever
+  // has to climb 1.7 m at a time, which is what makes 600k iterations enough.
+  for (int k = 0; k < 3; ++k) {
+    const double z0 = H * k;
+    s.via.push_back({3.18, 2.40, z0 + 0.05});        // stair mouth
+    s.via.push_back({6.30, 2.40, z0 + 1.80});        // landing, turn
+    s.via.push_back({6.10, 1.30, z0 + 1.72});        // run B mouth
+    s.via.push_back({2.20, 1.30, z0 + H});           // next slab
+  }
+  s.via.push_back({1.00, 1.30, H * 3});              // fourth floor
+
+  s.seed_stair_prior = true;
+  s.flights_only = true;
+  s.ztol = 0.10;
+  s.limit = 300.0;
   return s;
 }
 
@@ -613,8 +719,14 @@ bool hitsTruth(const std::vector<Obstacle>& obs, double t, double x, double y,
   }
   for (const auto& o : obs) {
     if (!o.present(t)) continue;
-    if (o.z0 > base_z + 0.44) continue;   // entirely above the trunk
-    if (o.z1 < base_z + 0.24) continue;   // entirely below it (a lower riser)
+    // Trunk top sits at kBaseZ + 0.057 = 0.377 above the standing surface;
+    // 0.44 reached 6 cm into the underside of the storey above, so on a four
+    // storey stack every return flight grazed the one overhead.
+    if (o.z0 > base_z + 0.38) continue;   // entirely above the trunk
+    // Trunk underside sits at kBaseZ - 0.057 = 0.263 above the standing
+    // surface; 0.24 let the belly clip the riser one step ahead, which on a
+    // 54-riser climb is a collision every other step.
+    if (o.z1 < base_z + 0.32) continue;   // entirely below it (a lower riser)
     if (o.kind == 1) {
       for (int i = 0; i < n; ++i) {
         const double dx = px[i] - o.a[0], dy = py[i] - o.a[1];
@@ -1258,7 +1370,9 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 
 int main() {
   std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
-                                     stairTwoFloor()};
+                                     stairTwoFloor()
+                                     // fourFloor()  — see the note at its definition
+                                     };
   std::ostringstream o;
   o << "{";
   o << "\"generated\":\"closed-loop nav_sim\",";
