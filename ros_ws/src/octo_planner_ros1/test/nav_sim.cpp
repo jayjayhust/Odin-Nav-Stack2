@@ -958,6 +958,9 @@ Run simulate(const Scenario& sc, unsigned seed) {
   AStar3D::Params params;
   params.max_iterations = 600000;  // two-storey grids are ~4x the cells
   params.require_ground_support = true;
+  // Optimistic planning inside a stair core only: the flat scenes keep the
+  // strict FREE rule, which is what keeps mincl honest there.
+  params.allow_unknown_cells = sc.seed_stair_prior;
   params.snap_search_radius_cells = 12;
   params.max_step_z_cells = 3;
   params.corridors = sc.corridors;

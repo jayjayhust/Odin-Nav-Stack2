@@ -61,11 +61,15 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
   const auto usable_endpoint = [](uint8_t v) {
     return v == VoxelGrid::kFree || v == VoxelGrid::kInflated;
   };
+  const auto traversable = [&params](uint8_t v) {
+    if (v == VoxelGrid::kFree) return true;
+    return params.allow_unknown_cells && v == VoxelGrid::kUnknown;
+  };
   // Prefer snapping onto a genuinely FREE cell: starting inside the
   // robot-radius band leaves every neighbour INFLATED, so the search would
   // expand once and give up. Only fall back to INFLATED when no FREE cell is
   // in range.
-  if (grid.at(start.x, start.y, start.z) != VoxelGrid::kFree) {
+  if (!traversable(grid.at(start.x, start.y, start.z))) {
     VoxelKey probe = start;
     if (!grid.nearestWalkable(probe.x, probe.y, probe.z,
                               params.snap_search_radius_cells,
@@ -77,7 +81,7 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
       return out;
     }
   }
-  if (grid.at(goal.x, goal.y, goal.z) != VoxelGrid::kFree) {
+  if (!traversable(grid.at(goal.x, goal.y, goal.z))) {
     VoxelKey probe = goal;
     if (!grid.nearestWalkable(probe.x, probe.y, probe.z,
                               params.snap_search_radius_cells,
@@ -150,8 +154,14 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
           if (nx < 0 || nx >= grid.nx()) continue;
           if (!params.allow_diagonal && std::abs(dx) + std::abs(dy) > 1) continue;
 
-          if (grid.at(nx, ny, nz) != VoxelGrid::kFree) continue;
-          if (params.require_ground_support &&
+          if (!traversable(grid.at(nx, ny, nz))) continue;
+          // An unknown cell has no mapped floor either, so the support test
+          // rejects it too. Under the optimistic rule an unobserved cell
+          // directly beneath counts as "may be supported" - the local planner
+          // and the real odometry settle it when the dog gets there.
+          const bool unknown_floor = params.allow_unknown_cells && nz - 1 >= 0 &&
+                                     grid.at(nx, ny, nz - 1) == VoxelGrid::kUnknown;
+          if (params.require_ground_support && !unknown_floor &&
               !grid.hasGroundSupport(nx, ny, nz,
                                      params.ground_support_xy_radius_cells)) {
             continue;

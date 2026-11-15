@@ -20,6 +20,13 @@ struct VoxelKey {
 class AStar3D {
  public:
   struct Params {
+    // Treat unobserved cells as traversable. A stair core is mostly unobserved
+    // from the foot of a flight: sensor shadows leave vertical bands of unknown
+    // where the risers ahead and the flight overhead block the ray fan, and
+    // demanding a FREE cell makes that flight unplannable while every tread in
+    // it is mapped correctly. Off by default - flat scenes keep the strict rule.
+    bool allow_unknown_cells = false;
+
     int max_iterations = 500000;
     bool require_ground_support = true;
     int ground_support_xy_radius_cells = 0;
