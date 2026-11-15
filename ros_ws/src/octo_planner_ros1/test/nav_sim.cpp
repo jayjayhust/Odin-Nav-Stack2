@@ -606,7 +606,33 @@ void stampPoint(VoxelGrid& g, const Point& p) {
 void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
              const VoxelGrid* prior = nullptr, const Scenario* sc = nullptr) {
   g.clear();
-  for (const auto& p : pts) stampPoint(g, p);
+  // Live sweeps stack a solid slab inside the stair core for the same reason the
+  // surveyed pass did: a ray that grazes each riser from outside walks up the
+  // vertical face, and the hits pile into a wall where there are nine thin
+  // treads. Whether this map is built once (survey) or every 0.5 s (mission),
+  // only the lowest hit in a column is real - that is the tread under it. Left
+  // unfixed, the two-storey run got away with it because it finishes before the
+  // slab closes over the run; a four-storey stack stalls on its first return
+  // flight with the planner reporting no path at all.
+  if (sc && !sc->stair.empty()) {
+    std::map<std::pair<long, long>, double> low;
+    for (const auto& p : pts) {
+      if (!inStair(*sc, p.x, p.y, p.z)) { stampPoint(g, p); continue; }
+      const std::pair<long, long> key(
+          (long)std::floor(p.x * 10.0 + 0.5), (long)std::floor(p.y * 10.0 + 0.5));
+      auto it = low.find(key);
+      if (it == low.end() || p.z < it->second) low[key] = p.z;
+    }
+    for (const auto& kv : low) {
+      Point q;
+      q.x = (double)kv.first.first / 10.0;
+      q.y = (double)kv.first.second / 10.0;
+      q.z = kv.second;
+      stampPoint(g, q);
+    }
+  } else {
+    for (const auto& p : pts) stampPoint(g, p);
+  }
   if (prior) {
     for (int iz = 0; iz < g.nz(); ++iz)
       for (int iy = 0; iy < g.ny(); ++iy)
@@ -1535,15 +1561,10 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 }  // namespace
 
 int main() {
+  // fourFloor() is back in: the report now carries an X-Z section, which is the
+  // one view that shows where a four-storey run actually stops.
   std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
-                                     stairTwoFloor()
-                                     // fourFloor(): held out of the report; the dump in simulate()
-                                     // is what shows why its return run never finishes
-                                     // (zmax 3.42, no collision), but stalls on the
-                                     // last riser at (3.76, 1.29) with its standing
-                                     // height oscillating 3.32-3.38. Held out of the
-                                     // report rather than shipping a red card.
-                                     };
+                                     stairTwoFloor(), fourFloor()};
   std::ostringstream o;
   o << "{";
   o << "\"generated\":\"closed-loop nav_sim\",";
