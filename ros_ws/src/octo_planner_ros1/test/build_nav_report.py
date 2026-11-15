@@ -149,6 +149,7 @@ PAGE = r"""<!DOCTYPE html>
             '<span><b style="background:#f2b24a"></b>全局路径</span>' +
             '<span><b style="background:#3ddc84"></b>实际轨迹</span>' +
             '<span><b style="background:#e8574a"></b>真值障碍</span>' +
+            '<span><b style="background:#f2b24a"></b>膨胀禁区 +0.20 m</span>' +
           '</div></div>' +
         '<div class="view"><h3>时序剖面 · 净距 / 地速</h3><canvas id="prof' + i + '"></canvas>' +
           '<div class="legend">' +
@@ -273,6 +274,26 @@ PAGE = r"""<!DOCTYPE html>
       ctx.fillStyle = wall ? 'rgba(120,150,190,0.05)'
                            : (live ? 'rgba(232,87,74,0.10)' : 'rgba(232,87,74,0.02)');
       ctx.lineWidth = wall ? 1.0 : 1.4;
+      // The planning footprint. The grid is inflated by two cells (0.20 m) for
+      // the 0.17 m half width and cellBlocked reads kInflated as solid, so this
+      // dashed ring - not the red body - is what the local planner steers
+      // around. It is also why a 0.70 m doorway has almost nothing usable in it.
+      if (live && !wall){
+        const inf = 0.20;
+        ctx.strokeStyle = 'rgba(242,178,74,0.42)';
+        ctx.lineWidth = 1.0;
+        ctx.setLineDash([3, 3]);
+        if (o.k === 1){
+          ctx.beginPath();
+          ctx.arc(mp.sx(o.a[0]), mp.sy(o.a[1]), (o.a[2] + inf) * mp.k, 0, Math.PI * 2);
+          ctx.stroke();
+        } else {
+          const ix0 = mp.sx(o.a[0] - inf), ix1 = mp.sx(o.a[2] + inf);
+          const iy0 = mp.sy(o.a[3] + inf), iy1 = mp.sy(o.a[1] - inf);
+          ctx.beginPath(); ctx.rect(ix0, iy0, ix1 - ix0, iy1 - iy0); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+      }
       if (o.k === 1){
         ctx.beginPath();
         ctx.arc(mp.sx(o.a[0]), mp.sy(o.a[1]), o.a[2] * mp.k, 0, Math.PI * 2);
