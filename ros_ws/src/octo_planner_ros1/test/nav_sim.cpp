@@ -203,15 +203,20 @@ void scan(const std::vector<Obstacle>& obs, double t, double rx, double ry,
   // IMU/odometry plane assumption, not from the laser. Adding it here keeps
   // the map standable for the right reason instead of failing for a reason
   // that does not exist outside this file.
-  for (int i = 0; i < 240; ++i) {
-    const double a = 2.0 * M_PI * i / 240.0;
-    const double rr = 0.15 + 0.95 * ((i % 8) / 8.0);
-    // Stamp it at the face the body stands ON, not at base_z. base_z already
-    // carries the survey's +0.02 lift, so on a flight the ring landed 2 cm
-    // above the real tread and became a floor the body could stand on for
-    // ever: it never reached the next riser, and on a four storey climb it
-    // parked one step short of every slab.
-    out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), base_z - 0.02});
+  // Flat ground only. This ring is stamped at the height the body stands at,
+  // and on a flight that height changes every riser - so the fill ran down the
+  // whole run as a solid wall. Measured at x 5.40 / y 1.30: 0.8 m of occupied
+  // (z 1.60-2.35) where the true treads are three thin layers, and column tops
+  // read a flat 2.80 m for five consecutive treads that should descend 2.46 ->
+  // 1.70. On level floor base_z never changes and the fill is harmless, which
+  // is why five shipping scenes never showed it; on a staircase the sweep hits
+  // the treads directly and nothing here is needed.
+  if (base_z < 0.10) {
+    for (int i = 0; i < 240; ++i) {
+      const double a = 2.0 * M_PI * i / 240.0;
+      const double rr = 0.15 + 0.95 * ((i % 8) / 8.0);
+      out.push_back({rx + rr * std::cos(a), ry + rr * std::sin(a), base_z - 0.02});
+    }
   }
 }
 
@@ -1044,6 +1049,50 @@ Run simulate(const Scenario& sc, unsigned seed) {
       accum.insert(accum.end(), cloud.begin(), cloud.end());
       if (accum.size() > 16000) accum.erase(accum.begin(), accum.begin() + (accum.size() - 16000));
       rebuild(grid, accum, &prior, &sc);
+      if (getenv("NAVSIM_DUMP") && t > 29.4 && t < 30.6) {
+        char ch[4] = {'.', ' ', '#', '+'};
+        for (double yq : {1.30, 2.40}) {
+          fprintf(stderr, "\n[dump] X-Z section at y=%.2f (t=%.1f), '.'=unknown ' '=free '#'=occupied '+'=inflated\n", yq, t);
+          for (double z = 4.30; z >= -0.10; z -= 0.10) {
+            fprintf(stderr, "  z%5.2f |", z);
+            for (double xx = 2.70; xx <= 7.00; xx += 0.10) {
+              int ix = 0, iy = 0, iz = 0;
+              if (!grid.worldToIndex(xx, yq, z, ix, iy, iz)) { fprintf(stderr, "?"); continue; }
+              const int v = static_cast<int>(grid.at(ix, iy, iz));
+              fprintf(stderr, "%c", (v >= 0 && v <= 3) ? ch[v] : '?');
+            }
+            fprintf(stderr, "|\n");
+          }
+          fprintf(stderr, "          +");
+          for (int c = 0; c < 32; ++c) fprintf(stderr, "-");
+          fprintf(stderr, "\n           x2.70 -> 7.00 step 0.10\n");
+        }
+        fprintf(stderr, "\n[dump] column tops, y=1.30   x   grid   truth\n");
+        for (double xx = 2.70; xx <= 7.01; xx += 0.30) {
+          double gtop = -99.0, ttop = -99.0;
+          const double stepz = grid.resolution();
+          for (double z = -0.20; z <= 5.00; z += stepz) {
+            int ix = 0, iy = 0, iz = 0;
+            if (!grid.worldToIndex(xx, 1.30, z, ix, iy, iz)) continue;
+            if (static_cast<int>(grid.at(ix, iy, iz)) == 2 && z > gtop) gtop = z;
+          }
+          for (const auto& o : sc.obs) {
+            if (xx < o.a[0] || xx > o.a[2] || 1.30 < o.a[1] || 1.30 > o.a[3]) continue;
+            if (o.z1 <= 5.00 && o.z1 > ttop) ttop = o.z1;
+          }
+          fprintf(stderr, "  x%5.2f  grid %6.2f  truth %6.2f   %s\n", xx, gtop, ttop,
+                  (gtop > -50 && std::fabs(gtop - ttop) < 0.18) ? "ok" : "MISMATCH");
+        }
+        for (double xx : {5.40, 5.70, 6.30}) {
+          fprintf(stderr, "  vert x%.2f y1.30:", xx);
+          for (double z = 1.40; z <= 3.60; z += 0.05) {
+            int ix = 0, iy = 0, iz = 0;
+            if (!grid.worldToIndex(xx, 1.30, z, ix, iy, iz)) { fprintf(stderr, "?"); continue; }
+            fprintf(stderr, "%d", static_cast<int>(grid.at(ix, iy, iz)));
+          }
+          fprintf(stderr, "   (z1.40 -> 3.60 step 0.05)\n");
+        }
+      }
       ++out.scans;
       if (out.clouds.size() < 400) {
         out.clouds.push_back(cloud);
@@ -1462,7 +1511,7 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 int main() {
   std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
                                      stairTwoFloor()
-                                     // fourFloor(): now climbs storey one for real
+                                     // fourFloor(): held out of the report, see the dump below
                                      // (zmax 3.42, no collision), but stalls on the
                                      // last riser at (3.76, 1.29) with its standing
                                      // height oscillating 3.32-3.38. Held out of the
