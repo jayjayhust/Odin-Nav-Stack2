@@ -1271,6 +1271,29 @@ Run simulate(const Scenario& sc, unsigned seed) {
       out.trace.push_back(s);
     }
 
+    if (getenv("NAVSIM_COL") && base_z > 3.0 && base_z < 3.5 && step % 25 == 0) {
+      int ix, iy, iz0;
+      if (grid.worldToIndex(x, y, base_z + 0.24, ix, iy, iz0)) {
+        fprintf(stderr, "[col] t=%.1f (%.2f,%.2f,%.2f) ahead:", t, x, y, base_z);
+        for (int gx = 0; gx >= -4; --gx) {
+          int ax, ay, az;
+          const double qx = x - 0.10 * (-gx);
+          if (!grid.worldToIndex(qx, y, base_z + 0.24, ax, ay, az)) continue;
+          int occ = 0, hi = -99;
+          for (int d = -3; d <= 12; ++d)
+            if (grid.at(ax, ay, az + d)) { ++occ; if (hi < d) hi = d; }
+          fprintf(stderr, "  x%.2f occ=%d top=%.2f", qx, occ,
+                  grid.originZ() + (az + hi + 0.5) * grid.resolution());
+        }
+        fprintf(stderr, "\n    truth at (%.2f,%.2f):", x - 0.6, y);
+        for (const auto& o : sc.obs) {
+          if (o.kind != 0) continue;
+          if (x - 0.6 < o.a[0] || x - 0.6 > o.a[2] || y < o.a[1] || y > o.a[3]) continue;
+          fprintf(stderr, " [%.2f-%.2f]", o.z0, o.z1);
+        }
+        fprintf(stderr, "\n");
+      }
+    }
     if (hitsTruth(obs, t, x, y, base_z, yaw)) {
       out.collided = true;
       out.events.push_back({t, "与真值障碍碰撞"});
