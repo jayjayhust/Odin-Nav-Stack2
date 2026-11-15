@@ -482,18 +482,36 @@ PAGE = r"""<!DOCTYPE html>
   }
 
   // --- 3D view ---------------------------------------------------------------
-  function cloudPoints(sc){
-    let n = 0;
-    const out = [];
-    for (const c of sc.clouds){ n += c.p.length; }
-    const stride = Math.max(1, Math.floor(n / 6000));
-    let k = 0;
-    for (const c of sc.clouds){
-      for (const p of c.p){
-        if (k++ % stride === 0) out.push(p);
+  // One flat, decimated array plus where each sweep ends in it. Slicing to the
+  // playhead is then O(points drawn), not O(whole run): the 3D view re-renders
+  // on every slider step.
+  function cloudFlat(sc){
+    if (!sc._cf){
+      let n = 0;
+      for (const c of sc.clouds){ n += c.p.length; }
+      const stride = Math.max(1, Math.floor(n / 6000));
+      const flat = [], bounds = [];
+      let k = 0;
+      for (const c of sc.clouds){
+        for (const p of c.p){
+          if (k++ % stride === 0) flat.push(p);
+        }
+        bounds.push({ t: c.t, n: flat.length });
       }
+      sc._cf = { flat: flat, bounds: bounds };
     }
-    return out;
+    return sc._cf;
+  }
+
+  // Everything scanned up to t. Resetting to 0 must leave an empty room, so
+  // this is a hard cut, not "the full map plus a highlight".
+  function cloudUpTo(sc, t){
+    const cf = cloudFlat(sc);
+    let n = 0;
+    for (const b of cf.bounds){
+      if (b.t <= t + 1e-6) n = b.n; else break;
+    }
+    return cf.flat.slice(0, n);
   }
 
   // The only panel where a climb cannot be mistaken for a flat walk: X across,
@@ -620,7 +638,7 @@ PAGE = r"""<!DOCTYPE html>
 
   function isoView(sc, i, t){
     const st = state[i];
-    if (!st.pts) st.pts = cloudPoints(sc);
+    const pts = cloudUpTo(sc, t);
     const cv = setup($('iso' + i), 400);
     const ctx = cv.ctx;
     ctx.fillStyle = '#070d17'; ctx.fillRect(0, 0, cv.w, cv.h);
@@ -646,7 +664,7 @@ PAGE = r"""<!DOCTYPE html>
 
     // fit once at the reference distance so the wheel really moves the eye
     let umin = 1e9, umax = -1e9, vmin = 1e9, vmax = -1e9;
-    const pts = st.pts;
+    // `pts` comes from cloudUpTo above, cut at the playhead.
     const sample = Math.max(1, Math.floor(pts.length / 900));
     for (let n = 0; n < pts.length; n += sample){
       const q = projectRef(pts[n][0], pts[n][1], pts[n][2]);
