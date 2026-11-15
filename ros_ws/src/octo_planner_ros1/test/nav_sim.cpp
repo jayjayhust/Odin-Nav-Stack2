@@ -894,6 +894,12 @@ struct Run {
   std::vector<std::pair<double, std::string>> events;
   std::vector<WP> global_path;
   double final_x = 0, final_y = 0;
+  // The planner's own view of the stair core, sampled once near t=30 s on the
+  // return-run centre line. This is the map that decides whether a flight is
+  // walkable, and it is the thing to look at when two storeys climb and four
+  // do not.
+  double probe_t = -1, probe_y = 1.30;
+  std::vector<std::vector<int>> probe_cells;   // rows: z descending, cols: x
 };
 
 // Coarse clearance: distance from the body box to the nearest live primitive.
@@ -1101,6 +1107,20 @@ Run simulate(const Scenario& sc, unsigned seed) {
       accum.insert(accum.end(), cloud.begin(), cloud.end());
       if (accum.size() > 16000) accum.erase(accum.begin(), accum.begin() + (accum.size() - 16000));
       rebuild(grid, accum, getenv("NAVSIM_NO_PRIOR") ? nullptr : &prior, &sc);
+      // Sample the planner's grid just after the point where a stuck run gives
+      // up, so the report can show the cells it was refusing to cross.
+      if (!sc.stair.empty() && out.probe_t < 0 && t > 29.4) {
+        out.probe_t = t;
+        for (double z = 4.30; z >= -0.11; z -= 0.10) {
+          std::vector<int> row;
+          for (double xx = 2.70; xx <= 7.01; xx += 0.10) {
+            int ix = 0, iy = 0, iz = 0;
+            if (!grid.worldToIndex(xx, out.probe_y, z, ix, iy, iz)) row.push_back(-1);
+            else row.push_back(static_cast<int>(grid.at(ix, iy, iz)));
+          }
+          out.probe_cells.push_back(row);
+        }
+      }
       if (getenv("NAVSIM_DUMP") && t > 29.4 && t < 30.6) {
         char ch[4] = {'.', ' ', '#', '+'};
         for (double yq : {1.30, 2.40}) {
@@ -1551,9 +1571,23 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
   o << "\"events\":[";
   for (size_t i = 0; i < r.events.size(); ++i) {
     if (i) o << ",";
-    o << "[\"" << r.events[i].second << "\"]";
+    o << "\"" << r.events[i].second << "\"";
   }
   o << "]";
+  if (r.probe_t > 0) {
+    o << ",\"map_probe\":{\"t\":" << r.probe_t << ",\"y\":" << r.probe_y
+      << ",\"x0\":2.70,\"x_step\":0.10,\"z0\":4.30,\"z_step\":-0.10,\"cells\":[";
+    for (size_t i = 0; i < r.probe_cells.size(); ++i) {
+      if (i) o << ",";
+      o << "[";
+      for (size_t j = 0; j < r.probe_cells[i].size(); ++j) {
+        if (j) o << ",";
+        o << r.probe_cells[i][j];
+      }
+      o << "]";
+    }
+    o << "]}";
+  }
   o << "}";
   return o.str();
 }

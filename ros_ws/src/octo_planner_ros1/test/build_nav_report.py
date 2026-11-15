@@ -156,6 +156,15 @@ PAGE = r"""<!DOCTYPE html>
             '<span><b style="background:#9d8bf0"></b>地速（右轴 0–0.8 m/s）</span>' +
             '<span><b style="background:#f2b24a"></b>事件</span>' +
           '</div></div>' +
+        (sc.map_probe ? '<div class="view wide"><h3>栅格 X–Z · 规划器眼里的这段楼梯（y=' +
+          Number(sc.map_probe.y).toFixed(2) + ' m，t≈' + Number(sc.map_probe.t).toFixed(1) + ' s）</h3>' +
+          '<canvas id="grid' + i + '"></canvas>' +
+          '<div class="legend">' +
+            '<span><b style="background:#1a2436"></b>unknown</span>' +
+            '<span><b style="background:#39506b"></b>free</span>' +
+            '<span><b style="background:#e8574a"></b>occupied</span>' +
+            '<span><b style="background:#f2b24a"></b>inflated</span>' +
+          '</div></div>' : '') +
         (hasZ ? '<div class="view wide"><h3>侧视 X–Z · 高度剖面</h3><canvas id="xz' + i + '"></canvas>' +
           '<div class="legend">' +
             '<span><b style="background:#3ddc84"></b>实际轨迹</span>' +
@@ -498,6 +507,47 @@ PAGE = r"""<!DOCTYPE html>
     }
   }
 
+  // The voxel map the planner is actually reasoning about, as a slab through
+  // the return run. A flight that is walkable in truth but unreachable here is
+  // visible as unknown cells where the treads should be.
+  function gridView(sc, i){
+    const p = sc.map_probe;
+    const el = $('grid' + i);
+    if (!p || !el) return;
+    try {
+      const cv = setup(el, 320);
+      const ctx = cv.ctx, w = cv.w, h = cv.h;
+      ctx.fillStyle = '#070d17'; ctx.fillRect(0, 0, w, h);
+      const rows = p.cells.length, cols = p.cells[0].length;
+      const padL = 46, padT = 14, padR = 12, padB = 26;
+      const cw = (w - padL - padR) / cols, rh = (h - padT - padB) / rows;
+      const col = {0: '#1a2436', 1: '#39506b', 2: '#e8574a', 3: '#f2b24a'};
+      for (let r = 0; r < rows; ++r){
+        for (let c = 0; c < cols; ++c){
+          const v = p.cells[r][c];
+          if (v < 0) continue;
+          ctx.fillStyle = col[v] || '#1a2436';
+          ctx.fillRect(padL + c * cw, padT + r * rh, Math.ceil(cw), Math.ceil(rh));
+        }
+      }
+      ctx.font = '10px system-ui';
+      ctx.fillStyle = '#64798f';
+      for (let r = 0; r < rows; r += 5){
+        const z = p.z0 + r * p.z_step;
+        ctx.fillText(z.toFixed(1), 6, padT + r * rh + 4);
+      }
+      for (let c = 0; c < cols; c += 10){
+        const x = p.x0 + c * p.x_step;
+        ctx.fillText(x.toFixed(0) + 'm', padL + c * cw - 6, h - 8);
+      }
+      ctx.fillStyle = '#8fa3bd';
+      ctx.fillText('x →', w - 42, h - 8);
+    } catch (err){
+      const c2 = el.getContext('2d');
+      if (c2){ c2.fillStyle = '#f26b5e'; c2.fillText('gridView: ' + err, 10, 20); }
+    }
+  }
+
   function isoView(sc, i, t){
     const st = state[i];
     if (!st.pts) st.pts = cloudPoints(sc);
@@ -666,6 +716,7 @@ PAGE = r"""<!DOCTYPE html>
     topView(sc, i, t);
     profileView(sc, i, t);
     isoView(sc, i, t);
+    if (sc.map_probe) gridView(sc, i);
     if (Math.abs((sc.goal_z || 0) - (sc.start_z || 0)) > 0.5) xzView(sc, i, t);
     $('tt' + i).textContent = t.toFixed(1) + ' s / ' + fmt(sc.metrics.time) + ' s';
     $('ev' + i).innerHTML = eventsText(sc, t);
