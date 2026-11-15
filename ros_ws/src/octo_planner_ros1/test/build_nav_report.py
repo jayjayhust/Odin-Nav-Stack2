@@ -38,6 +38,10 @@ PAGE = r"""<!DOCTYPE html>
   .wrap{max-width:1240px;margin:0 auto;padding:28px 20px 60px}
   h1{font-size:24px;margin:0 0 6px;letter-spacing:.02em}
   .sub{color:var(--dim);margin:0 0 22px}
+  .planfilt{display:flex;gap:8px;margin:0 0 16px;flex-wrap:wrap}
+  .planfilt button{background:#16202e;border:1px solid #2a3a4f;color:#98a9bd;
+    padding:7px 14px;border-radius:8px;font-size:13px;cursor:pointer}
+  .planfilt button.on{border-color:#48a7b4;color:#74dbdd;background:#132430}
   .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;margin-bottom:22px}
   .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 14px}
   .card .k{color:var(--dim);font-size:12px}
@@ -83,6 +87,11 @@ PAGE = r"""<!DOCTYPE html>
 <div class="wrap">
   <h1>Go2 点云实时导航与避障闭环仿真</h1>
   <p class="sub" id="sub"></p>
+  <div class="planfilt" id="planfilt">
+    <button data-p="all" class="on">两个规划器</button>
+    <button data-p="NeuPAN">仅 NeuPAN</button>
+    <button data-p="DWA">仅 DWA</button>
+  </div>
   <div class="cards" id="cards"></div>
   <div class="row">
     <button id="playAll">全部播放</button>
@@ -126,6 +135,9 @@ PAGE = r"""<!DOCTYPE html>
   function sceneShell(sc, i, host){
     const sec = document.createElement('div');
     sec.className = 'scene';
+    // The name carries the planner as the last "· x" segment.
+    const who = /· (NeuPAN|DWA)$/.exec(sc.name);
+    sec.dataset.planner = who ? who[1] : 'all';
     const tag = sc.ok ? '<span class="tag ok">通过</span>'
                       : '<span class="tag bad">' + (sc.collided ? '碰撞' : '未到达') + '</span>';
     const m = sc.metrics;
@@ -815,7 +827,7 @@ PAGE = r"""<!DOCTYPE html>
 
   function start(){
     const host = $('scenes');
-    $('sub').textContent = DATA.scenarios.length + ' 个场景 · 点云建图 → 全局 3D A* → DWA 局部避障 → 真值包络碰撞判定' +
+    $('sub').textContent = DATA.scenarios.length + ' 个场景 × 2 种局部规划器 · 点云建图 → 全局 3D A* → 局部避障 → 真值包络碰撞判定' +
       ' · 感知 ' + SENSOR.max_range + ' m / ' + SENSOR.azimuth + ' 线 × ' + SENSOR.rings + ' 层';
     const cards = $('cards');
     cards.innerHTML =
@@ -828,6 +840,16 @@ PAGE = r"""<!DOCTYPE html>
         '<div class="n">Odin1 装在背部，base_z ' + ROBOT.base_z.toFixed(2) + ' m</div></div>' +
       '<div class="card"><div class="k">感知</div><div class="v">' + SENSOR.max_range + ' m</div>' +
         '<div class="n">' + SENSOR.azimuth + ' 线 / ' + SENSOR.rings + ' 层 / σ ' + SENSOR.sigma + ' m</div></div>';
+
+    $('planfilt').addEventListener('click', e => {
+      const b = e.target.closest('button');
+      if (!b) return;
+      const want = b.dataset.p;
+      [].forEach.call(document.querySelectorAll('.planfilt button'), x => x.classList.toggle('on', x === b));
+      [].forEach.call(document.querySelectorAll('.scene'), sec => {
+        sec.style.display = (want === 'all' || sec.dataset.planner === want) ? '' : 'none';
+      });
+    });
 
     DATA.scenarios.forEach((sc, i) => {
       sceneShell(sc, i, host);
@@ -855,7 +877,7 @@ PAGE = r"""<!DOCTYPE html>
 
     $('note').innerHTML = '机器人几何取自 ' + ROBOT.source +
       '。仿真里没有 Gazebo：本环境没有 /opt/ros、没有 Noetic/catkin，因此这里是一个纯 STL 闭环——' +
-      '射线扫描 → 体素占据 → 3D A* 全局路径 → DWA 采样局部避障 → 真值 OBB 碰撞。' +
+      '射线扫描 → 体素占据 → 3D A* 全局路径 → 局部避障（NeuPAN：差速 + 1.0 s MPC + 点集硬约束；DWA：全向采样 + 膨胀栅格）→ 真值 OBB 碰撞。' +
       '地面的稀疏回波做了 3×3 稠密化（地面是连续面，稠密化不会藏住脚边的障碍）；' +
       '远端目标靠先验建图可达，近端每 0.5 s 用实时点云重建，每 1.5 s 或偏离路线 0.45 m 时重规划。';
 

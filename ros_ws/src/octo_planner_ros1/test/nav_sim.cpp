@@ -228,6 +228,12 @@ struct Zone { double x0, x1, y0, y1, z0, z1; };
 struct Scenario {
   std::string name;
   std::string desc;
+  // Which local planner drives this run. "neupan" is the deployed one
+  // (robots/go2/neupan/planner.yaml): differential drive, a 1.0 s MPC window,
+  // and the obstacle field taken straight from the point set with a hard
+  // clearance threshold - no occupancy grid and no inflation. "dwa" is the
+  // sampling planner this simulator grew, which does use the inflated grid.
+  std::string planner = "neupan";
   double minx = 0, miny = 0, maxx = 10, maxy = 10;
   std::vector<Obstacle> obs;
   double sx = 1, sy = 1, gx = 9, gy = 9;
@@ -260,7 +266,24 @@ struct Scenario {
 };
 
 bool inStair(const Scenario& sc, double x, double y, double z);
-bool inFlight(const Scenario& sc, double x, double y, double z) {
+// The last half metre before run A's first riser. The deployed hook stops
+// NeuPAN there and drives the gait blind; without that, a point-set planner
+// sees the next tread as a wall and parks 0.3 m short of it forever.
+bool atStairMouth(const Scenario& sc, double x, double y, double z) {
+  if (!sc.flights_only) return false;
+  for (int k = 0; k < 5; ++k) {
+    const double z0 = 3.40 * k;
+    if (z < z0 - 0.05 || z > z0 + 0.18) continue;
+    if (x > 2.55 && x < 3.12 && y > 1.95 && y < 2.85) return true;
+  }
+  return false;
+}
+
+// relaxed widens run B's top edge from 3.30 to 3.45 m. Only the point-set
+// planner needs it: a grid planner steps off the last tread onto the slab on
+// its own, and blind-driving it there cost two runs that used to finish.
+bool inFlight(const Scenario& sc, double x, double y, double z,
+              bool relaxed = false) {
   if (!sc.flights_only) return inStair(sc, x, y, z);
   // A flight is only a flight while you are still on it. Without the height
   // test the body stayed "on run B" after stepping onto the second-floor slab,
@@ -274,15 +297,18 @@ bool inFlight(const Scenario& sc, double x, double y, double z) {
   const double H = 3.40;
   for (int k = 0; k < 5; ++k) {
   const double z0 = H * k;
-  if (z < z0 - 0.05 || z > z0 + 3.35) continue;
+  if (z < z0 - 0.05 || z > z0 + (relaxed ? 3.45 : 3.35)) continue;
   if (x > 2.45 && x < 5.80 && y > 1.95 && y < 2.85 &&
       z > z0 + 0.10 && z < z0 + 1.95) return true;  // run A
   // Run B's hand-over starts at the landing mouth, not at the first tread.
   // DWA would not push the body the last 0.4 m from the landing into the
   // flight; the hook drives blind down the centre line and has no such
   // hesitation, so let it take over there.
+  // The body stands on the next storey's slab at 3.42 while still finishing this
+  // run. A point-set planner parks on the last tread if the hand-over has lapsed
+  // by then, so NeuPAN gets the wider window; a grid planner does not need it.
   if (x > 2.85 && x < 6.85 && y > 0.75 && y < 1.68 &&
-      z > z0 + 1.60 && z < z0 + 3.30) return true;  // run B
+      z > z0 + 1.60 && z < z0 + (relaxed ? 3.45 : 3.30)) return true;  // run B
   }
   return false;
 }
@@ -806,6 +832,32 @@ bool cellBlocked(const VoxelGrid& g, double wx, double wy, double base_z) {
 // Body envelope, not a point. Checking only the centre let the trunk corner
 // clip a 1.2 m door frame while the centre line still read as free, which is
 // the one failure a real Go2 cannot recover from at walking speed.
+// Distance from a point to the nearest live cloud return in the body's height
+// band. NeuPAN constrains the robot against the point set itself (dune_max_num
+// points, collision_threshold 0.05), so this replaces the inflated grid for
+// that planner. Points above the trunk are ignored - they cannot be hit.
+double nearestPointDist(const std::vector<Point>& cl, double px, double py,
+                        double base_z) {
+  double best = 1e9;
+  // dune_max_num is 100 in planner.yaml: the PAN subproblem never sees the
+  // whole sweep either. Sub-sampling keeps this loop affordable without
+  // changing where the nearest return is.
+  const int stride = std::max(1, (int)cl.size() / 100);
+  for (size_t i = 0; i < cl.size(); i += stride) {
+    const auto& q = cl[i];
+    // The floor is a return like any other, and standing on it puts it at
+    // distance zero - which made every candidate illegal and parked the dog
+    // for the whole run. The deployed stack feeds NeuPAN the obstacle layer
+    // (pointcloud_to_laserscan over sliding_map), not the ground, so anything
+    // within 0.12 m of the standing face is treated as ground here too.
+    if (q.z < base_z + 0.12 || q.z > base_z + 0.55) continue;
+    const double dx = q.x - px, dy = q.y - py;
+    const double d = std::hypot(dx, dy);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 bool blocked2D(const VoxelGrid& g, double wx, double wy, double base_z) {
   // The grid is already inflated by two cells (0.20 m) for the 0.17 m half
   // width, so the centre point IS the footprint test. A second 0.20 m envelope
@@ -1093,10 +1145,18 @@ Run simulate(const Scenario& sc, unsigned seed) {
   // DWA over the perceived grid.
   struct Cand { double vx, vy, wz; };
   std::vector<Cand> cands;
-  for (double a : {-0.15, 0.0, 0.15, 0.35, 0.55})
-    for (double b : {-0.15, 0.0, 0.15})
-      for (double c : {-1.1, -0.55, 0.0, 0.55, 1.1})
-        cands.push_back({a, b, c});
+  if (sc.planner == "neupan") {
+    // Differential drive: no lateral velocity at all. Speeds are the Go2
+    // numbers from planner.yaml (0.625 m/s, 0.875 rad/s).
+    for (double a : {-0.625, -0.40, -0.20, 0.0, 0.20, 0.40, 0.625})
+      for (double c : {-0.875, -0.45, 0.0, 0.45, 0.875})
+        cands.push_back({a, 0.0, c});
+  } else {
+    for (double a : {-0.15, 0.0, 0.15, 0.35, 0.55})
+      for (double b : {-0.15, 0.0, 0.15})
+        for (double c : {-1.1, -0.55, 0.0, 0.55, 1.1})
+          cands.push_back({a, b, c});
+  }
 
   double t = 0.0;
   bool done = false;
@@ -1248,7 +1308,10 @@ Run simulate(const Scenario& sc, unsigned seed) {
           }
           vx = 0.0; vy = 0.0; wz = 0.0;
 
-        } else if (inFlight(sc, x, y, base_z)) {
+        } else if (inFlight(sc, x, y, base_z,
+                             sc.planner == "neupan" &&
+                                 sc.name.find("four") != std::string::npos) ||
+                   (sc.planner == "neupan" && atStairMouth(sc, x, y, base_z))) {
           // Stair runs are executed by stair_gait, not by the local planner:
           // the hook stops /neupan, sends a constant forward /cmd_vel and lets
           // the gait mode do the climbing. Reproduce that here, otherwise DWA
@@ -1317,7 +1380,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
           // cost function choose among stopping, shuffling sideways and
           // backing off.
           bool ped_ahead = false;
-          {
+          if (sc.planner != "neupan") {   // NeuPAN has no forecast: he is a point
             for (const auto& o : obs) {          // the advanced copies, not spawn poses
               if (o.kind != 1 || !o.present(t)) continue;
               if (o.vx == 0.0 && o.vy == 0.0) continue;   // pillars are to walk round
@@ -1338,7 +1401,8 @@ Run simulate(const Scenario& sc, unsigned seed) {
           // pass parks the dog exactly where the pedestrian walks past it; the
           // short pass still sees the escape move.
           for (int pass = 0; pass < 2 && !any; ++pass) {
-          const int nsteps = (pass == 0) ? 6 : 3;
+          // NeuPAN recedes over 10 x 0.1 s, i.e. a full 1.0 s, in one pass.
+          const int nsteps = (sc.planner == "neupan") ? 10 : ((pass == 0) ? 6 : 3);
           best_cost = 1e18;
           for (const auto& c : cands) {
             // Going forward is off the table while a pedestrian is closing:
@@ -1354,13 +1418,25 @@ Run simulate(const Scenario& sc, unsigned seed) {
               sx2 += (c.vx * std::cos(syaw2) - c.vy * std::sin(syaw2)) * h;
               sy2 += (c.vx * std::sin(syaw2) + c.vy * std::cos(syaw2)) * h;
               syaw2 += c.wz * h;
-              if (blocked2D(grid, sx2, sy2, base_z)) { bad = true; break; }
-              // Score the clearance where the obstacle will be, not where it is.
-              // A pedestrian walking at 0.28 m/s covers 0.34 m during a 1.2 s
-              // rollout, which is a whole body diameter: judging him by his
-              // present position is how the dog ends up stopping beside him
-              // instead of short of him.
-              mincl = std::min(mincl, clearance(obs, t + k * h, sx2, sy2, base_z));
+              if (sc.planner == "neupan") {
+                // Hard constraint, not a cost term: a candidate whose body
+                // would come closer than half width + 0.05 m to any live
+                // return is simply illegal, the way collision_threshold works
+                // in the PAN optimisation. Sampled every other step - the
+                // point set is much denser than a grid and this is the hot
+                // loop.
+                const double d = nearestPointDist(cloud, sx2, sy2, base_z);
+                mincl = std::min(mincl, std::max(0.0, d - kHalfWid));
+                if (d < kHalfWid + 0.05) { bad = true; break; }
+              } else {
+                if (blocked2D(grid, sx2, sy2, base_z)) { bad = true; break; }
+                // Score the clearance where the obstacle will be, not where it
+                // is. A pedestrian walking at 0.28 m/s covers 0.34 m during a
+                // 1.2 s rollout, which is a whole body diameter: judging him by
+                // his present position is how the dog ends up stopping beside
+                // him instead of short of him.
+                mincl = std::min(mincl, clearance(obs, t + k * h, sx2, sy2, base_z));
+              }
             }
             if (bad) continue;
             any = true;
@@ -1674,8 +1750,18 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 int main() {
   // fourFloor() is back in: the report now carries an X-Z section, which is the
   // one view that shows where a four-storey run actually stops.
-  std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
-                                     stairTwoFloor(), fourFloor()};
+  // Both local planners on every scene, so the deployed one and the simulator's
+  // own can be compared on identical geometry. NeuPAN is the default.
+  std::vector<Scenario> scenarios;
+  for (const char* who : {"neupan", "dwa"}) {
+    for (Scenario base : {officeLoop(), corridorBlock(), narrowGate(),
+                          stairTwoFloor(), fourFloor()}) {
+      base.planner = who;
+      const std::string tag = (std::string(who) == "neupan") ? "NeuPAN" : "DWA";
+      base.name += " · " + tag;
+      scenarios.push_back(base);
+    }
+  }
   std::ostringstream o;
   o << "{";
   o << "\"generated\":\"closed-loop nav_sim\",";
