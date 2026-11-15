@@ -274,7 +274,10 @@ bool atStairMouth(const Scenario& sc, double x, double y, double z) {
   for (int k = 0; k < 5; ++k) {
     const double z0 = 3.40 * k;
     if (z < z0 - 0.05 || z > z0 + 0.18) continue;
-    if (x > 2.55 && x < 3.12 && y > 1.95 && y < 2.85) return true;
+    // 2.30, not 2.55: the four-storey run stalled 3 cm outside the window, on
+    // the last centimetres before the first riser, where the tread reads as a
+    // wall and nothing moves.
+    if (x > 2.30 && x < 3.12 && y > 1.95 && y < 2.85) return true;
   }
   return false;
 }
@@ -307,7 +310,8 @@ bool inFlight(const Scenario& sc, double x, double y, double z,
   // The body stands on the next storey's slab at 3.42 while still finishing this
   // run. A point-set planner parks on the last tread if the hand-over has lapsed
   // by then, so NeuPAN gets the wider window; a grid planner does not need it.
-  if (x > 2.85 && x < 6.85 && y > 0.75 && y < 1.68 &&
+  const double xb = relaxed ? 2.35 : 2.85;
+  if (x > xb && x < 6.85 && y > 0.75 && y < 1.68 &&
       z > z0 + 1.60 && z < z0 + (relaxed ? 3.45 : 3.30)) return true;  // run B
   }
   return false;
@@ -566,6 +570,13 @@ Scenario fourFloor() {
     s.via.push_back({6.65, cb, z0 + 1.74});          // shift across the landing
     s.via.push_back({5.30, cb, z0 + 1.78});          // return flight mouth
     s.via.push_back({2.20, cb, z0 + H});             // next slab
+    // Turning room. Stepping off the last tread leaves the body facing west
+    // with the return flight 0.65 m to its east: a differential drive needs
+    // 0.71 m of arc to come round, so every candidate clipped a riser and the
+    // planner chose to stand still for the rest of the run. Backing off to the
+    // stair hall's west side first opens the turn.
+    s.via.push_back({1.60, cb, z0 + H});             // back off, clear of the flight
+    s.via.push_back({1.60, ca, z0 + H});             // face the next up-run
   }
   s.via.push_back({1.00, 1.30, H * 3});              // fourth floor
 
@@ -839,10 +850,12 @@ bool cellBlocked(const VoxelGrid& g, double wx, double wy, double base_z) {
 double nearestPointDist(const std::vector<Point>& cl, double px, double py,
                         double base_z) {
   double best = 1e9;
-  // dune_max_num is 100 in planner.yaml: the PAN subproblem never sees the
-  // whole sweep either. Sub-sampling keeps this loop affordable without
-  // changing where the nearest return is.
-  const int stride = std::max(1, (int)cl.size() / 100);
+  // dune_max_num is 100 in planner.yaml, but that is 100 points after the
+  // obstacle filter, not a blind 1-in-N of the sweep. Striding over the raw
+  // cloud dropped most of the pedestrian's returns - a 0.44 m cylinder two
+  // metres away is only a handful of rays - and the dog walked straight into
+  // him. Keep every other in-band point instead of every fifth raw point.
+  const int stride = 2;
   for (size_t i = 0; i < cl.size(); i += stride) {
     const auto& q = cl[i];
     // The floor is a return like any other, and standing on it puts it at
@@ -1173,6 +1186,14 @@ Run simulate(const Scenario& sc, unsigned seed) {
 
     for (auto& o : obs) o.advance(t);
 
+    // The local planner consumes the live sweep, and the deployed stack feeds
+    // NeuPAN at 10 Hz. Refreshing it at 2 Hz let a 0.28 m/s pedestrian close a
+    // whole body width between two samples: the dog saw him at 0.6 m, committed,
+    // and by the next sweep he was at 0.2 m. Mapping keeps its own 0.5 s clock.
+    if (step % 5 == 0) {
+      scan(obs, t, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
+    }
+
     // 0.5 s mapping refresh
     if (step % 25 == 0) {  // 0.5 s: mapping refresh, and one local window
       {
@@ -1327,7 +1348,14 @@ Run simulate(const Scenario& sc, unsigned seed) {
           // down the middle of the flight, which is what the corridor weight in
           // the planner is there to encourage in the first place.
           const bool upper = (y > 1.80);
-          const double cx_run = upper ? 5.98 : 2.95;
+          // Every NeuPAN run needs the wider blind line, not just the four
+          // storeys: the two-storey scene ends on that slab and parks on the
+          // same boundary point.
+          const bool relaxed = sc.planner == "neupan";
+          // x=2.95 sits exactly on the hand-over boundary (x > 2.85), so the
+          // goal was the point the body already stood on: atan2(0, 0) then spun
+          // it in place for the rest of the run. Aim past the edge instead.
+          const double cx_run = upper ? 5.98 : (relaxed ? 2.20 : 2.95);
           const double cy_run = upper ? 2.40 : 1.20;
           const double ang = std::atan2(cy_run - y, cx_run - x);
           double err = ang - yaw;
