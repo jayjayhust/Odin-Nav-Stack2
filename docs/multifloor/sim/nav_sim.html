@@ -106,6 +106,8 @@
     const tag = sc.ok ? '<span class="tag ok">通过</span>'
                       : '<span class="tag bad">' + (sc.collided ? '碰撞' : '未到达') + '</span>';
     const m = sc.metrics;
+    // A level change, not a tall room: flat scenes also span 2.6 m of z_range.
+    const hasZ = Math.abs((sc.goal_z || 0) - (sc.start_z || 0)) > 0.5;
     sec.innerHTML =
       '<h2>' + sc.name + ' ' + tag + '</h2>' +
       '<p class="desc">' + sc.desc + '</p>' +
@@ -131,6 +133,12 @@
             '<span><b style="background:#9d8bf0"></b>地速（右轴 0–0.8 m/s）</span>' +
             '<span><b style="background:#f2b24a"></b>事件</span>' +
           '</div></div>' +
+        (hasZ ? '<div class="view wide"><h3>侧视 X–Z · 高度剖面</h3><canvas id="xz' + i + '"></canvas>' +
+          '<div class="legend">' +
+            '<span><b style="background:#3ddc84"></b>实际轨迹</span>' +
+            '<span><b style="background:#e8574a"></b>真值障碍（沿 y 折叠）</span>' +
+            '<span><b style="background:#f2b24a"></b>目标高度</span>' +
+          '</div></div>' : '') +
         '<div class="view wide"><h3>3D 点云 · 左键旋转（俯仰不限）/ 滚轮推拉 / 双击复位</h3>' +
           '<canvas id="iso' + i + '"></canvas></div>' +
       '</div>' +
@@ -386,6 +394,87 @@
     return out;
   }
 
+  // The only panel where a climb cannot be mistaken for a flat walk: X across,
+  // Z up. Obstacles are collapsed along y, so the treads read as a stair profile
+  // and the trace either follows them or it does not.
+  function xzView(sc, i, t){
+    const el = $('xz' + i);
+    if (!el) return;
+    const cv = setup(el, 260);
+    const ctx = cv.ctx, w = cv.w, h = cv.h;
+    try {
+      const zr = sc.z_range || [-0.2, 1], wx = sc.world;
+      ctx.fillStyle = '#070d17'; ctx.fillRect(0, 0, w, h);
+      const pad = 40;
+      const zk = (h - pad * 1.2) / (zr[1] - zr[0]);
+      // world is [x0, y0, x1, y1] - x1 is index 2, using index 1 gave a
+      // negative span and a negative scale, so everything landed off-canvas.
+      const xk = (w - pad * 1.6) / (wx[2] - wx[0]);
+      const k = Math.min(zk, xk);
+      const sx = x => pad + (x - wx[0]) * k;
+      const sy = z => h - pad * 0.6 - (z - zr[0]) * k;
+
+      ctx.font = '10px system-ui';
+      for (let z = Math.ceil(zr[0]); z <= zr[1]; z += 1){
+        const yy = sy(z);
+        ctx.strokeStyle = '#1a2942'; ctx.lineWidth = 1;
+        ctx.beginPath(); ctx.moveTo(pad, yy); ctx.lineTo(w - pad * 0.5, yy); ctx.stroke();
+        ctx.fillStyle = '#64798f'; ctx.fillText(z.toFixed(0) + ' m', 8, yy + 3);
+      }
+
+      // Treads, if the obstacle data lets us draw them. Anything malformed is
+      // skipped rather than allowed to abort the frame.
+      for (const o of (sc.obstacles || [])){
+        if (!o.a || o.a.length < 4) continue;
+        const x0 = sx(o.a[0]), x1 = sx(o.a[2]);
+        const t0 = sy(o.z[1]), t1 = sy(o.z[0]);
+        if (!isFinite(x0) || !isFinite(x1) || !isFinite(t0) || !isFinite(t1)) continue;
+        ctx.fillStyle = 'rgba(232,87,74,0.13)';
+        ctx.strokeStyle = 'rgba(232,87,74,0.45)'; ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.rect(Math.min(x0, x1), Math.min(t0, t1), Math.abs(x1 - x0), Math.abs(t1 - t0));
+        ctx.fill(); ctx.stroke();
+      }
+
+      // heights that matter, as horizontals
+      const lvl = (z, label, color) => {
+        if (!isFinite(z)) return;
+        ctx.strokeStyle = color; ctx.lineWidth = 1;
+        ctx.setLineDash([4, 4]);
+        ctx.beginPath(); ctx.moveTo(pad, sy(z)); ctx.lineTo(w - pad * 0.5, sy(z)); ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = color; ctx.fillText(label, w - pad * 0.5 - 74, sy(z) - 4);
+      };
+      lvl(sc.start_z || 0, '起点层', 'rgba(61,220,132,0.75)');
+      lvl(sc.goal_z || 0, '目标层', 'rgba(242,178,74,0.8)');
+
+      const last = Math.min(sc.trace.length - 1, Math.round(t * 10));
+      ctx.strokeStyle = 'rgba(61,220,132,0.95)'; ctx.lineWidth = 2.4;
+      ctx.beginPath();
+      for (let n = 0; n <= last; n++){
+        const p = sc.trace[n];
+        const X = sx(p[0]), Y = sy(p[2]);
+        if (n === 0) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+      }
+      ctx.stroke();
+
+      const dot = (x, z, c) => {
+        ctx.fillStyle = c;
+        ctx.beginPath(); ctx.arc(sx(x), sy(z), 4.5, 0, Math.PI * 2); ctx.fill();
+      };
+      dot(sc.start[0], sc.start_z || 0, '#3ddc84');
+      dot(sc.goal[0], sc.goal_z || 0, '#f2b24a');
+      ctx.fillStyle = '#8fa3bd'; ctx.font = '11px system-ui';
+      const szv = Number(sc.start_z || 0), gzv = Number(sc.goal_z || 0);
+      ctx.fillText('起点 z' + szv.toFixed(2) + ' m', sx(sc.start[0]) + 8, sy(szv) + 16);
+      ctx.fillText('目标 z' + gzv.toFixed(2) + ' m', sx(sc.goal[0]) + 8, sy(gzv) - 10);
+      ctx.fillText('X–Z 高度剖面 · 障碍沿 y 折叠', 10, h - 10);
+    } catch (err){
+      ctx.fillStyle = '#f26b5e'; ctx.font = '12px system-ui';
+      ctx.fillText('xzView: ' + (err && err.message ? err.message : err), 12, 24);
+    }
+  }
+
   function isoView(sc, i, t){
     const st = state[i];
     if (!st.pts) st.pts = cloudPoints(sc);
@@ -495,8 +584,10 @@
       ctx.strokeStyle = color; ctx.lineWidth = width;
       if (dash) ctx.setLineDash(dash); else ctx.setLineDash([]);
       let prev = null;
+      // Each sample carries its own height; projecting everything at z 0
+      // flattened the whole climb onto the ground slab.
       for (const p of arr){
-        const q = project(p[0], p[1], 0);
+        const q = project(p[0], p[1], p.length > 2 ? p[2] : 0);
         if (!q){ prev = null; continue; }
         const s = toS(q);
         if (prev){ ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(s[0], s[1]); ctx.stroke(); }
@@ -532,7 +623,7 @@
         const q = quad[n % 4];
         const wx = p[0] + q[0] * c - q[1] * s;
         const wy = p[1] + q[0] * s + q[1] * c;
-        const pr = project(wx, wy, ROBOT.base_z);
+        const pr = project(wx, wy, p[2] + ROBOT.base_z);
         if (!pr){ prev = null; continue; }
         const sp2 = toS(pr);
         if (prev){ ctx.beginPath(); ctx.moveTo(prev[0], prev[1]); ctx.lineTo(sp2[0], sp2[1]); ctx.stroke(); }
@@ -552,6 +643,7 @@
     topView(sc, i, t);
     profileView(sc, i, t);
     isoView(sc, i, t);
+    if (Math.abs((sc.goal_z || 0) - (sc.start_z || 0)) > 0.5) xzView(sc, i, t);
     $('tt' + i).textContent = t.toFixed(1) + ' s / ' + fmt(sc.metrics.time) + ' s';
     $('ev' + i).innerHTML = eventsText(sc, t);
   }
