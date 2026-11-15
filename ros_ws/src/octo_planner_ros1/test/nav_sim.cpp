@@ -422,7 +422,10 @@ Scenario fourFloor() {
   s.name = "four_floor";
   s.desc = "四层办公楼：同一楼梯芯垂直叠三层（双跑 × 9 级 × 0.189 m、净宽 1.0 m、层高 3.40 m），"
            "一层起点 → 四层目标，连爬三个层间，共 6 跑 54 级";
-  s.minx = -0.2; s.maxx = 7.0;
+  // The landing is 1.60 m deep, not 1.20: a real stair hall always gives a full
+  // tread width plus room to swing round, and this body is 0.52 m long - at
+  // 1.20 m it had 0.55 m to the outer wall and turned by scraping along it.
+  s.minx = -0.2; s.maxx = 7.4;
   s.miny = -1.6; s.maxy = 3.6;
   s.zmin = -0.20; s.zmax = 10.70;
   s.sx = 1.0; s.sy = 0.0; s.sz = 0.0;
@@ -456,7 +459,7 @@ Scenario fourFloor() {
       s.obs.push_back(box(x0, ya0, x0 + TREAD, ya1,
                           z0 + RISE * i, z0 + RISE * (i + 1)));
     }
-    s.obs.push_back(box(5.7, 0.80, 6.9, 2.90, z0, z0 + LAND));      // landing
+    s.obs.push_back(box(5.7, 0.80, 7.30, 2.90, z0, z0 + LAND));      // landing
     for (int i = 0; i < 9; ++i) {                    // run B, -x
       const double x1 = 5.7 - i * TREAD;
       s.obs.push_back(box(x1 - TREAD, yb0, x1, yb1,
@@ -480,15 +483,15 @@ Scenario fourFloor() {
       }
     }
     // One upstand per side of the landing, on the outer edge of each run.
-    s.obs.push_back(box(5.7, ya1, 6.9, ya1 + 0.08, z0 + LAND - 0.04, z0 + LAND + RAIL));
-    s.obs.push_back(box(5.7, yb0 - 0.08, 6.9, yb0, z0 + LAND - 0.04, z0 + LAND + RAIL));
-    s.obs.push_back(box(6.84, 1.9, 6.92, 2.9, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    s.obs.push_back(box(5.7, ya1, 7.30, ya1 + 0.08, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    s.obs.push_back(box(5.7, yb0 - 0.08, 7.30, yb0, z0 + LAND - 0.04, z0 + LAND + RAIL));
+    s.obs.push_back(box(7.24, 1.9, 7.32, 2.9, z0 + LAND - 0.04, z0 + LAND + RAIL));
   }
 
   // envelope walls, full height
-  s.obs.push_back(box(7.0, 0.5, 7.1, 3.3, 0.0, 10.60));
-  s.obs.push_back(box(-0.3, 3.2, 7.0, 3.3, 0.0, 10.60));
-  s.obs.push_back(box(-0.3, -1.7, 7.0, -1.6, 0.0, 10.60));
+  s.obs.push_back(box(7.4, 0.5, 7.5, 3.3, 0.0, 10.60));
+  s.obs.push_back(box(-0.3, 3.2, 7.4, 3.3, 0.0, 10.60));
+  s.obs.push_back(box(-0.3, -1.7, 7.4, -1.6, 0.0, 10.60));
   s.obs.push_back(box(-0.3, -0.2, -0.2, 3.2, 0.0, 10.60));
   for (int f = 1; f <= 3; ++f) {                     // slab guard rails
     const double z = H * f;
@@ -496,7 +499,7 @@ Scenario fourFloor() {
     s.obs.push_back(box(-0.2, -0.28, 3.0, -0.20, z, z + 1.0));
   }
 
-  s.stair.push_back({2.7, 7.0, 0.5, 3.1, 0.0, 10.20});
+  s.stair.push_back({2.7, 7.4, 0.5, 3.1, 0.0, 10.20});
   for (int k = 0; k < 3; ++k) {
     const double z0 = H * k;
     const double ca = 2.40;
@@ -512,7 +515,7 @@ Scenario fourFloor() {
     const double cb = 1.30;
     s.survey_pts.push_back({1.80, ca, z});
     s.survey_pts.push_back({3.60, ca, z});
-    if (f < 3) s.survey_pts.push_back({6.30, ca, z + LAND});
+    if (f < 3) s.survey_pts.push_back({6.70, ca, z + LAND});
     s.survey_pts.push_back({1.80, cb, z});
   }
   s.survey_pts.push_back({0.60, -0.60, 0.0});
@@ -525,15 +528,16 @@ Scenario fourFloor() {
     const double ca = 2.40;
     const double cb = 1.30;
     s.via.push_back({3.18, ca, z0 + 0.05});          // stair mouth
-    s.via.push_back({6.30, ca, z0 + 1.80});          // landing
+    s.via.push_back({5.95, ca, z0 + 1.80});          // just onto the landing
+    s.via.push_back({6.65, ca, z0 + 1.77});          // turn point, 0.59 m off the rail
     // Make the lateral shift its own leg. With one leg from the landing to the
     // slab below, the arrival tolerance (0.45 m) is satisfied while the body is
     // still on the up-run's top tread at y 1.71, and the next leg then starts
     // from there - where the cheapest route to the goal is back DOWN the flight
     // it just climbed. Standing off the return flight's mouth first leaves only
     // one way in.
-    s.via.push_back({6.35, cb, z0 + 1.74});          // shift across the landing
-    s.via.push_back({5.90, cb, z0 + 1.76});          // return flight mouth
+    s.via.push_back({6.65, cb, z0 + 1.74});          // shift across the landing
+    s.via.push_back({5.30, cb, z0 + 1.78});          // return flight mouth
     s.via.push_back({2.20, cb, z0 + H});             // next slab
   }
   s.via.push_back({1.00, 1.30, H * 3});              // fourth floor
@@ -1511,7 +1515,8 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
 int main() {
   std::vector<Scenario> scenarios = {officeLoop(), corridorBlock(), narrowGate(),
                                      stairTwoFloor()
-                                     // fourFloor(): held out of the report, see the dump below
+                                     // fourFloor(): held out of the report; the dump in simulate()
+                                     // is what shows why its return run never finishes
                                      // (zmax 3.42, no collision), but stalls on the
                                      // last riser at (3.76, 1.29) with its standing
                                      // height oscillating 3.32-3.38. Held out of the
