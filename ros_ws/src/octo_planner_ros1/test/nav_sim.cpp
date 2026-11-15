@@ -601,7 +601,20 @@ void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
           // cells above it free - including the cell the tread itself sits in.
           // Letting that overwrite the prior erases the very step the dog has
           // to climb, and no later sweep puts it back.
-          if (v == VoxelGrid::kOccupied) { g.set(ix, iy, iz, v); continue; }
+          if (v == VoxelGrid::kOccupied) {
+            // Keep the prior's *surfaces*; let the live sweep clear its bulk.
+            // A storey's stair core is seeded solid all the way up, and the
+            // body only ever sees the first 4 m of it. Wherever the sweep did
+            // reach and reported air, the prior's interior has to give way -
+            // otherwise a solid column 1.2 m over the trunk gets planned
+            // through, which is exactly why a four storey stack never climbed
+            // past its first landing.
+            const int up = (iz + 1 < g.nz()) ? iz + 1 : iz;
+            const bool is_surface = prior->at(ix, iy, up) != VoxelGrid::kOccupied;
+            if (!is_surface && g.at(ix, iy, iz) == VoxelGrid::kFree) continue;
+            g.set(ix, iy, iz, v);
+            continue;
+          }
           if (g.at(ix, iy, iz) != VoxelGrid::kUnknown) continue;
           g.set(ix, iy, iz, v);
         }
