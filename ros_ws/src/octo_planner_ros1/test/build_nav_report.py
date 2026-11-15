@@ -289,13 +289,13 @@ PAGE = r"""<!DOCTYPE html>
       ctx.beginPath(); ctx.moveTo(mp.sx(w[0]), mp.sy(y)); ctx.lineTo(mp.sx(w[2]), mp.sy(y)); ctx.stroke();
     }
 
-    // Everything the robot has mapped so far, faint, plus the current sweep
-    // on top. A single frame at the playhead reads as a lone blob and hides
-    // the fact that the map is built up over the run.
+    // Everything the robot has mapped up to the playhead, faint, plus the
+    // current sweep on top. Both are cut at t, so scrubbing to 0 leaves a bare
+    // room and playing forward re-loads the cloud sweep by sweep - the map is
+    // something the dog builds, not something the page hands it up front.
     ctx.fillStyle = 'rgba(70,150,170,0.30)';
     const swept = sc.clouds.filter(c => c.t <= t + 1e-6);
-    const every = Math.max(1, Math.floor(swept.length / 10));
-    for (let n = 0; n < swept.length; n += every){
+    for (let n = 0; n < swept.length; ++n){
       for (const p of swept[n].p){
         const s = mp.sx(p[0]), sy = mp.sy(p[1]);
         if (s < 0 || s > cv.w || sy < 0 || sy > cv.h) continue;
@@ -854,10 +854,10 @@ PAGE = r"""<!DOCTYPE html>
     DATA.scenarios.forEach((sc, i) => {
       sceneShell(sc, i, host);
       const w = sc.world, ar = Math.max(w[2] - w[0], w[3] - w[1]) / Math.min(w[2] - w[0], w[3] - w[1]);
-      state[i] = { t: (sc.trace.length - 1) / 10, playing: false,
+      state[i] = { t: 0, playing: false,
                    cam: { yaw: ar > 3 ? 0 : -0.9, pitch: ar > 3 ? 0.62 : 0.42, zoom: 1 } };
       bindCamera(i);
-      $('rng' + i).value = ((sc.trace.length - 1) / 10).toFixed(1);
+      $('rng' + i).value = '0.0';
       $('rng' + i).addEventListener('input', e => {
         state[i].t = parseFloat(e.target.value); render(i, state[i].t);
       });
