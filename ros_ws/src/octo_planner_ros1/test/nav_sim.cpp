@@ -30,6 +30,7 @@
 #include <sstream>
 #include <string>
 #include <vector>
+#include <map>
 
 #include <array>
 #include "octo_planner_ros1/astar3d.h"
@@ -642,7 +643,8 @@ void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
   // the conservative pair for a trunk half width of 0.17 m: 3 cells on both
   // sides closed a 1.6 m corridor completely once a bin was in it, which the
   // real dog walks through.
-  g.inflate(2, 0, /*skip_standing_surfaces=*/true);
+  if (!getenv("NAVSIM_NO_INFLATE"))
+    g.inflate(2, 0, /*skip_standing_surfaces=*/true);
 
   // Inside a stair core the horizontal inflation has to go. A 0.30 m tread
   // with a 0.20 m side expansion from the next riser leaves two thirds of the
@@ -680,6 +682,7 @@ void surveyMap(const Scenario& sc, const SensorModel& sm, std::mt19937& rng,
       for (double by = sc.miny + 1.2; by <= sc.maxy - 0.6; by += 2.4)
         stands.push_back({bx, by, 0.0});
   }
+  std::map<std::pair<int, int>, double> stair_low;
   if (sc.seed_stair_prior) {
     for (const auto& o : sc.obs) {
       if (o.kind != 0) continue;
@@ -696,14 +699,33 @@ void surveyMap(const Scenario& sc, const SensorModel& sm, std::mt19937& rng,
       scan(sc.obs, 0.0, st[0], st[1], st[2], 0.0, sm, rng, one, sc.ztol);
       // Same stamping as the live sweep: the 3x3 fill of the ground band is
       // what turns 240 near-field returns into a walkable floor.
+      // In the stair core keep only the LOWEST hit per column. Seen from 3.6 m
+      // away the sweep grazes the risers and its hits run up the vertical face
+      // as a continuous column - measured at x 5.40 / y 1.30 as 16 filled cells
+      // from z 1.60 to 2.35 where the true treads are three thin layers topping
+      // out at 2.08. The lowest hit is the tread the column stands on, which is
+      // the only surface that should be there.
       for (const auto& p : one) {
-        prior.insertSurfacePoint(p.x, p.y, p.z, 20);
+      int six = 0, siy = 0, siz = 0;
+      if (sc.seed_stair_prior && inStair(sc, p.x, p.y, p.z) &&
+          prior.worldToIndex(p.x, p.y, p.z, six, siy, siz)) {
+        auto key = std::make_pair(six, siy);
+        auto it = stair_low.find(key);
+        if (it == stair_low.end() || p.z < it->second) stair_low[key] = p.z;
+        continue;
+      }
+      prior.insertSurfacePoint(p.x, p.y, p.z, 20);
         if (p.z > -0.09 && p.z < 0.06)
           for (int dx = -1; dx <= 1; ++dx)
             for (int dy = -1; dy <= 1; ++dy)
               prior.insertSurfacePoint(p.x + dx * prior.resolution(),
                                        p.y + dy * prior.resolution(), p.z, 20);
       }
+  }
+  for (const auto& kv : stair_low) {
+    double wx = 0.0, wy = 0.0, wz = 0.0;
+    prior.indexToWorld(kv.first.first, kv.first.second, 0, wx, wy, wz);
+    prior.insertSurfacePoint(wx, wy, kv.second, 20);
   }
 }
 
@@ -1052,7 +1074,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
       scan(obs, t, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
       accum.insert(accum.end(), cloud.begin(), cloud.end());
       if (accum.size() > 16000) accum.erase(accum.begin(), accum.begin() + (accum.size() - 16000));
-      rebuild(grid, accum, &prior, &sc);
+      rebuild(grid, accum, getenv("NAVSIM_NO_PRIOR") ? nullptr : &prior, &sc);
       if (getenv("NAVSIM_DUMP") && t > 29.4 && t < 30.6) {
         char ch[4] = {'.', ' ', '#', '+'};
         for (double yq : {1.30, 2.40}) {
