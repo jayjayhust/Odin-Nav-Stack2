@@ -104,23 +104,26 @@ The dog's position is still driven by **the global route**; the local layer only
 
 
 
-### The 25 cm limit flight at 0.05 m - option 1, done
+### The 25 cm limit flight now runs at 0.15 m - two real bugs, not resolution
 
-25 cm is the Go2's climbing limit. To represent it honestly the page changes the **grid, not the rules**: the single storey room gains a `示例 · 单层（25 cm 极限梯）` button with rise 0.25 / tread 0.28, a 1.00 m platform, a 1.00 m pit, and a 0.05 m grid (0.25 is 5 cells, 0.28 about 6, all on the lattice).
+25 cm is the Go2's climbing limit. Last round it was made to work by dropping to a 0.05 m grid (5.7 million cells, 10,380 expanded nodes). This round the actual causes turned up, and **0.15 m works with no rule changed**:
 
-| | 0.15 m standard flight | 0.05 m limit flight |
+| item | 0.15 m standard flight | 0.15 m 25 cm flight |
 |---|---|---|
-| grid | 80×53×37, about 150 thousand cells | 265×185×116, about **5.7 million** |
-| standable | about 5,900 | 87,191 |
-| floor | 44 cells / 7.26 m / 466 expanded | 131 cells / 7.4 m / **10,380 expanded** |
-| ascent | 27 cells / 4.73 m, z 0.13 to 0.73 | **65 cells / 3.94 m, z -0.03 to 1.07** (a 1.00 m platform) |
-| descent | 19 cells / 3.11 m, z 0.13 to -0.47 | **57 cells / 3.59 m, z -0.03 to -1.03** |
+| grid | 80x53x37, about 150 thousand cells | 89x63x40, about 220 thousand cells |
+| standable cells | about 5,900 | 5,683 |
+| open floor | 44 points / 7.26 m / 466 expanded | - |
+| climbing | 27 points / 4.79 m, z 0.13 to 0.73 | **22 points / 3.65 m, z 0.17 to 1.22** (1.00 m platform) |
+| dropping into the pit | 19 points / 3.11 m, z 0.13 to -0.47 | **19 points / 3.54 m, z 0.17 to -0.88** |
 
-Not one rule changed. Two cell counts became lengths: `max_step_z` is written as 0.45 m and `snap_search_radius` as 1.80 m, converted per map - at 0.15 m they are still 3 and 12, so the old paths are unchanged to the cell (27, 19, and the four storey 115).
+The two causes:
 
-**The cost is real**: expanded nodes go from 466 to 10,380, A* more than twenty times slower, and the map costs about 38 times the memory. That is why 25 cm is only offered on the single storey sample; the four storey room stays at 0.15 m, where a 0.05 m grid would be around 200 million cells and the page would hang.
+1. **The boxes are hollow shells.** Each box in the OBJ contributes six faces and nothing else, so the inside of a solid block reads as free space with an occupied cell directly underneath - which is exactly what a standable cell looks like. The 0.60 m platform is only four cells tall, so the four cell headroom test caught it and nothing ever showed; the 1.00 m platform is about 6.7 cells, so the dog simply stood inside the block and the goal stopped being on the tread. Fix: flood the outside once from the bounding box boundary, then fill any enclosed pocket whose **bounding box spans at most 6 m**. Filling only small pockets is mandatory - a storey is enclosed too (slab below, slab above, four walls), and solidifying indiscriminately turns every storey into a brick and the four storey map instantly has no route.
+2. **The z datum was wrong.** The single storey branch used `Z0 = m.lo[2] + 1.30`, and that 1.30 was calibrated against the 0.15 m model, whose `lo[2]` is -1.30. The 25 cm model has a 1.00 m pit, `lo[2] = -1.70`, so every z target sat 0.40 m low: the goal at 1.02 became 0.62, inside the 1.00 m platform. Now `Z0 = 0` - in model coordinates the floor is z = 0 - and both samples share one set of endpoints.
 
-A 30 cm flight still does not plan (measured: the goal component holds 33 cells), so 25 cm is the upper edge of this voxel scheme - which lands exactly on the robot's own limit.
+Built, measured, then deleted: **a semantic stair ramp**. It detected the flight (neighbouring column tops within 0.25 m), fitted a plane through the tread tops by least squares, painted one walkable layer above the fitted surface, and exempted those cells from inflation. It ran, but switching the whole layer off left 25 cm working exactly the same (22 points / 3.65 m, 114 vs 115 expanded), while it pushed the four storey search from 5,944 to 8,007 expansions. With the two bugs as the real cause, the layer was dead weight and is gone; the map is back to "support rule plus inflation".
+
+0.05 m remains in the resolution dropdown for manual use, but the `示例 · 单层（25 cm 极限梯）` button is now 0.15 m, and the four storey sample has always been 0.15 m.
 
 ### Trying a step-edge test instead of a layer count (rejected, kept for the record)
 
@@ -133,7 +136,7 @@ A 30 cm flight still does not plan (measured: the goal component holds 33 cells)
 
 One-sided is too loose: it calls every plate rim a step and scrambles the four storey terrain. Two-sided is too tight: the top and bottom tread of any flight is necessarily one-sided, so the flight snaps off at both ends. Reverted to the layer count - conservative, but the 0.15 m flight, the four storey run and the pit are all stable under it.
 
-To genuinely support 25 cm the right move is a **0.05 m resolution** (0.25 is 5 cells, a 0.28 tread about 6, exact on the lattice, no rule change). The cost is roughly 80 thousand cells growing to 2.6 million, and loading plus A* both get noticeably slower. That is not done yet, pending your call.
+The conclusion drawn then was that only 0.05 m could carry 25 cm. This round shows that was wrong: 0.15 m is enough, and what actually blocked it was the hollow shell and the z datum, two bugs covered in the section above.
 
 ## Two simulators, one robot: the same planning stack
 
@@ -181,7 +184,7 @@ Two real bugs from the previous round stay fixed: `snap` accepted a free cell it
 
 The next measurement is not another geometry parameter - it is which single layer is missing between those 74 cells and the foot of the flight. It was left alone this round because the relaxation above already bought the ascent and the four storey case, and locking that in was worth more than reopening the pit.
 
-## Limits worth knowing## Limits worth knowing
+## Limits worth knowing
 
 - 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
 - The probe shares the planner's edge rules, so it proves "reachable under these rules", not that the dog can walk it: `stair_gait`, the 0.42 m body, and the site upstands are not modelled.

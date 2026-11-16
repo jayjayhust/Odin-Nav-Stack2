@@ -394,6 +394,66 @@ function buildMap(pos, idx, res, infR){
   // three layers of each other, which is a flight and never a floor plate. The
   // same test carves the flight out of the inflation band, and gates the stair
   // walkability below.
+  // ---- solidify ------------------------------------------------------------
+  // Every box in the model contributes six faces and nothing else, so a solid
+  // block arrives as a hollow shell. Inside a 0.60 m platform that never
+  // mattered - the four cell headroom test fails first. Inside a 1.00 m
+  // platform it does: the interior reads as free space with an occupied cell
+  // directly underneath, which is precisely what a standable cell looks like,
+  // and the planner happily walks the dog through the inside of the block.
+  // Flood the outside once and turn everything it cannot reach into solid.
+  {
+    const outside = new Uint8Array(cells);
+    const stack = [];
+    const push = f => { if (data[f] !== OCC && !outside[f]){ outside[f] = 1; stack.push(f); } };
+    for (let k = 0; k < nz; ++k)
+      for (let j = 0; j < ny; ++j)
+        for (let i = 0; i < nx; ++i)
+          if (i === 0 || j === 0 || k === 0 || i === nx-1 || j === ny-1 || k === nz-1)
+            push(F(i, j, k));
+    while (stack.length){
+      const f = stack.pop();
+      const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny, j = (rem / nx) | 0, i = rem - j*nx;
+      if (i > 0) push(f-1);
+      if (i < nx-1) push(f+1);
+      if (j > 0) push(f-nx);
+      if (j < ny-1) push(f+nx);
+      if (k > 0) push(f - nx*ny);
+      if (k < nz-1) push(f + nx*ny);
+    }
+    // Only fill small pockets. A storey is enclosed too - floor below, slab
+    // above, four walls - so filling every unreachable cell would turn each
+    // room into a solid block and kill the map. What has to go is the inside
+    // of a prop-sized box: a few metres across at most.
+    const SPAN_MAX = Math.max(8, Math.round(6.0 / res));
+    const done = new Uint8Array(cells);
+    for (let seed = 0; seed < cells; ++seed){
+      if (outside[seed] || done[seed] || data[seed] === OCC) continue;
+      const stack2 = [seed], members = [];
+      done[seed] = 1;
+      let lo0 = 1e9, hi0 = -1e9, lo1 = 1e9, hi1 = -1e9, lo2 = 1e9, hi2 = -1e9;
+      while (stack2.length){
+        const f = stack2.pop();
+        members.push(f);
+        const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny, j = (rem / nx) | 0, i = rem - j*nx;
+        if (i < lo0) lo0 = i; if (i > hi0) hi0 = i;
+        if (j < lo1) lo1 = j; if (j > hi1) hi1 = j;
+        if (k < lo2) lo2 = k; if (k > hi2) hi2 = k;
+        const nb = [i > 0 ? f-1 : -1, i < nx-1 ? f+1 : -1,
+                    j > 0 ? f-nx : -1, j < ny-1 ? f+nx : -1,
+                    k > 0 ? f-nx*ny : -1, k < nz-1 ? f+nx*ny : -1];
+        for (let n3 = 0; n3 < 6; ++n3){
+          const g = nb[n3];
+          if (g < 0 || done[g] || data[g] === OCC) continue;
+          done[g] = 1;
+          stack2.push(g);
+        }
+      }
+      if (hi0-lo0 > SPAN_MAX || hi1-lo1 > SPAN_MAX || hi2-lo2 > SPAN_MAX) continue;
+      for (const f of members) data[f] = OCC;
+    }
+  }
+
   const stairCol = new Uint8Array(nx*ny);
   for (let j = 0; j < ny; ++j)
     for (let i = 0; i < nx; ++i){
@@ -443,7 +503,7 @@ function buildMap(pos, idx, res, infR){
         if (wz > zmax) zmax = wz;
       }
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          stairCol, nStand, nInfl,
+          stairCol, nStand, nInfl, 
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -486,6 +546,11 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
 
   const goalI = goalId % nx, goalJ = ((goalId / nx) | 0) % ny,
         goalK = (goalId / (nx*ny)) | 0;
+  if (location.hash.indexOf('diag') >= 0)
+    console.log('SNAP ' + JSON.stringify({goal: [gx, gy, gz],
+      gi: goalI, gj: goalJ, gk: goalK,
+      gz_cell: (+(lo[2] + (goalK+0.5)*res).toFixed(2)),
+      start_k: (startId / (nx*ny)) | 0}));
 
   const gScore = new Float32Array(cells).fill(1e30);
   const from = new Int32Array(cells).fill(-1);
@@ -1064,6 +1129,8 @@ function loadModel(pos, idx, name){
     return;
   }
   state.map = m;
+  if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
+    probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
   walkMesh = makePlanes(m);
   root.add(walkMesh);
 
@@ -1102,7 +1169,7 @@ document.getElementById('demo1').onclick = () => {
 document.getElementById('demo2').onclick = () => {
   // the 25 cm sample needs a 0.05 m grid: 0.25 is five cells and a 0.28 tread
   // about six, both exact, so no rule has to bend to fit it
-  document.getElementById('res').value = '0.05';
+  document.getElementById('res').value = '0.15';
   const o = parseOBJ(DATA_OBJ2);
   loadModel(o.pos, o.idx, '示例 · 单层（25 cm 极限梯）');
 };
@@ -1336,7 +1403,11 @@ if (location.hash.indexOf('single') >= 0){
       // which forces the plan over four treads instead of around them
       // the model is re-centred on load, so these are offsets into the map's
       // own bounds, not the OBJ's original coordinates
-      const X0 = m.lo[0], Y0 = m.lo[1], Z0 = m.lo[2] + 1.30;   // Z0 = the floor
+      // z is a model coordinate, not a map one: the floor is z = 0 in the OBJ
+      // of both sample maps. Deriving it from lo[2] quietly broke the 25 cm
+      // map, whose pit is deeper, so every z target sat 0.40 m low and the
+      // platform goal landed inside the block.
+      const X0 = m.lo[0], Y0 = m.lo[1], Z0 = 0;
       const kind = location.hash.indexOf('pit') >= 0 ? 'pit'
                  : location.hash.indexOf('stair') >= 0 ? 'stair' : 'floor';
       // Floor to floor is the working case: it crosses the room, goes round
@@ -1374,6 +1445,7 @@ if (location.hash.indexOf('single') >= 0){
         if (location.hash.indexOf('diag') >= 0){
           const X0p = m.lo[0], Y0p = m.lo[1];
           probeRow(m, Y0p + 5.80, X0p + 7.60, X0p + 11.60, 'pit-lane');
+          probeRow(m, Y0p + 1.60, X0p + 1.20, X0p + 4.20, 'up-lane');
         }
         say(r.error); return;
       }
