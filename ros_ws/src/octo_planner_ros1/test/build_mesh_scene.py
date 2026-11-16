@@ -15,9 +15,13 @@ from scipy.ndimage import binary_closing, label
 VOX = 0.12
 # Textbook flight numbers: 300 mm going, 190 mm rise.
 TREAD = 0.30
+CLEAR = 1.20   # clear width of one flight
+LANDING = 1.20 # depth of the half-landing at each flight head
 # Rise per step in the survey stairs; only used to give the recovered tread
 # the riser underneath it.
 STEP_RISE = 0.19
+TREAD_TH = 0.06    # a tread is a plate, not a filled block
+RISER_TH = 0.07    # the riser is the plate under a tread's leading edge
 SRC = "../../../../docs/multifloor/sim/nav_sim_data.json"
 DST = "../../../../docs/multifloor/sim/mesh_scene_data.json"
 STEPS = (1.0,)
@@ -239,18 +243,29 @@ def stair_model(obstacles, zones):
         xs, xe, yhi, ylo = a["xs"], a["xe"], a["yhi"], a["ylo"]
         n = max(6, int(round((xe - xs) / TREAD)))
         half = n   # nine 0.30 m goings make the 2.70 m run
-        clear = max(0.9, yhi - ylo - 1.15)   # the well between the two balustrades
+        # Two runs share one dividing line: the outbound flight sits against
+        # the upper balustrade, the return flight against the lower one, and
+        # their inner edges meet in the middle of the well. Each is one clear
+        # width deep - 1.20 m of the 2.40 m the two balustrades span.
         yA1 = yhi
-        yA0 = max(ylo, yhi - 1.15)
-        yB1 = ylo
-        yB0 = min(yA0, ylo - 1.15) if ylo - 1.15 > a["y0"] else a["y0"] + 0.1
-        land = max(0.9, 0.5 * (a["y1"] - a["y0"]))
+        yA0 = yA1 - CLEAR
+        yB1 = yA0                       # the shared inner edge, i.e. the well
+        yB0 = max(a["y0"] + 0.05, yB1 - CLEAR)
+        # the landing is one metre and a half deep along x and spans the whole
+        # well across y, so both flights open onto it
+        land = LANDING
         for f in range(a["floors"]):
             zb = a["z0"] + f * a["storey"]
             # outbound: rises to the landing, y band A
             for i in range(half):
                 z = zb + (i + 1) * STEP_RISE
-                out.append((xs + i * TREAD, yA0, xs + (i + 1) * TREAD, yA1, z - STEP_RISE, z))
+                # one step is a tread plus the riser under its leading edge,
+                # not a filled block: a solid block stacks into one sloping
+                # wall and the steps stop being countable from any angle
+                out.append((xs + i * TREAD, yA0, xs + (i + 1) * TREAD, yA1,
+                            z - TREAD_TH, z))
+                out.append((xs + i * TREAD, yA0, xs + i * TREAD + RISER_TH, yA1,
+                            z - STEP_RISE, z))
             # landing plate at the head
             zl = zb + half * STEP_RISE
             out.append((xs + half * TREAD, a["y0"] + 0.08, xs + half * TREAD + land,
@@ -258,18 +273,13 @@ def stair_model(obstacles, zones):
             # return: rises back the other way, y band B
             for i in range(half):
                 z = zl + (i + 1) * STEP_RISE
-                out.append((xe - (i + 1) * TREAD, yB0, xe - i * TREAD, yB1, z - STEP_RISE, z))
-        # one balustrade per flight side, 0.85 m tall, 0.06 thick
-        for f in range(a["floors"]):
-            zb = a["z0"] + f * a["storey"]
-            for i in range(half):
-                z = zb + (i + 1) * STEP_RISE
-                out.append((xs + i * TREAD, yA1, xs + (i + 1) * TREAD, yA1 + 0.06,
-                            z - STEP_RISE, min(z + 0.85, zb + a["storey"])))
-            for i in range(half):
-                z = zb + half * STEP_RISE + (i + 1) * STEP_RISE
-                out.append((xe - (i + 1) * TREAD, yB1 - 0.06, xe - i * TREAD, yB1,
-                            z - STEP_RISE, min(z + 0.85, zb + a["storey"])))
+                out.append((xe - (i + 1) * TREAD, yB0, xe - i * TREAD, yB1,
+                            z - TREAD_TH, z))
+                out.append((xe - i * TREAD - RISER_TH, yB0, xe - i * TREAD, yB1,
+                            z - STEP_RISE, z))
+        # No balustrade. It is part of the real stair, but drawn as solid
+        # panels it hides the very thing this model exists to show: nine risers
+        # you can count. A flight is treads, risers and a landing.
     return out
 
 def stair_boxes(obstacles, zones):
@@ -441,6 +451,14 @@ def main():
             zs = sc.get("stair") or []
             tr = stair_model(sc.get("obstacles") or [], zs)
             v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi, zs, tr)
+            # the model's own box, so "只看楼梯" clips to the stair rather than
+            # to the whole core, which also contains scan fragments
+            if tr:
+                bbox = [min(r[0] for r in tr), max(r[2] for r in tr),
+                        min(r[1] for r in tr), max(r[3] for r in tr),
+                        min(r[4] for r in tr), max(r[5] for r in tr)]
+            else:
+                bbox = None
             cum_pts = int(sum(len(p) for p in pts[:k]))
             va = np.array(v, dtype=np.int16).reshape(-1)
             i16 = len(v) < 65535
@@ -478,6 +496,7 @@ def main():
                          round(float(hi[0]), 3), round(float(hi[1]), 3)],
                "z_range": [round(float(lo[2]), 3), round(float(hi[2]), 3)],
                "stair": [[round(float(v), 3) for v in z] for z in (sc.get("stair") or [])],
+               "stair_bbox": [round(float(v), 3) for v in bbox] if bbox else None,
                "start": sc["start"], "goal": sc["goal"],
                "start_z": sc["start_z"], "goal_z": sc["goal_z"],
                "planners": [sc["name"].split(" · ")[-1] if " · " in sc["name"] else "single"],

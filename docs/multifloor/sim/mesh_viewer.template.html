@@ -549,6 +549,10 @@ document.querySelector('#stairTog .chip').onclick = e => {
   const chip = e.currentTarget;
   const on = !chip.classList.contains('on');
   const sc = DATA.scenes[state.scene];
+  // clip to the core, not to the model's own box: the meshed stair is voxels
+  // and grows by a cell, so its exact box shaves the outer faces off. The core
+  // holds nothing but the model now, because it is cleared before the model is
+  // written back.
   const core = sc.stair && sc.stair.length ? sc.stair[0] : null;
   CLIP = on && core ? core : null;
   chip.classList.toggle('on', !!CLIP);
@@ -704,6 +708,9 @@ if (hp[5]){
 // the stair core, i.e. the same thing the 只看楼梯 chip does.
 if (hp[7] === '1' && DATA.scenes[initScene].stair && DATA.scenes[initScene].stair.length){
   CLIP = DATA.scenes[initScene].stair[0];
+  // centre the camera on the model, which is narrower than the core
+  const bb = DATA.scenes[initScene].stair_bbox;
+  if (bb) cam.target.set((bb[0]+bb[1])/2, (bb[2]+bb[3])/2, (bb[4]+bb[5])/2);
   document.querySelector('#stairTog .chip').classList.add('on');
   const g0 = meshGroup.children[0];
   if (g0){
