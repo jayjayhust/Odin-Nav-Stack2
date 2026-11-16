@@ -187,316 +187,325 @@ function parseSTL(buf){
   return {pos: new Float32Array(pos), idx: new Uint32Array(idx)};
 }
 
-// ---------- map: floors per column, walls projected to XY ------------------
+// ---------- map: surface voxels, inflation, ground support ----------------
+// This page does not invent a planner. The map and the search below are ports
+// of ros_ws/src/octo_planner_ros1/src/voxel_grid.cpp and astar3d.cpp, so a
+// mesh imported here is read the same way a point cloud from Odin1 is:
+//
+//   - only surface samples are marked occupied, nothing is filled solid;
+//   - clearance is stamped only above a face that points up, which is what
+//     keeps a slab from being walked through;
+//   - inflation is a flat XY disk with no z extent, inflate(2, 0);
+//   - a cell is standable only if something solid sits under it.
+const UNKNOWN = 0, FREE = 1, OCC = 2, INFL = 3;
+const CLEARANCE = 20;          // voxel_grid.cpp: insertSurfacePoint(..., 20)
+const MAX_STEP_Z = 3;          // nav_sim.cpp: max_step_z_cells = 3
+const SNAP_R = 12;             // nav_sim.cpp: snap_search_radius_cells = 12
+
 function buildMap(pos, idx, res, infR){
-  const np = pos.length / 3;
-  if (!np) return null;
-  let x0 = 1e30, y0 = 1e30, z0 = 1e30, x1 = -1e30, y1 = -1e30, z1 = -1e30;
-  for (let i = 0; i < np; ++i){
-    const x = pos[3*i], y = pos[3*i+1], z = pos[3*i+2];
-    if (x < x0) x0 = x; if (x > x1) x1 = x;
-    if (y < y0) y0 = y; if (y > y1) y1 = y;
-    if (z < z0) z0 = z; if (z > z1) z1 = z;
-  }
   const pad = 0.6;
-  const lo = [x0 - pad, y0 - pad, z0 - pad];
-  const nx = Math.ceil((x1 - x0 + 2*pad) / res) + 2;
-  const ny = Math.ceil((y1 - y0 + 2*pad) / res) + 2;
-  const nz = Math.ceil((z1 - z0 + 2*pad) / res) + 2;
-  const cells = nx * ny;
-  if (cells * nz > 6e7) return {tooBig: true, nx, ny, nz};
+  let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
+  for (let i = 0; i < pos.length; i += 3){
+    for (let a = 0; a < 3; ++a){
+      const v = pos[i+a];
+      if (v < lo[a]) lo[a] = v;
+      if (v > hi[a]) hi[a] = v;
+    }
+  }
+  if (lo[0] > hi[0]) return null;
+  for (let a = 0; a < 3; ++a){ lo[a] -= pad; hi[a] += pad; }
+  const nx = Math.ceil((hi[0]-lo[0])/res)+1, ny = Math.ceil((hi[1]-lo[1])/res)+1,
+        nz = Math.ceil((hi[2]-lo[2])/res)+1;
+  const cells = nx*ny*nz;
+  if (cells > 40e6) return {tooBig:true, nx, ny, nz, lo, cellCount:cells};
+  const data = new Uint8Array(cells);          // UNKNOWN everywhere, like configure()
+  const F = (i, j, k) => (k*ny + j)*nx + i;    // voxel_grid.cpp: flatten()
 
-  const zs = new Map();        // column -> array of surface z (metres, plate top)
-  const wallXY = new Uint8Array(cells);
-  const ax = new Float32Array(9);
+  function insertOne(ix, iy, iz, upwardClear){
+    if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) return;
+    data[F(ix, iy, iz)] = OCC;
+    if (!upwardClear) return;
+    for (let d = 1; d <= CLEARANCE; ++d){
+      const k = iz + d;
+      if (k >= nz) break;
+      const f = F(ix, iy, k);
+      if (data[f] === UNKNOWN) data[f] = FREE;
+    }
+  }
+  // nav_sim stamps a floor return over its 3x3 neighbourhood, because the
+  // samples are sparse against the cell size and the floor is a continuous
+  // plane - filling that gap cannot hide an obstacle. Without it the plate
+  // arrives as a sieve, the 5x5 support test counts under 8 cells and most of
+  // the storey is rejected as unsupported.
+  function insert(x, y, z, upwardClear){
+    const ix = Math.floor((x-lo[0])/res), iy = Math.floor((y-lo[1])/res),
+          iz = Math.floor((z-lo[2])/res);
+    insertOne(ix, iy, iz, upwardClear);
+    if (!upwardClear) return;
+    for (let dy = -1; dy <= 1; ++dy)
+      for (let dx = -1; dx <= 1; ++dx){
+        if (!dx && !dy) continue;
+        insertOne(ix+dx, iy+dy, iz, true);
+      }
+  }
 
-  for (let f = 0; f < idx.length; f += 3){
-    const a = idx[f] * 3, b = idx[f+1] * 3, c = idx[f+2] * 3;
-    const ax0 = pos[a], ay0 = pos[a+1], az0 = pos[a+2];
-    const bx = pos[b], by = pos[b+1], bz = pos[b+2];
-    const cx = pos[c], cy = pos[c+1], cz = pos[c+2];
-    // normal
-    const e1 = [bx-ax0, by-ay0, bz-az0], e2 = [cx-ax0, cy-ay0, cz-az0];
-    let nX = e1[1]*e2[2] - e1[2]*e2[1];
-    let nY = e1[2]*e2[0] - e1[0]*e2[2];
-    let nZ = e1[0]*e2[1] - e1[1]*e2[0];
-    const nl = Math.hypot(nX, nY, nZ);
-    if (!nl) continue;
-    nZ /= nl;
-    const horizontal = Math.abs(nZ) > 0.65;
-    // A vertical face is only a wall if it is tall. A stair riser is 0.19 m and
-    // would otherwise inflate 0.45 m into the tread next to it, sealing the
-    // flight it is part of.
-    const zspan = Math.max(az0, bz, cz) - Math.min(az0, bz, cz);
-    const vertical   = Math.abs(nZ) < 0.35 && zspan > 0.35;
-    // sample the triangle on a lattice no coarser than one cell
-    const step = res * 0.8;
-    const L1 = Math.hypot(bx-ax0, by-ay0, bz-az0);
-    const L2 = Math.hypot(cx-ax0, cy-ay0, cz-az0);
-    const n = Math.max(1, Math.min(400, Math.ceil(Math.max(L1, L2) / step)));
-    for (let i = 0; i <= n; ++i){
-      for (let j = 0; j <= n - i; ++j){
-        const u = i / n, v = j / n;
-        const px = ax0 + (bx-ax0)*u + (cx-ax0)*v;
-        const py = ay0 + (by-ay0)*u + (cy-ay0)*v;
-        const pz = az0 + (bz-az0)*u + (cz-az0)*v;
-        const ci = Math.floor((px - lo[0]) / res);
-        const cj = Math.floor((py - lo[1]) / res);
-        if (ci < 0 || cj < 0 || ci >= nx || cj >= ny) continue;
-        const key = ci + cj * nx;
-        if (horizontal){
-          let arr = zs.get(key);
-          if (!arr){ arr = []; zs.set(key, arr); }
-          arr.push(pz);
-        } else if (vertical){
-          wallXY[key] = 1;
+  // Sample every triangle on a 0.8 cell lattice, and stamp clearance only
+  // under an upward normal. A slab's underside carries a downward normal and
+  // must not open the floor above it, or the search would go straight through
+  // a storey instead of up the stairs.
+  const step = res*0.8;
+  const vA = [0,0,0], vB = [0,0,0], vC = [0,0,0];
+  for (let t = 0; t < idx.length; t += 3){
+    const ia = idx[t]*3, ib = idx[t+1]*3, ic = idx[t+2]*3;
+    vA[0] = pos[ia]; vA[1] = pos[ia+1]; vA[2] = pos[ia+2];
+    vB[0] = pos[ib]; vB[1] = pos[ib+1]; vB[2] = pos[ib+2];
+    vC[0] = pos[ic]; vC[1] = pos[ic+1]; vC[2] = pos[ic+2];
+    const e1 = [vB[0]-vA[0], vB[1]-vA[1], vB[2]-vA[2]];
+    const e2 = [vC[0]-vA[0], vC[1]-vA[1], vC[2]-vA[2]];
+    const nX = e1[1]*e2[2] - e1[2]*e2[1];
+    const nY = e1[2]*e2[0] - e1[0]*e2[2];
+    const nZ = e1[0]*e2[1] - e1[1]*e2[0];
+    const nl = Math.hypot(nX, nY, nZ) || 1;
+    const up = (nZ/nl) > 0.35;
+    const L = Math.max(Math.hypot(e1[0], e1[1], e1[2]),
+                       Math.hypot(e2[0], e2[1], e2[2]));
+    const n = Math.min(64, Math.max(1, Math.ceil(L/step)));
+    for (let u = 0; u <= n; ++u){
+      for (let v = 0; v + u <= n; ++v){
+        const a = u/n, b = v/n;
+        insert(vA[0] + a*e1[0] + b*e2[0],
+               vA[1] + a*e1[1] + b*e2[1],
+               vA[2] + a*e1[2] + b*e2[2], up);
+      }
+    }
+  }
+
+  // hasGroundSupport, transposed from voxel_grid.cpp with xy radius 0: the
+  // cell below must be occupied, and a one cell thick sheet is only accepted
+  // when it is a real horizontal face rather than a wall hit on one layer.
+  function support(ix, iy, iz){
+    const zl = iz - 1;
+    if (zl < 0) return false;
+    if (data[F(ix, iy, zl)] !== OCC) return false;
+    if (zl - 1 >= 0 && data[F(ix, iy, zl-1)] === FREE){
+      let span = 0;
+      for (let sy = -2; sy <= 2; ++sy)
+        for (let sx = -2; sx <= 2; ++sx){
+          const i2 = ix + sx, j2 = iy + sy;
+          if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+          if (data[F(i2, j2, zl)] === OCC) ++span;
+        }
+      if (span < 8) return false;
+    }
+    return true;
+  }
+
+  // nav_sim runs with allow_unknown_cells, and that is what makes a staircase
+  // plannable at all: a tread hangs in the air with nothing under it because
+  // no ground return was ever measured there. An unknown cell underneath is
+  // accepted optimistically and settled by the local planner on arrival.
+  function supportOrUnknown(ix, iy, iz){
+    if (iz - 1 >= 0 && data[F(ix, iy, iz-1)] === UNKNOWN) return true;
+    return support(ix, iy, iz);
+  }
+
+  // inflate(rxy, 0): a flat disk, never any z extent. Stair runs are exempt,
+  // the same carve-out nav_sim makes for a stair core - a 0.30 m tread cannot
+  // survive a 0.20 m side expansion from the next riser. A column counts as
+  // stair when four or more of its occupied cells sit within three layers of
+  // each other, which is a flight and never a floor plate.
+  const rxy = Math.max(0, Math.round(infR/res));
+  if (rxy > 0){
+    const exempt = new Uint8Array(nx*ny);
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        let run = 0, last = -99;
+        for (let k = 0; k < nz; ++k){
+          if (data[F(i, j, k)] !== OCC) continue;
+          run = (k - last <= MAX_STEP_Z) ? run + 1 : 1;
+          last = k;
+          if (run >= 4){ exempt[i + j*nx] = 1; break; }
+        }
+      }
+    const occ = [];
+    for (let f = 0; f < cells; ++f) if (data[f] === OCC) occ.push(f);
+    for (let oi = 0; oi < occ.length; ++oi){
+      const f = occ[oi];
+      const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
+      const j = (rem / nx) | 0, i = rem - j*nx;
+      if (exempt[i + j*nx]) continue;
+      for (let dj = -rxy; dj <= rxy; ++dj){
+        const jj = j + dj;
+        if (jj < 0 || jj >= ny) continue;
+        for (let di = -rxy; di <= rxy; ++di){
+          if (di*di + dj*dj > rxy*rxy) continue;
+          const ii = i + di;
+          if (ii < 0 || ii >= nx) continue;
+          const ff = F(ii, jj, k);
+          if (data[ff] === FREE) data[ff] = INFL;
         }
       }
     }
   }
 
-  // collapse each column's surface samples into distinct standing heights.
-  // A plate one cell thick shows up as several samples a few mm apart; the
-  // height that matters is the top of the plate, and heights within 0.10 m of
-  // each other are the same plate.
-  const heights = new Float32Array(cells);      // packed count at index 0? use Map
-  const hList = new Map();
-  for (const [key, arr] of zs){
-    arr.sort((p, q) => p - q);
-    // A plate reports both its top and its bottom face, and the one you stand
-    // on is the top. Group samples that are within a plate thickness of each
-    // other and keep the group's maximum.
-    const out = [];
-    let segTop = -1e9, last = -1e9;
-    for (let i = 0; i < arr.length; ++i){
-      const v = arr[i];
-      // 0.10 m, not 0.20: a riser is 0.19 and a coarser gap merges two steps
-      // into one, which turns a flight into 0.38 m jumps that nothing can climb
-      if (v - last > 0.10){
-        if (segTop > -1e8) out.push(segTop);
-        segTop = v;
-      } else if (v > segTop){
-        segTop = v;
+  // bounds of standable cells, for the camera and the HUD
+  let zmin = 1e30, zmax = -1e30, nStand = 0, nInfl = 0;
+  for (let k = 0; k < nz; ++k)
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        const v = data[F(i, j, k)];
+        if (v !== FREE && v !== INFL) continue;
+        if (k < 1 || !support(i, j, k)) continue;
+        ++nStand;
+        if (v === INFL) ++nInfl;
+        const wz = lo[2] + (k+0.5)*res;
+        if (wz < zmin) zmin = wz;
+        if (wz > zmax) zmax = wz;
       }
-      last = v;
-    }
-    if (segTop > -1e8) out.push(segTop);
-    if (out.length) hList.set(key, out);
-  }
-
-  // inflate the walls in XY with a BFS distance field, capped at infR.
-  // Runs after hList on purpose.
-  const blocked = new Uint8Array(cells);
-  if (infR > 0){
-    const rad = Math.ceil(infR / res);
-    const q = [];
-    for (let k = 0; k < cells; ++k) if (wallXY[k]){ q.push(k); blocked[k] = 1; }
-    let head = 0, dist = 0;
-    const seen = new Uint8Array(cells);
-    for (const k of q) seen[k] = 1;
-    while (head < q.length){
-      const end = q.length;
-      const d = dist;
-      if (d >= rad) break;
-      for (; head < end; ++head){
-        const k = q[head], i = k % nx, j = (k / nx) | 0;
-        for (let dj = -1; dj <= 1; ++dj) for (let di = -1; di <= 1; ++di){
-          if (!di && !dj) continue;
-          const ii = i + di, jj = j + dj;
-          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
-          const kk = ii + jj * nx;
-          if (seen[kk]) continue;
-          seen[kk] = 1;
-          // A column that carries a floor is somewhere you can stand - the top
-          // of a platform block, for one - and inflating a wall over it would
-          // erase the landing the flight arrives at. Inflation spreads only
-          // into columns that have no floor at all.
-          if (!hList.has(kk)){ blocked[kk] = 1; q.push(kk); }
-        }
-      }
-      ++dist;
-    }
-  }
-
-  return {res, infR, lo, nx, ny, nz, hList, blocked, cellCount: cells, tooBig: false};
+  return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, nStand, nInfl,
+          zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
+          tooBig: false};
 }
 
-// ---------- 2.5D A* --------------------------------------------------------
+// ---------- 3D A*, same rules as astar3d.cpp -------------------------------
+const fmt3 = v => '[' + v.map(x => (+x).toFixed(2)).join(',') + ']';
 function planPath(m, sx, sy, sz, gx, gy, gz){
-  const {res, lo, nx, ny, hList, blocked} = m;
-  const cols = nx * ny;
-  const keyOf = (i, j) => i + j * nx;
+  const {res, lo, nx, ny, nz, data} = m;
+  const supportOrUnknown = m.supportOrUnknown;
+  const F = (i, j, k) => (k*ny + j)*nx + i;
+  const cells = m.cells;
+  const traversable = (i, j, k) =>
+    i >= 0 && j >= 0 && k >= 0 && i < nx && j < ny && k < nz && data[F(i, j, k)] === FREE;
 
-  // nearest walkable column + its height closest to the requested z
+  // nearestWalkable, allow_inflated = false: prefer a genuinely free cell, or
+  // every neighbour of the start is inflated and the search expands once.
   function snap(x, y, z){
-    const i0 = Math.floor((x - lo[0]) / res), j0 = Math.floor((y - lo[1]) / res);
-    let best = null, bd = 1e9;
-    for (let dj = -6; dj <= 6; ++dj) for (let di = -6; di <= 6; ++di){
-      const i = i0 + di, j = j0 + dj;
-      if (i < 0 || j < 0 || i >= nx || j >= ny) continue;
-      const k = keyOf(i, j);
-      if (blocked[k]) continue;
-      const hs = hList.get(k);
-      if (!hs) continue;
-      for (let li = 0; li < hs.length; ++li){
-        const d = Math.hypot(i*res + lo[0] - x, j*res + lo[1] - y, hs[li] - z);
-        // prefer the column we asked for, then the height we asked for
-        const dd = d + 0.02 * Math.hypot(di, dj);
-        if (dd < bd){ bd = dd; best = {i, j, li}; }
-      }
-    }
+    const i0 = Math.floor((x-lo[0])/res), j0 = Math.floor((y-lo[1])/res),
+          k0 = Math.floor((z-lo[2])/res);
+    let best = -1, bd = 1e30;
+    for (let dk = -SNAP_R; dk <= SNAP_R; ++dk)
+      for (let dj = -SNAP_R; dj <= SNAP_R; ++dj)
+        for (let di = -SNAP_R; di <= SNAP_R; ++di){
+          const i = i0+di, j = j0+dj, k = k0+dk;
+          if (!traversable(i, j, k)) continue;
+          const d2 = di*di + dj*dj + dk*dk;
+          if (d2 < bd){ bd = d2; best = F(i, j, k); }
+        }
     return best;
   }
 
-  const s = snap(sx, sy, sz), g = snap(gx, gy, gz);
-  if (!s || !g) return {error: '起点或终点附近没有可通行面 (snap ' +
-      JSON.stringify(s) + ' / ' + JSON.stringify(g) + ')'};
+  const startId = snap(sx, sy, sz), goalId = snap(gx, gy, gz);
+  if (startId < 0 || goalId < 0)
+    return {error: (startId < 0 ? '起点' : '终点') + ' 附近 ' + SNAP_R +
+      ' 格内没有可通行格子（膨胀把这一片吃掉了，把膨胀调小或设 0）'};
 
-  const nNode = cols * 8;                       // at most 8 heights tracked per column
-  const NN = cols * 8;
-  const gScore = new Float32Array(NN).fill(Infinity);
-  const from = new Int32Array(NN).fill(-1);
-  const closed = new Uint8Array(NN);
-  const hidx = new Uint8Array(NN);              // which level index this node holds
+  const goalI = goalId % nx, goalJ = ((goalId / nx) | 0) % ny,
+        goalK = (goalId / (nx*ny)) | 0;
 
-  const nodeId = (k, li) => k * 8 + li;
-  const nodeIJ = id => { const k = Math.floor(id / 8); return [k % nx, (k / nx) | 0, id % 8]; };
-
-  const hOf = (i, j, li) => {
-    const hs = hList.get(keyOf(i, j));
-    return hs ? hs[li] : null;
-  };
-  const hx = (i, j, li) => { const h = hOf(i, j, li); return h === null ? null : i*res + lo[0]; };
-  const hy = (i, j, li) => j*res + lo[1];
-
-  const gH = hOf(g.i, g.j, g.li);
-  function heur(i, j, h){
-    return Math.hypot(i*res + lo[0] - (g.i*res + lo[0]),
-                     j*res + lo[1] - (g.j*res + lo[1]),
-                     h - (gH === null ? h : gH));
-  }
-
-  // binary heap on f
-  const heapF = [], heapId = [];
-  function push(id, f){
-    let n = heapF.length;
-    heapF.push(f); heapId.push(id);
-    while (n > 0){
-      const p = (n - 1) >> 1;
-      if (heapF[p] <= heapF[n]) break;
-      [heapF[p], heapF[n]] = [heapF[n], heapF[p]];
-      [heapId[p], heapId[n]] = [heapId[n], heapId[p]];
-      n = p;
+  const gScore = new Float32Array(cells).fill(1e30);
+  const from = new Int32Array(cells).fill(-1);
+  const closed = new Uint8Array(cells);
+  const openF = new Float32Array(cells << 3);
+  const openId = new Int32Array(cells << 3);
+  let heapN = 0;
+  function push(f, id){
+    let i = heapN++;
+    openF[i] = f; openId[i] = id;
+    while (i > 0){
+      const p = (i-1) >> 1;
+      if (openF[p] <= openF[i]) break;
+      const tf = openF[p], ti = openId[p];
+      openF[p] = openF[i]; openId[p] = openId[i];
+      openF[i] = tf; openId[i] = ti;
+      i = p;
     }
   }
   function pop(){
-    const f = heapF[0], id = heapId[0];
-    const lf = heapF.pop(), li = heapId.pop();
-    if (heapF.length){
-      heapF[0] = lf; heapId[0] = li;
-      let n = 0;
+    const id = openId[0];
+    const f = openF[--heapN];
+    const i2 = openId[heapN];
+    if (heapN > 0){
+      let i = 0;
+      openF[0] = f; openId[0] = i2;
       for (;;){
-        const a = 2*n + 1, b = 2*n + 2;
-        let m = n;
-        if (a < heapF.length && heapF[a] < heapF[m]) m = a;
-        if (b < heapF.length && heapF[b] < heapF[m]) m = b;
-        if (m === n) break;
-        [heapF[m], heapF[n]] = [heapF[n], heapF[m]];
-        [heapId[m], heapId[n]] = [heapId[n], heapId[m]];
-        n = m;
+        const l = i*2+1, r = l+1;
+        let s = i;
+        if (l < heapN && openF[l] < openF[s]) s = l;
+        if (r < heapN && openF[r] < openF[s]) s = r;
+        if (s === i) break;
+        const tf = openF[s], ti = openId[s];
+        openF[s] = openF[i]; openId[s] = openId[i];
+        openF[i] = tf; openId[i] = ti;
+        i = s;
       }
     }
-    return [id, f];
+    return id;
   }
+  const heur = (i, j, k) => res*Math.hypot(i-goalI, j-goalJ, k-goalK);
 
-  const sH = hOf(s.i, s.j, s.li);
-  const startId = nodeId(keyOf(s.i, s.j), s.li);
-  const goalId  = nodeId(keyOf(g.i, g.j), g.li);
   gScore[startId] = 0;
-  push(startId, heur(s.i, s.j, sH));
-  hidx[startId] = s.li;
+  push(heur(startId % nx, ((startId/nx)|0) % ny, (startId/(nx*ny))|0), startId);
+  let expanded = 0, foundCell = -1;
+  while (heapN > 0){
+    const cur = pop();
+    if (closed[cur]) continue;
+    closed[cur] = 1;
+    if (++expanded > 400000) break;
 
-  let expanded = 0;
-  const LIMIT = 400000;
-  while (heapF.length && expanded < LIMIT){
-    const [id] = pop();
-    if (closed[id]) continue;
-    closed[id] = 1;
-    ++expanded;
-    if (id === goalId) break;
-    const [i, j, li] = nodeIJ(id);
-    const h = hOf(i, j, li);
-    if (h === null) continue;
-    // Within one column, a plate reports its top and its bottom as separate
-    // heights, and without an edge between them a start point that snapped
-    // to the underside can never reach the surface it is standing on.
-    {
-      const hs = hList.get(keyOf(i, j));
-      for (let lj = 0; lj < hs.length; ++lj){
-        if (lj === li) continue;
-        const dz = hs[lj] - h;
-        if (Math.abs(dz) > 0.40) continue;
-        const id2 = nodeId(keyOf(i, j), lj);
-        if (closed[id2]) continue;
-        const ng = gScore[id] + 1.2 * Math.abs(dz);
-        if (ng < gScore[id2]){
-          gScore[id2] = ng;
-          from[id2] = id;
-          push(id2, ng + heur(i, j, hs[lj]));
-        }
-      }
+    const ci = cur % nx, cj = ((cur/nx)|0) % ny, ck = (cur/(nx*ny))|0;
+    // Accept a cell adjacent to the goal, like astar3d does: the goal is
+    // rarely voxel aligned.
+    if (Math.abs(ci-goalI) <= 1 && Math.abs(cj-goalJ) <= 1 && Math.abs(ck-goalK) <= 1){
+      foundCell = cur;
+      break;
     }
-    for (let dj = -1; dj <= 1; ++dj) for (let di = -1; di <= 1; ++di){
-      if (!di && !dj) continue;
-      const ii = i + di, jj = j + dj;
-      if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
-      const kk = keyOf(ii, jj);
-      if (blocked[kk]) continue;
-      const hs = hList.get(kk);
-      if (!hs) continue;
-      for (let lj = 0; lj < hs.length; ++lj){
-        const dz = hs[lj] - h;
-        // A riser is 0.19 and a plate is 0.06 thick, so two neighbouring
-        // columns on the same flight differ by one step at most. A storey is
-        // 3.42 and can never be crossed here.
-        if (Math.abs(dz) > 0.40) continue;
-        const id2 = nodeId(kk, lj);
-        if (closed[id2]) continue;
-        const step = res * Math.hypot(di, dj) + 1.8 * Math.abs(dz);
-        const ng = gScore[id] + step;
-        if (ng < gScore[id2]){
-          gScore[id2] = ng;
-          from[id2] = id;
-          hidx[id2] = lj;
-          push(id2, ng + heur(ii, jj, hs[lj]));
+
+    for (let dk = -MAX_STEP_Z; dk <= MAX_STEP_Z; ++dk){
+      const k = ck + dk;
+      if (k < 0 || k >= nz) continue;
+      for (let dj = -1; dj <= 1; ++dj){
+        const j = cj + dj;
+        if (j < 0 || j >= ny) continue;
+        for (let di = -1; di <= 1; ++di){
+          if (di === 0 && dj === 0 && dk === 0) continue;
+          // A pure vertical step is never a way up in a building: it only
+          // shows up where a sparse surface leaves a hole in the layer above.
+          if (dk !== 0 && di === 0 && dj === 0) continue;
+          const i = ci + di;
+          if (i < 0 || i >= nx) continue;
+          const nf = F(i, j, k);
+          if (closed[nf]) continue;
+          if (!traversable(i, j, k)) continue;
+          if (k < 1 || !supportOrUnknown(i, j, k)) continue;
+          const step = res*Math.hypot(di, dj, dk);
+          const tentative = gScore[cur] + step;
+          if (tentative >= gScore[nf]) continue;
+          gScore[nf] = tentative;
+          from[nf] = cur;
+          push(tentative + heur(i, j, k), nf);
         }
       }
     }
   }
 
-  if (!isFinite(gScore[goalId])){
-    return {error: '没有可通行的路线：起 ' + JSON.stringify(s) + ' 终 ' + JSON.stringify(g) +
-      '，展开 ' + expanded + ' 个节点，' +
-      'blocked 列 ' + (() => { let n = 0; for (const k of m.hList.keys()) if (m.blocked[k]) ++n; return n; })() +
-      ' / ' + m.hList.size};
-  }
+  if (foundCell < 0)
+    return {error: '没有可通行的路线：起 ' + fmt3([sx,sy,sz]) + ' 终 ' + fmt3([gx,gy,gz]) +
+      '，展开 ' + expanded + ' 个节点'};
 
   const pts = [];
-  let cur = goalId;
-  while (cur !== -1){
-    const [i, j, li] = nodeIJ(cur);
-    const h = hOf(i, j, li);
-    pts.push([i*res + lo[0] + res*0.5, j*res + lo[1] + res*0.5, h]);
-    if (cur === startId) break;
-    cur = from[cur];
+  let c = foundCell;
+  while (c >= 0){
+    const i = c % nx, j = ((c/nx)|0) % ny, k = (c/(nx*ny))|0;
+    pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res]);
+    if (c === startId) break;
+    c = from[c];
   }
   pts.reverse();
   let len = 0;
-  for (let i = 1; i < pts.length; ++i)
-    len += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1], pts[i][2]-pts[i-1][2]);
-  return {pts, len, expanded, nodes: NN};
+  for (let i2 = 1; i2 < pts.length; ++i2)
+    len += Math.hypot(pts[i2][0]-pts[i2-1][0], pts[i2][1]-pts[i2-1][1], pts[i2][2]-pts[i2-1][2]);
+  return {pts, len, expanded};
 }
-
 // ---------- drawing -------------------------------------------------------
 const COL_FLOOR = 0xffcf3f, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
 const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
@@ -524,35 +533,42 @@ function makeSrcMesh(pos, idx){
 }
 
 function makePlanes(m){
-  const {res, lo, nx, ny, hList, blocked} = m;
-  const quad = new THREE.PlaneGeometry(res, res);
-  quad.translate(res*0.5, res*0.5, 0);
-  const nWalk = hList.size;
+  const {res, lo, nx, ny, nz, data} = m;
+  const support = m.supportOrUnknown;
+  const F = (i, j, k) => (k*ny + j)*nx + i;
+  // Only the cells the dog could stand on: free or inflated, with support
+  // under them. Inflated cells are drawn red, which is the whole point -
+  // it shows exactly which standable surface the 0.2 m band costs you.
+  const ids = [], inf = [];
+  for (let k = 0; k < nz; ++k)
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        const v = data[F(i, j, k)];
+        if (v !== FREE && v !== INFL) continue;
+        if (k < 1 || !support(i, j, k)) continue;
+        (v === INFL ? inf : ids).push(F(i, j, k));
+      }
+  const quad = new THREE.PlaneGeometry(res*0.92, res*0.92);
+  const tot = ids.length + inf.length;
   const walk = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({
-    color: COL_FLOOR, transparent: true, opacity: 0.55}), nWalk);
+    color: 0xffffff, transparent: true, opacity: 0.55}), Math.max(1, tot));
   walk.renderOrder = 3;
   const dum = new THREE.Object3D();
-  let w = 0;
-  const cWalk = new THREE.Color(COL_FLOOR), cWall = new THREE.Color(COL_WALL);
-  const tmp = new THREE.Color();
-  for (const [key, hs] of hList){
-    const i = key % nx, j = (key / nx) | 0;
-    const isBlocked = blocked[key];
-    for (let li = 0; li < hs.length; ++li){
-      dum.position.set(i*res + lo[0] + res*0.5, j*res + lo[1] + res*0.5, hs[li] + 0.004);
-      dum.rotation.set(0, 0, 0);
-      dum.scale.set(1, 1, 1);
-      dum.updateMatrix();
-      walk.setMatrixAt(w, dum.matrix);
-      // blocked columns keep the plate but tint it red: the wall is what
-      // blocks, not the floor, and seeing the plate explains the gap
-      tmp.copy(isBlocked ? cWall : cWalk);
-      walk.setColorAt(w, tmp);
-      ++w;
-    }
+  const cWalk = new THREE.Color(COL_FLOOR), cWall = new THREE.Color(COL_WALL), tmp = new THREE.Color();
+  const all = ids.concat(inf);
+  for (let n = 0; n < all.length; ++n){
+    const f = all[n];
+    const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
+    const j = (rem / nx) | 0, i = rem - j*nx;
+    dum.position.set(lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res + 0.004);
+    dum.rotation.set(0, 0, 0);
+    dum.scale.set(1, 1, 1);
+    dum.updateMatrix();
+    walk.setMatrixAt(n, dum.matrix);
+    tmp.copy(n < ids.length ? cWalk : cWall);
+    walk.setColorAt(n, tmp);
   }
-  walk.count = w;
-  if (!walk.instanceColor) walk.instanceColor = null;
+  walk.count = all.length;
   walk.instanceMatrix.needsUpdate = true;
   return walk;
 }
@@ -615,8 +631,7 @@ function loadModel(pos, idx, name){
 
   // frame
   const cx = m.lo[0] + m.nx * res / 2, cy = m.lo[1] + m.ny * res / 2;
-  let zmin = 1e30, zmax = -1e30;
-  for (const [k, hs] of m.hList) for (const h of hs){ if (h < zmin) zmin = h; if (h > zmax) zmax = h; }
+  const zmin = m.zmin, zmax = m.zmax;
   cam.target.set(cx, cy, (zmin + zmax) / 2);
   cam.dist = Math.max(6, Math.max(m.nx * res, m.ny * res, (zmax - zmin) * 1.2) * 1.9);
   applyCam();
@@ -624,7 +639,8 @@ function loadModel(pos, idx, name){
   const ms = performance.now() - t0;
   showHud('<b>' + name + '</b><br>' +
     '<span class="k">三角面</span> <span class="v">' + (idx.length/3).toLocaleString() + '</span> · ' +
-    '<span class="k">列</span> <span class="v">' + m.hList.size.toLocaleString() + '</span><br>' +
+    '<span class="k">可站格</span> <span class="v">' + m.nStand.toLocaleString() + '</span> · ' +
+    '<span class="k">膨胀吃掉</span> <span class="v">' + m.nInfl.toLocaleString() + '</span><br>' +
     '<span class="k">格</span> <span class="v">' + m.nx + '×' + m.ny + '×' + m.nz + '</span> · ' +
     '<span class="k">分辨率</span> <span class="v">' + res + ' m</span><br>' +
     '<span class="k">膨胀</span> <span class="v">' + infR + ' m</span> · ' +
@@ -780,65 +796,81 @@ function tick(){
 }
 tick();
 
-// hash: #demo loads the sample and plans between two points on 1F and 4F, so a
-// screenshot of this page proves the whole chain without a mouse.
+// hash: #demo loads the sample and plans from the lowest storey to the
+// highest, so one screenshot proves the whole chain without a mouse.
 if (location.hash.indexOf('demo') >= 0){
   setTimeout(() => {
     const infSel = document.getElementById('inf');
     if (location.hash.indexOf('nofill') >= 0) infSel.value = '0.00';
     document.getElementById('demo').click();
     setTimeout(() => {
-      if (!state.map) return;
-      // floor plate tops, not undersides: a slab contributes a horizontal
-      // face at its top and one at its bottom, and standing on the underside
-      // of a floor is not a thing
-      let zb = 1e30, zt = -1e30, bestS = null, bestG = null;
-      for (const [k, hs] of state.map.hList){
-        if (state.map.blocked[k]) continue;
-        const i = k % state.map.nx, j = (k / state.map.nx) | 0;
-        for (const h of hs){
-          if (h < zb){ zb = h; bestS = [i, j, h]; }
-          if (h > zt){ zt = h; bestG = [i, j, h]; }
+      const m = state.map;
+      if (!m) return;
+      const F = (i, j, k) => (k*m.ny + j)*m.nx + i;
+      // A storey is a wide stratum; a roof edge or a handrail top is a thin
+      // one. Pick the widest stratum as the floor to start and finish on,
+      // otherwise the goal lands on the roof and nothing can climb to it.
+      const cnt = new Int32Array(m.nz);
+      for (let k = 0; k < m.nz; ++k)
+        for (let j = 0; j < m.ny; ++j)
+          for (let i = 0; i < m.nx; ++i){
+            const v = m.data[F(i, j, k)];
+            if (v !== FREE && v !== INFL) continue;
+            if (k < 1 || !m.supportOrUnknown(i, j, k)) continue;
+            cnt[k]++;
+          }
+      let maxC = 0;
+      for (let k = 0; k < m.nz; ++k) if (cnt[k] > maxC) maxC = cnt[k];
+      let kLo = -1, kHi = -1;
+      for (let k = 0; k < m.nz; ++k) if (cnt[k] >= maxC*0.5){ if (kLo < 0) kLo = k; kHi = k; }
+      // Pick the most open cell on each of those two strata: a centroid can
+      // land on a pillar or inside a handrail and leave the search in a pocket.
+      function bestOn(k){
+        let bi = -1, bj = -1, bn = -1;
+        for (let j = 1; j < m.ny-1; ++j)
+          for (let i = 1; i < m.nx-1; ++i){
+            const v = m.data[F(i, j, k)];
+            if (v !== FREE && v !== INFL) continue;
+            if (!m.supportOrUnknown(i, j, k)) continue;
+            let n = 0;
+            for (let dj = -1; dj <= 1; ++dj)
+              for (let di = -1; di <= 1; ++di){
+                if (!di && !dj) continue;
+                const v2 = m.data[F(i+di, j+dj, k)];
+                if (v2 !== FREE && v2 !== INFL) continue;
+                if (m.supportOrUnknown(i+di, j+dj, k)) ++n;
+              }
+            if (n > bn){ bn = n; bi = i; bj = j; }
+          }
+        return bn > 0 ? [bi, bj, k] : null;
+      }
+      const s0 = bestOn(kLo), g0 = bestOn(kHi);
+      if (!s0 || !g0) return;
+      const toWorld = v => [m.lo[0] + (v[0]+0.5)*m.res, m.lo[1] + (v[1]+0.5)*m.res,
+                            m.lo[2] + (v[2]+0.5)*m.res];
+      state.start = toWorld(s0);
+      state.goal = toWorld(g0);
+      markStart = makeBall(state.start, COL_S); root.add(markStart);
+      markGoal = makeBall(state.goal, COL_G); root.add(markGoal);
+      console.log('demo picks', s0, g0, 'strata', kLo, kHi);
+      {
+        const F2 = (i,j,k) => (k*m.ny+j)*m.nx+i;
+        const fmt = [];
+        for (let k = 0; k < m.nz; ++k) if (cnt[k] > 60) fmt.push(k + ':' + cnt[k]);
+        console.log('wide strata', fmt.join(' '));
+        const [si, sj, sk] = s0;
+        let nb = '';
+        for (let dk = -1; dk <= 1; ++dk) for (let dj = -1; dj <= 1; ++dj) for (let di = -1; di <= 1; ++di){
+          if (!di && !dj && !dk) continue;
+          const i = si+di, j = sj+dj, k = sk+dk;
+          const v = m.data[F2(i,j,k)];
+          const sup = m.supportOrUnknown(i,j,k) ? 's' : '-';
+          nb += (v === FREE ? 'F' : v === INFL ? 'I' : v === OCC ? 'O' : 'U') + sup;
         }
+        console.log('start cell', m.data[F2(si,sj,sk)], 'neighbours', nb);
       }
-      // the lowest horizontal face is the underside of the ground slab; the
-      // floor you can actually stand on is its top, a plate thickness higher
-      const sCol0 = bestS;
-      const gCol0 = bestG;
-      let stairCols = 0;
-      for (const [, hs] of state.map.hList) for (const h of hs)
-        if (h > 0.15 && h < 3.4) ++stairCols;
-      console.log('columns between 1F and 2F:', stairCols);
-      // what the stair well actually looks like to the map
-      const nx0 = state.map.nx, res0 = state.map.res, lo0 = state.map.lo;
-      let nStair = 0, sample = [];
-      for (const [k, hs] of state.map.hList){
-        const i = k % nx0, j = (k / nx0) | 0;
-        const wx = i*res0 + lo0[0], wy = j*res0 + lo0[1];
-        if (wx > 2.6 && wx < 7.5 && wy > 0.4 && wy < 3.2){
-          ++nStair;
-          if (sample.length < 6) sample.push([+wx.toFixed(2), +wy.toFixed(2), hs.map(h => +h.toFixed(2))]);
-        }
-      }
-      console.log('stair well columns:', nStair, JSON.stringify(sample));
-      let sCol = null, gCol = null;
-      for (const [k, hs] of state.map.hList){
-        if (state.map.blocked[k]) continue;
-        const i = k % state.map.nx, j = (k / state.map.nx) | 0;
-        for (const h of hs){
-          if (sCol0 && Math.abs(h - sCol0[2]) < 0.25 && hs.length >= 1 && !sCol) sCol = [i, j, h];
-          if (gCol0 && Math.abs(h - gCol0[2]) < 0.25) gCol = [i, j, h];
-        }
-      }
-      console.log('demo picks', sCol, gCol, 'zb', zb, 'zt', zt);
-      if (sCol && gCol){
-        state.start = [sCol[0]*state.map.res + state.map.lo[0] + 0.05, sCol[1]*state.map.res + state.map.lo[1] + 0.05, sCol[2]];
-        state.goal  = [gCol[0]*state.map.res + state.map.lo[0] + 0.05, gCol[1]*state.map.res + state.map.lo[1] + 0.05, gCol[2]];
-        markStart = makeBall(state.start, COL_S); root.add(markStart);
-        markGoal  = makeBall(state.goal,  COL_G); root.add(markGoal);
-        document.getElementById('go').disabled = false;
-        document.getElementById('go').click();
-      }
+      document.getElementById('go').disabled = false;
+      document.getElementById('go').click();
     }, 500);
   }, 200);
 }

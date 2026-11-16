@@ -1,45 +1,44 @@
 # Imported mesh · global planning (`mesh_nav.html`)
 
-A standalone page: load any OBJ / STL - multi storey stairs included - let the page work out which faces are floor and which are wall, then run a 2.5D A* over what is walkable.
+Load any OBJ / STL - multi storey stairs included - and let the page work out which faces are floor and which are wall, then plan over what is walkable.
+
+**This page does not invent an algorithm.** The map and the search are ports from `ros_ws/src/octo_planner_ros1`:
+
+| In the page | Source in the repo |
+|---|---|
+| Surface voxelisation, upward clearance | `voxel_grid.cpp: insertSurfacePoint()` |
+| Inflation | `voxel_grid.cpp: inflate(rxy, 0, ...)` - flat XY disk, no z extent |
+| Ground support test | `voxel_grid.cpp: hasGroundSupport()` |
+| Start snapping | `voxel_grid.cpp: nearestWalkable()` |
+| 26-neighbour A*, no pure vertical step, cost, adjacent-goal acceptance | `astar3d.cpp: plan()` |
+| Parameters | `nav_sim.cpp:1071` (`max_step_z=3`, `snap=12`, `require_ground_support`) |
+
+Added on top, specific to a mesh source:
+
+- Triangles sampled at 0.8 cell; clearance is stamped upward only through faces whose normal points up (`nz > 0.35`). **This one matters**: a slab's underside points down, and stamping clearance there opens the whole floor plate so the search walks through a storey.
+- Horizontal faces are stamped over a 3x3 neighbourhood, matching `nav_sim.cpp: stampPoint()`. Without it the plate arrives as a sieve, the 5x5 support test counts fewer than 8 cells and most of a storey is rejected as unsupported.
 
 ## What works
 
-| Capability | State |
-|---|---|
-| OBJ / STL import (ASCII and binary) | works |
-| Faces split into horizontal / vertical by normal | works |
-| Per column floor heights, wall projection and inflation field | works |
-| Walkable surface (yellow) and inflated wall (red) | works |
-| Click the model to set start / goal | works |
-| Resolution and inflation selectable | works |
-| 2.5D A* across storeys | **does not work yet** |
+OBJ / STL import, voxelisation, inflation, standable surface in yellow and the standable surface the inflation band costs in red, start and goal picked on the model, resolution and inflation selectable.
 
-## Rules
+Four storey sample (`example_four_floor.obj`, 293 boxes, 3,516 faces): 5,952 standable cells, strata `5:600 28:518 51:541 73:342 ...`.
 
-- Horizontal (`|nz| > 0.65`): this column has a floor at this height. A plate reports both its top and bottom; samples within 0.10 m are one plate and the top is kept.
-- Vertical (`|nz| < 0.35` **and z span > 0.35 m**): a wall. A 0.19 m riser is not a wall, or it inflates away the flight it belongs to.
-- Inflation: walls projected to XY, distance field spreading only into columns with no floor - a landing with walls on three sides is still somewhere you can stand.
-- Neighbouring columns connect only if their heights differ by 0.40 m or less. One step (0.19 m) passes, one storey (3.42 m) does not.
+## Port pitfalls already fixed
 
-## Three bugs already fixed on the sample
+1. **Clearance stamped through downward faces too.** The slab underside emptied the floor plate. Now only `nz > 0.35` faces stamp upward.
+2. **Plate arrived as a sieve.** 0.8 cell sampling is coarse against a 0.15 cell grid, the 5x5 support test wants 8 cells and almost everything was rejected - 312 cells per storey, 12%. With 3x3 spreading it is 600.
+3. **Overhanging treads all rejected.** `require_ground_support` wants something solid underneath, and a tread has nothing under it because nothing was ever measured there. Relaxed the way `nav_sim` does with `allow_unknown_cells`: an UNKNOWN cell underneath counts as "may be supported".
+4. **Start point in a corner.** A stratum centroid lands on a pillar or inside a rail; now the cell with the most open neighbours on that stratum is taken.
 
-1. **Risers inflated as walls.** A 0.19 m vertical face inflated 0.45 m sealed the whole flight. Fixed with the z span threshold.
-2. **Merge threshold 0.20 m larger than the 0.19 m riser.** Two steps fused into one, the jump became 0.38 m and the flight became unclimbable. Lowered to 0.10 m.
-3. **No edge between the two heights of one column.** A plate's top and bottom were two heights, and a start point snapped to the bottom could never reach the surface under its own feet. Added a vertical edge within the column.
+## What still does not work
 
-## Where it is stuck
+On the four storey sample, start on 1F and goal on 4F, A* exhausts 5,148 nodes and reports no path.
 
-On the four storey sample (`example_four_floor.obj`, 293 boxes, 3,516 faces, 3 flights), start on 1F and goal on 4F, A* exhausts about 3,700 nodes and reports no path.
+Confirmed: the standable surface is continuous (about 600 cells per storey), stair treads are recognised, and inflation at zero is not the cause.
 
-Confirmed:
+Unknown: whether the 4F standable stratum joins the top of the flight. Next step is to cut that segment out and check the gap - `max_step_z=3` at 0.15 m is 0.45 m, so half a cell of misalignment between the flight top and the plate is enough to break it.
 
-- The stair is read correctly: 516 columns in the well, a tread column reads `[0, 0.19, 1.09, 3.42, 3.61, 4.49, 6.84, 7.03, 7.89]`, 0.19 m per step.
-- Floor heights are right: `[-0.1, 0, 3.3, 3.4, 6.7, 6.8, 10.2]`, four storeys of 3.4 m.
-- With inflation at zero, `blocked` is 0, so inflation is not the cause.
+## Fallback
 
-Not confirmed: whether the start storey's walkable columns actually join up with the stair foot, and whether the within-column vertical edge is really participating in the search - the node count did not change when it was added, which is itself suspicious.
-
-## Next
-
-- Prove the within-column edge with a minimal case, so it is clear it reaches the search rather than being short-circuited.
-- If connectivity is fine, replace the flat 2.5D search with a storey-partitioned graph that uses the stairs as the only inter-storey edges.
+If that segment never joins in a flat grid, partition by storey and use the stairs as the only inter-storey edge - which is what `floor_manager` in the repo already does, and far cheaper than searching a flat grid.
