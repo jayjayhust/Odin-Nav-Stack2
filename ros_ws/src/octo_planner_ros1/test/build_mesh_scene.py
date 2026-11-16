@@ -34,13 +34,19 @@ def base_name(n):
             return n[:-len(suf)]
     return n
 
-def build(points, world, z0, z1):
-    nx = int(np.ceil((world[2] - world[0]) / VOX)) + 2
-    ny = int(np.ceil((world[3] - world[1]) / VOX)) + 2
-    nz = int(np.ceil((z1 - z0) / VOX)) + 3
+def build(points, lo, hi):
+    """lo/hi is the voxel-grid origin and its far corner, in world metres.
+
+    The grid must cover every point in the scene, so the caller derives it from
+    the whole cloud, not from the scenario's declared world box - otherwise
+    points outside that box get clipped onto the border and fake a wall there.
+    """
+    nx = int(np.ceil((hi[0] - lo[0]) / VOX)) + 2
+    ny = int(np.ceil((hi[1] - lo[1]) / VOX)) + 2
+    nz = int(np.ceil((hi[2] - lo[2]) / VOX)) + 2
     occ = np.zeros((nx, ny, nz), bool)
     if len(points):
-        idx = np.floor((points - np.array([world[0], world[1], z0])) / VOX).astype(int) + 1
+        idx = np.floor((points - lo) / VOX).astype(int) + 1
         idx[:,0] = np.clip(idx[:,0], 0, nx-1)
         idx[:,1] = np.clip(idx[:,1], 0, ny-1)
         idx[:,2] = np.clip(idx[:,2], 0, nz-1)
@@ -74,13 +80,18 @@ def main():
         pts = [np.array(c["p"], dtype=float) for c in sc["clouds"]]
         ts = [c["t"] for c in sc["clouds"]]
         n = len(pts)
-        z0 = float(sc["z_range"][0]) - 0.1
-        z1 = float(sc["z_range"][1]) + 0.1
+        # One grid origin per scene, shared by every step, taken from the full
+        # cloud unioned with the declared world box.
+        allp = np.vstack(pts) if pts else np.zeros((0, 3))
+        lo = np.minimum(allp.min(0), [sc["world"][0], sc["world"][1], float(sc["z_range"][0])])
+        hi = np.maximum(allp.max(0), [sc["world"][2], sc["world"][3], float(sc["z_range"][1])])
+        lo = lo - 1.5 * VOX
+        hi = hi + 1.5 * VOX
         # cumulative cloud at each step of the run
         frames, cum_pts = [], 0
         for frac in STEPS:
             k = max(1, int(round(frac * n)))
-            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), sc["world"], z0, z1)
+            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi)
             cum_pts = int(sum(len(p) for p in pts[:k]))
             va = np.array(v, dtype=np.int16).reshape(-1)
             i16 = len(v) < 65535
@@ -90,11 +101,37 @@ def main():
                            "v": base64.b64encode(va.tobytes()).decode(),
                            "vd": "i16", "i": base64.b64encode(ia.tobytes()).decode(),
                            "id": "u16" if i16 else "u32"})
-        rec = {"name": name, "desc": sc["desc"], "world": sc["world"],
-               "z_range": [z0, z1], "start": sc["start"], "goal": sc["goal"],
+        # Local-planner window: a 2 m disc around the dog, recorded every 0.5 s.
+        # Two layers are kept apart - cells the sensor actually returned as
+        # occupied, and cells that are solid only because of the two-cell
+        # inflation - because that difference is the whole point of showing it.
+        win = None
+        lc = sc.get("local_costmap") or {}
+        if lc.get("frames"):
+            res = float(lc["res"]); r = float(lc["r"])
+            side = int(np.floor(2 * r / res)) + 1
+            boxes = []
+            for f in lc["frames"]:
+                bm = np.zeros((side, side), np.uint8)
+                for a, b in f.get("infl", []):
+                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 1
+                for a, b in f.get("occ", []):
+                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 2
+                boxes.append({"t": f["t"], "cx": f["cx"], "cy": f["cy"],
+                              "m": base64.b64encode(bm.tobytes()).decode()})
+            win = {"r": r, "res": res, "side": side, "frames": boxes}
+
+        rec = {"name": name, "desc": sc["desc"],
+               "org": [round(float(lo[0]), 4), round(float(lo[1]), 4), round(float(lo[2]), 4)],
+               "world": [round(float(lo[0]), 3), round(float(lo[1]), 3),
+                         round(float(hi[0]), 3), round(float(hi[1]), 3)],
+               "z_range": [round(float(lo[2]), 3), round(float(hi[2]), 3)],
+               "start": sc["start"], "goal": sc["goal"],
                "start_z": sc["start_z"], "goal_z": sc["goal_z"],
                "planners": [sc["name"].split(" · ")[-1] if " · " in sc["name"] else "single"],
-               "trace": sc["trace"], "path": sc["global_path"], "frames": frames}
+               "trace": sc["trace"], "path": sc["global_path"], "frames": frames,
+               "robot": {"half_len": 0.26, "half_wid": 0.17, "base_z": 0.32},
+               "win": win}
         seen[name] = rec
         out["scenes"].append(rec)
     text = json.dumps(out, separators=(",", ":"))

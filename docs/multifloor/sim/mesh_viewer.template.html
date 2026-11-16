@@ -49,7 +49,13 @@
     <button class="chip" data-a="45">半透</button>
     <button class="chip" data-a="15">透视</button>
   </div>
-  <div class="grp" style="margin-left:auto">
+  <div class="grp" id="winTog" style="margin-left:auto">
+    <button class="chip on">局部窗口</button>
+  </div>
+  <div class="grp" id="followTog">
+    <button class="chip">跟随狗</button>
+  </div>
+  <div class="grp">
     <button class="chip on" id="play">播放</button>
     <button class="chip" id="reset">复位</button>
     <button class="chip" id="camReset">视角复位</button>
@@ -89,11 +95,11 @@ const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x05090f, 40, 140);
 const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 600);
 
-scene.add(new THREE.HemisphereLight(0x9fb8d6, 0x1a2233, 0.55));
-const key = new THREE.DirectionalLight(0xffffff, 0.72); key.position.set(12, 18, 22); scene.add(key);
+scene.add(new THREE.HemisphereLight(0x9fb8d6, 0x1a2233, 0.40));
+const key = new THREE.DirectionalLight(0xffffff, 0.52); key.position.set(12, 18, 22); scene.add(key);
 const fill = new THREE.DirectionalLight(0x8fb6dd, 0.30); fill.position.set(-16, -10, -14); scene.add(fill);
 const rim = new THREE.DirectionalLight(0x6ee1eb, 0.22); rim.position.set(0, 8, -30); scene.add(rim);
-scene.add(new THREE.AmbientLight(0x2c3a52, 0.85));
+scene.add(new THREE.AmbientLight(0x2c3a52, 0.22));
 
 // --- camera orbit -----------------------------------------------------------
 // Data is z-up (ROS convention); three defaults to y-up, so lift the camera
@@ -141,7 +147,7 @@ cv.addEventListener('wheel', e => {
 
 
 // --- state ----------------------------------------------------------------
-const state = {scene: 0, alpha: 1, prog: 1, playing: true, t0: performance.now()};
+const state = {scene: 0, alpha: 1, prog: 1, playing: true, showWin: true, follow: false, t0: performance.now()};
 let meshGroup = null, matWall = null, robot = null, trailPath = null, grid = null;
 
 function clearGroup(g){
@@ -151,6 +157,13 @@ function clearGroup(g){
 }
 
 // --- decode ----------------------------------------------------------------
+function bytesToInts(b64){
+  const bin = atob(b64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; ++i) u8[i] = bin.charCodeAt(i);
+  return u8;
+}
+
 function i16At(bin, o){
   const v = bin.charCodeAt(o) | (bin.charCodeAt(o+1) << 8);
   return (v << 16) >> 16;
@@ -195,6 +208,94 @@ function geometryFor(frame, origin){
   return geo;
 }
 
+
+// --- local planner window -------------------------------------------------
+// A 2 m disc around the dog. Red cells are what the sensor actually returned as
+// occupied; amber cells are only solid because of the two-cell inflation the
+// planner applies. Promise: the disc follows the robot continuously, the cell
+// pattern refreshes at the 0.5 s mapping period it was recorded at.
+const WIN_COL = {occ: 0xff5c5c, infl: 0xffb03a};
+let winGroup = null, winMeshOcc = null, winMeshInfl = null, winRing = null, winFrameKey = -1;
+
+function makeWinGroup(sc){
+  const g = new THREE.Group();
+  if (!sc.win){ return g; }
+  const r = sc.win.r;
+  const pts = [];
+  for (let i = 0; i < 96; ++i){
+    const a = i / 96 * Math.PI * 2;
+    pts.push(new THREE.Vector3(Math.cos(a) * r, Math.sin(a) * r, 0));
+  }
+  const ringGeo = new THREE.BufferGeometry().setFromPoints(pts);
+  winRing = new THREE.LineLoop(ringGeo, new THREE.LineBasicMaterial({
+    color: 0x7fd4ff, transparent: true, opacity: 0.8, depthTest: false, depthWrite: false}));
+  winRing.renderOrder = 9;
+  g.add(winRing);
+  return g;
+}
+
+function winFrameIndex(sc, t){
+  const fr = sc.win.frames;
+  let k = 0;
+  for (let i = 1; i < fr.length; ++i)
+    if (Math.abs(fr[i].t - t) < Math.abs(fr[k].t - t)) k = i;
+  return k;
+}
+
+function quadStrip(cells, side, res, r, color, opacity){
+  const n = cells.length;
+  if (!n) return null;
+  const pos = new Float32Array(n * 6 * 3);
+  const h = res * 0.92;
+  let p = 0;
+  for (const [a, b] of cells){
+    const x0 = a * res - r + (res - h) / 2, y0 = b * res - r + (res - h) / 2;
+    const x1 = x0 + h, y1 = y0 + h;
+    pos.set([x0,y0,0, x1,y0,0, x1,y1,0, x0,y0,0, x1,y1,0, x0,y1,0], p);
+    p += 18;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  return new THREE.Mesh(geo, new THREE.MeshBasicMaterial({
+    color, transparent: true, opacity, depthTest: false, depthWrite: false, side: THREE.DoubleSide}));
+}
+
+function updateWin(sc, prog){
+  if (!winGroup || !sc.win) return;
+  if (!state.showWin){ winGroup.visible = false; return; }
+  winGroup.visible = true;
+  const T = sc.frames[sc.frames.length - 1].t || 1;
+  const t = prog * T;
+  const k = winFrameIndex(sc, t);
+  if (k !== winFrameKey){
+    winFrameKey = k;
+    const f = sc.win.frames[k];
+    const side = sc.win.side, res = sc.win.res, r = sc.win.r;
+    const bm = bytesToInts(f.m);
+    const occ = [], infl = [];
+    for (let b = 0; b < side; ++b){
+      for (let a = 0; a < side; ++a){
+        const v = bm[b * side + a];
+        if (v === 2) occ.push([a, b]);
+        else if (v === 1) infl.push([a, b]);
+      }
+    }
+    for (const m of [winMeshOcc, winMeshInfl]){
+      if (m){ winGroup.remove(m); m.geometry.dispose(); }
+    }
+    winMeshOcc = quadStrip(occ, side, res, r, WIN_COL.occ, 0.85);
+    winMeshInfl = quadStrip(infl, side, res, r, WIN_COL.infl, 0.38);
+    for (const m of [winMeshOcc, winMeshInfl]){
+      if (m){ m.renderOrder = 9; winGroup.add(m); }
+    }
+  }
+  // Place the disc at the centre it was recorded at, not at the robot's live
+  // pose: the cells are offsets from that corner, so mixing the two would slide
+  // the pattern off the disc whenever the dog moves within a 0.5 s sample.
+  const f = sc.win.frames[k];
+  winGroup.position.set(f.cx, f.cy, robot.position.z + 0.006);
+}
+
 // --- scene build -----------------------------------------------------------
 function frameIndex(sc, prog){
   const f = sc.frames;
@@ -209,7 +310,7 @@ function buildScene(idx){
   clearGroup(meshGroup);
   meshGroup = new THREE.Group();
 
-  const origin = new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]);
+  const origin = new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]);
   const k = frameIndex(sc, state.prog);
   const geo = geometryFor(sc.frames[k], origin);
   matWall = new THREE.MeshStandardMaterial({
@@ -245,26 +346,15 @@ function buildScene(idx){
     meshGroup.add(trailPath);
   }
 
-  // robot body: 0.52 x 0.34 footprint, 0.30 tall
-  const rg = new THREE.BoxGeometry(0.52, 0.34, 0.30);
-  const rm = new THREE.MeshStandardMaterial({color: 0x5ce0a3, metalness: 0.25, roughness: 0.5, transparent: true, opacity: 0.92});
-  robot = new THREE.Mesh(rg, rm);
-  const nose = new THREE.Mesh(
-    new THREE.ConeGeometry(0.09, 0.22, 4),
-    new THREE.MeshStandardMaterial({color: 0xffe08a, roughness: 0.6})
-  );
-  nose.rotation.z = -Math.PI / 2;
-  nose.rotation.x = Math.PI / 2;
-  nose.position.set(0.34, 0, 0);
-  robot.add(nose);
-  const beacon = new THREE.Mesh(
-    new THREE.SphereGeometry(0.11, 12, 10),
-    new THREE.MeshBasicMaterial({color: 0x5ce0a3, transparent: true, opacity: 0.9,
-                                 depthTest: false, depthWrite: false})
-  );
-  beacon.renderOrder = 8;
-  robot.add(beacon);
+  // Go2 stand-in, built from primitives at the URDF's proportions: 0.70 x 0.31
+  // overall, trunk 0.42 x 0.20 x 0.10 sitting 0.30 above the paw line.
+  robot = makeDog();
+  robot.add(makeBeacon());
   meshGroup.add(robot);
+
+  winGroup = makeWinGroup(sc);
+  winFrameKey = -1;
+  meshGroup.add(winGroup);
 
   scene.add(meshGroup);
 
@@ -277,6 +367,65 @@ function buildScene(idx){
   cam.dist = d;
   applyCam();
   updateHud(sc);
+  robotAt(idx, state.prog);
+  updateWin(sc, state.prog);
+}
+
+
+// --- robot model -----------------------------------------------------------
+// Primitives rather than the URDF meshes: the DAE set is 20 MB of artwork for
+// a 0.7 m body, and what matters here is the footprint and the heading.
+function makeDog(){
+  const g = new THREE.Group();
+  const shell = new THREE.MeshStandardMaterial({color: 0x9dabbd, roughness: 0.55, metalness: 0.22});
+  const dark  = new THREE.MeshStandardMaterial({color: 0x333d4c, roughness: 0.5, metalness: 0.45});
+  const led   = new THREE.MeshStandardMaterial({color: 0x5ce0a3, emissive: 0x2ba87a, emissiveIntensity: 1.6,
+                                                roughness: 0.4, transparent: true, opacity: 0.95});
+  const box = (w, h, d, x, y, z, mat) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    return m;
+  };
+  // trunk, head, back sensor (Odin1), rear panel
+  g.add(box(0.42, 0.20, 0.10, 0, 0, 0.30, shell));
+  g.add(box(0.12, 0.15, 0.09, 0.24, 0, 0.30, shell));
+  g.add(box(0.10, 0.06, 0.05, 0.02, 0, 0.385, dark));
+  g.add(box(0.05, 0.16, 0.08, -0.23, 0, 0.30, dark));
+  // head lamps
+  g.add(box(0.02, 0.05, 0.03, 0.30, 0.045, 0.31, led));
+  g.add(box(0.02, 0.05, 0.03, 0.30, -0.045, 0.31, led));
+  // four legs: thigh, shin, paw - front pair reaches slightly forward
+  for (const sx of [1, -1]){
+    for (const sy of [1, -1]){
+      const hip = [sx * 0.15, sy * 0.085, 0.255];
+      const knee = [sx * 0.18, sy * 0.10, 0.14];
+      const paw  = [sx * 0.155, sy * 0.10, 0.02];
+      const seg = (a, b, t, mat) => {
+        const len = Math.hypot(b[0]-a[0], b[1]-a[1], b[2]-a[2]);
+        const m = new THREE.Mesh(new THREE.BoxGeometry(t, t, len), mat);
+        m.position.set((a[0]+b[0])/2, (a[1]+b[1])/2, (a[2]+b[2])/2);
+        // align the box's z axis with the segment
+        const d = new THREE.Vector3(b[0]-a[0], b[1]-a[1], b[2]-a[2]).normalize();
+        m.quaternion.setFromUnitVectors(new THREE.Vector3(0, 0, 1), d);
+        return m;
+      };
+      g.add(seg(hip, knee, 0.05, shell));
+      g.add(seg(knee, paw, 0.035, dark));
+      g.add(box(0.05, 0.05, 0.02, paw[0], paw[1], 0.012, dark));
+    }
+  }
+  return g;
+}
+
+function makeBeacon(){
+  const b = new THREE.Mesh(
+    new THREE.SphereGeometry(0.07, 12, 10),
+    new THREE.MeshBasicMaterial({color: 0x5ce0a3, transparent: true, opacity: 0.55,
+                                 depthTest: false, depthWrite: false})
+  );
+  b.position.set(0, 0, 0.30);
+  b.renderOrder = 8;
+  return b;
 }
 
 // --- robot follow / hud ----------------------------------------------------
@@ -291,7 +440,7 @@ function robotAt(idx, prog){
   const a = tr[i0], b = tr[i1];
   const x = a[0] + (b[0] - a[0]) * w;
   const y = a[1] + (b[1] - a[1]) * w;
-  const z = a[2] + (b[2] - a[2]) * w + 0.16;
+  const z = a[2] + (b[2] - a[2]) * w;
   const yaw = a[3] + (((b[3] - a[3] + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * w;
   robot.position.set(x, y, z);
   robot.rotation.set(0, 0, yaw);
@@ -358,7 +507,7 @@ document.getElementById('prog').oninput = e => {
   if (matWall && sc.frames[k]){
     const old = meshGroup.children[0];
     if (old){
-      const geo = geometryFor(sc.frames[k], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+      const geo = geometryFor(sc.frames[k], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
       old.geometry.dispose();
       old.geometry = geo;
     }
@@ -380,10 +529,20 @@ document.getElementById('reset').onclick = () => {
   const old = meshGroup.children[0];
   if (old){
     old.geometry.dispose();
-    old.geometry = geometryFor(sc.frames[frameIndex(sc, 0)], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+    old.geometry = geometryFor(sc.frames[frameIndex(sc, 0)], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
   }
   robotAt(state.scene, 0);
   updateHud(sc);
+  updateWin(sc, state.prog);
+};
+document.querySelector('#followTog .chip').onclick = e => {
+  state.follow = !state.follow;
+  e.currentTarget.classList.toggle('on', state.follow);
+};
+document.querySelector('#winTog .chip').onclick = e => {
+  state.showWin = !state.showWin;
+  e.currentTarget.classList.toggle('on', state.showWin);
+  updateWin(DATA.scenes[state.scene], state.prog);
 };
 document.getElementById('camReset').onclick = () => {
   const sc = DATA.scenes[state.scene];
@@ -417,20 +576,54 @@ function tick(now){
     if (old && old.userData.k !== k){
       old.userData.k = k;
       old.geometry.dispose();
-      old.geometry = geometryFor(sc.frames[k], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+      old.geometry = geometryFor(sc.frames[k], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
       updateHud(sc);
     }
   }
   state.t0 = state.t0 || now;
   robotAt(state.scene, state.prog);
+  updateWin(DATA.scenes[state.scene], state.prog);
+  if (state.follow && robot){
+    cam.target.set(robot.position.x, robot.position.y, robot.position.z + 0.20);
+    applyCam();
+  }
   renderer.render(scene, camera);
 }
 
 const hp = (location.hash || '').replace('#', '').split(',');
 const initScene = Math.min(DATA.scenes.length - 1, Math.max(0, Number(hp[0]) || 0));
 const initAlpha = hp[1] ? Math.max(8, Math.min(100, Number(hp[1]))) : 100;
+const initProg = hp[2] ? Math.max(0, Math.min(1, Number(hp[2]) / 100)) : 1;
 buildScene(initScene);
 setAlpha(initAlpha);
+if (hp[2]){
+  state.prog = initProg;
+  state.playing = false;
+  document.getElementById('play').classList.remove('on');
+  document.getElementById('play').textContent = '暂停';
+  document.getElementById('prog').value = Math.round(initProg * 100);
+  document.getElementById('progV').textContent = Math.round(initProg * 100) + '%';
+  const sc0 = DATA.scenes[initScene];
+  const old0 = meshGroup.children[0];
+  if (old0){
+    old0.geometry.dispose();
+    old0.geometry = geometryFor(sc0.frames[frameIndex(sc0, initProg)],
+                                new THREE.Vector3(sc0.org[0], sc0.org[1], sc0.org[2]));
+  }
+  robotAt(initScene, initProg);
+  updateHud(sc0);
+  updateWin(sc0, initProg);
+}
+if (hp[3]){
+  cam.dist = Math.max(1.2, Math.min(160, Number(hp[3])));
+  applyCam();
+}
+if (hp[4] === '1'){
+  state.follow = true;
+  document.querySelector('#followTog .chip').classList.add('on');
+  cam.target.set(robot.position.x, robot.position.y, robot.position.z + 0.20);
+  applyCam();
+}
 if (initScene > 0){
   document.querySelectorAll('#scenes .chip').forEach((c, i) => c.classList.toggle('on', i === initScene));
 }
