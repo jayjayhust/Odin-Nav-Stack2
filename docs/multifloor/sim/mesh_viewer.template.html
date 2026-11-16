@@ -213,13 +213,16 @@ function geometryFor(frame, origin){
           cz >= c[4] - 0.06 && cz <= c[5] + 0.06)
         keep.push(idx[k], idx[k + 1], idx[k + 2]);
     }
-    use = keep;
+    use = new (wide ? Uint32Array : Uint16Array)(keep);
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  // setIndex takes a plain typed array; handing it a BufferAttribute of the
-  // clipped index left the mesh empty.
-  geo.setIndex(use);
+  // setIndex wants either a plain Array or a BufferAttribute. A bare typed
+  // array is stored as-is and is then read as if it were a BufferAttribute,
+  // which leaves the index empty - the mesh draws nothing and the canvas stays
+  // black while the HUD looks perfectly healthy. That is why every link that
+  // opened correctly carried ',1': the clip path built a plain Array. Wrap it.
+  geo.setIndex(use instanceof THREE.BufferAttribute ? use : new THREE.BufferAttribute(use, 1));
   geo.computeVertexNormals();
   // One material, colour carried by the vertex: faces looking up are floor,
   // vertical faces are walls, faces looking down are ceiling/underside.
@@ -625,6 +628,7 @@ window.addEventListener('resize', resize);
 let raf = 0;
 function tick(now){
   raf = requestAnimationFrame(tick);
+  try{
   if (state.playing){
     const dt = Math.min(0.05, (now - state.t0) / 1000);
     state.t0 = now;
@@ -648,6 +652,15 @@ function tick(now){
   if (state.follow && robot){
     cam.target.set(robot.position.x, robot.position.y, robot.position.z + 0.20);
     applyCam();
+  }
+  } catch(e){
+    // a throw anywhere above used to kill the only draw call, and the page
+    // then sat there black with a populated HUD. Draw regardless; report once.
+    if (!window.__lastErr){ window.__lastErr = String((e && e.stack) || e);
+      const h = document.getElementById('hud');
+      if (h) h.innerHTML += '<div style="color:#ff9b8a;max-width:340px;white-space:normal">渲染中断：' +
+        window.__lastErr.slice(0, 180).replace(/</g,'&lt;') + '</div>';
+    }
   }
   renderer.render(scene, camera);
 }
