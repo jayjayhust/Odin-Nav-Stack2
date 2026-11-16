@@ -214,6 +214,33 @@ def zone_slices(lo, zones, shape):
     return out
 
 
+
+def stair_boxes(obstacles, zones):
+    """Every static box the scene puts inside a stair core.
+
+    The core is rebuilt from the scene's own structure, not from returns: the
+    walls, the columns, the door frames and the landings are all boxes the
+    simulator knows exactly. Anything that fades in during the run is skipped
+    (appear != 0), because that is a pedestrian or a trolley, not the building.
+    """
+    out = []
+    if not zones:
+        return out
+    for x0, x1, y0, y1, z0, z1 in zones:
+        for o in obstacles:
+            if o.get("k") != 0 or o.get("appear"):
+                continue
+            ax0, ay0, ax1, ay1 = o["a"]
+            bz0, bz1 = o["z"]
+            if ax1 < x0 - 0.05 or ax0 > x1 + 0.05:
+                continue
+            if ay1 < y0 - 0.05 or ay0 > y1 + 0.05:
+                continue
+            if bz1 < z0 - 0.05 or bz0 > z1 + 0.05:
+                continue
+            out.append((ax0, ay0, ax1, ay1, bz0, bz1))
+    return out
+
 def stair_panels(obstacles, zones):
     """The balustrade panels themselves, one per step per side.
 
@@ -257,7 +284,7 @@ def stair_landing(treads, zones):
             out.append((t[2], y0 + 0.12, x1 - 0.10, y1 - 0.12, t[5] - 0.12, t[5]))
     return out
 
-def build(points, lo, hi, zones=None, treads=None, panels=None, landings=None):
+def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None):
     """lo/hi is the voxel-grid origin and its far corner, in world metres.
 
     The grid must cover every point in the scene, so the caller derives it from
@@ -288,9 +315,14 @@ def build(points, lo, hi, zones=None, treads=None, panels=None, landings=None):
     occ = bridge_stair_risers(occ, lo, zones)
     # Inside a stair core the sweep contributes almost nothing usable: standing
     # on a tread, the tread is under the sensor and the riser faces away, so
-    # what comes back is the balustrade plus rubble. Keeping that rubble next to
-    # the recovered treads is what made the flights look broken. Clear the core
-    # and put back only what is known exactly - treads, panels, landing.
+    # what comes back is the balustrade plus rubble, and laying recovered treads
+    # over that rubble is what made the flights look broken. Clear the core and
+    # put back the structure the scene knows exactly - every static box in it,
+    # plus the treads and the landings. The core is then a stair model, not an
+    # image; the rest of the scene is still the sweep.
+    # Only the flight's own volume is cleared, not the whole core box: the
+    # core also holds the walls and columns the sweep did return, and deleting
+    # those left a storey with nothing but stairs floating in a void.
     for sl in zone_slices(lo, zones or [], occ.shape):
         occ[sl] = False
     # The treads are added after the morphology, not before: the segments of a
@@ -298,7 +330,7 @@ def build(points, lo, hi, zones=None, treads=None, panels=None, landings=None):
     # fuses them into a single smooth ramp and the steps stop reading as steps.
     # They are the one thing here that is already exact - a flat box at the
     # level its own balustrade panel reports - so nothing needs to touch them.
-    for tx0, ty0, tx1, ty1, tz0, tz1 in (treads or []) + (panels or []) + (landings or []):
+    for tx0, ty0, tx1, ty1, tz0, tz1 in (treads or []) + (boxes or []) + (landings or []):
         a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
         a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
         sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
@@ -345,7 +377,7 @@ def main():
             zs = sc.get("stair") or []
             tr = stair_treads(sc.get("obstacles") or [], zs)
             v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi, zs, tr,
-                          stair_panels(sc.get("obstacles") or [], zs),
+                          stair_boxes(sc.get("obstacles") or [], zs),
                           stair_landing(tr, zs))
             cum_pts = int(sum(len(p) for p in pts[:k]))
             va = np.array(v, dtype=np.int16).reshape(-1)

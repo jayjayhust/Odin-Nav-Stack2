@@ -586,15 +586,13 @@ playBtn.onclick = () => {
   playBtn.textContent = state.playing ? '播放' : '暂停';
 };
 document.getElementById('reset').onclick = () => {
+  // Reset means the dog goes back to the start, not the model. The geometry is
+  // one full frame now, so rebuilding it here only had the effect of dropping
+  // back to whatever band matched prog 0 - i.e. a partial map.
   state.prog = 0;
   document.getElementById('prog').value = 0;
   document.getElementById('progV').textContent = '0%';
   const sc = DATA.scenes[state.scene];
-  const old = meshGroup.children[0];
-  if (old){
-    old.geometry.dispose();
-    old.geometry = geometryFor(sc.frames[frameIndex(sc, 0)], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
-  }
   robotAt(state.scene, 0);
   updateHud(sc);
   updateWin(sc, state.prog);

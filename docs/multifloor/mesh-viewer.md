@@ -130,6 +130,8 @@ Two implementation notes worth keeping:
 15. **The 只看楼梯 button.** The flights are walled in on all four sides, so at full model the steps are always behind something. The button draws only faces whose centroid falls inside the stair core (also available as the eighth hash field: `#3,100,100,6.5,0,-2.4,0.5,1`), and moves the camera into the well.
 16. **The mesh page loads the whole cloud once.** Earlier the geometry was built in four bands (25/50/75/100%) so you could watch the scan grow, which meant the model visibly re-grew on every scene switch. It is now a single 100% frame: 4.3 MB instead of 10.3 MB, complete on open.
 17. **Inside a stair core only geometry is kept, not scan residue.** The core is cleared and rebuilt from structure that is known: the treads (level and x span taken from their own balustrade panel), the panels themselves, and one landing per flight head per storey. The cost is that walls, columns and doors scanned inside that box no longer appear in the mesh - what is there now is a stair model, not an image. That is a trade, not a repair.
+17. **A stair core is rebuilt from the scene's own geometry.** The box is cleared, then refilled with every static box the scene knows - walls, columns, door frames, landings, balustrades - plus the treads recovered from their panels and one landing per flight head. Outside that box it is still the sweep. So the core shows a stair model, not an image; boxes with a non-zero `appear` (pedestrians and trolleys) are excluded, since they are not the building.
+18. **Reset moves the dog, it does not rebuild the geometry.** The geometry is one full frame now, so rebuilding on reset only fell back to the band matching prog=0 - which reads as the map going partial again.
 
 
 ## 7. Reproducing
