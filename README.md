@@ -386,6 +386,8 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | 1 | [Quick Start for Existing Robots](docs/usage/01_quick_start.md) | Start the stack on Go2, SW01, or Dobot Lumo, and send missions |
 | 2 | [Parameter Tuning](docs/usage/02_parameter_tuning.md) | Change speed, footprint, clearance, and tracking for each platform |
 | 3 | [Integrate Your Own Robot](docs/usage/03_integrate_your_robot.md) | Connect a new robot: interface contract, chassis bridge, TF, launch |
+| 4 | [Multifloor Navigation on Go2](docs/multifloor/README.zh-CN.md) | Four-storey missions: per-floor maps, floor switching, stair transitions, `stair_gait` |
+| 5 | [4G Remote Debugging](docs/multifloor/remote-debug.md) | Onboard switch + 4G router: IP plan, tunnel, ROS 1 `ROS_IP`, bandwidth, power |
 
 ## 5.3 Feature Status at a Glance
 

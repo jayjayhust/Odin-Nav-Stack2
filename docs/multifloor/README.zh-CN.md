@@ -319,3 +319,14 @@ rosservice call /floor_manager/arrived_at_floor "floor: '3F'"
 
 > 现场第一次上楼梯前，把 `transition_wait_timeout_sec` 设为 0（无限等），
 > 让人能随时接管；跑熟之后再设超时。
+
+---
+
+## 11. 相关文档
+
+| 文档 | 讲什么 |
+| --- | --- |
+| [3D 规划与楼梯](3d-planner-and-stairs.zh-CN.md) | `astar3d`、楼梯语义、`stair_gait`、离线仿真验证 |
+| [设计说明](design.zh-CN.md) | 楼层地图服务、切层状态机、任务层调度 |
+| [步态控制台](gait_console.html) | 楼梯步态参数调试页 |
+| [**4G 远程调试**](remote-debug.zh-CN.md) | 车身交换机 + 4G 路由的拓扑、IP 规划、隧道、带宽与供电 |

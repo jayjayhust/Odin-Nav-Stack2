@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<title>Go2 EDU 远程调试网络拓扑</title>
+<head>
+<style>
+  html,body{margin:0;padding:0;background:#f4f6fa;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  #wrap{width:1500px;height:920px;position:relative}
+  svg{display:block}
+</style>
+</head>
+<body>
+<div id="wrap">
+<svg width="1500" height="920" viewBox="0 0 1500 920" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1500" height="920" fill="#f4f6fa"/>
+
+  <!-- title -->
+  <text x="60" y="66" font-size="30" font-weight="700" fill="#16202e">Go2 EDU 远程调试网络拓扑</text>
+  <text x="60" y="100" font-size="17" fill="#5b6b80">4G 上行 + 车身交换机 · 保持 192.168.123.0/24 不变 · 远程经隧道接入</text>
+
+  <!-- remote engineer -->
+  <g>
+    <rect x="56" y="300" width="300" height="150" rx="12" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="76" y="332" font-size="15" font-weight="600" fill="#2a3a4f">远程工程师</text>
+    <text x="76" y="360" font-size="14" fill="#5b6b80">笔记本 · 加入同一 tailnet</text>
+    <text x="76" y="384" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#0f766e">100.64.x.x（虚拟内网）</text>
+    <text x="76" y="410" font-size="13" fill="#5b6b80">Foxglove / SSH / rostopic</text>
+    <rect x="76" y="422" width="118" height="20" rx="4" fill="#e7f3f1"/>
+    <text x="84" y="436" font-size="11" fill="#0f766e">不出公网端口</text>
+  </g>
+
+  <!-- tunnel -->
+  <path d="M356 375 H 470" stroke="#0f766e" stroke-width="2.4" stroke-dasharray="7 5" fill="none"/>
+  <text x="362" y="362" font-size="12.5" fill="#0f766e" font-weight="600">WireGuard / Tailscale</text>
+  <text x="362" y="396" font-size="12" fill="#5b6b80">NAT 后主动外连，无需公网 IP</text>
+
+  <!-- internet -->
+  <g>
+    <ellipse cx="560" cy="252" rx="86" ry="46" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <ellipse cx="560" cy="248" rx="86" ry="46" fill="none" stroke="#e2e9f2" stroke-width="6"/>
+    <text x="560" y="246" font-size="15" font-weight="600" fill="#2a3a4f" text-anchor="middle">互联网</text>
+    <text x="560" y="268" font-size="12" fill="#5b6b80" text-anchor="middle">4G 蜂窝</text>
+  </g>
+
+  <!-- 4G downlink -->
+  <path d="M560 298 V 366 H 736" stroke="#b45309" stroke-width="2.4" stroke-dasharray="10 4" fill="none"/>
+  <text x="566" y="356" font-size="12.5" fill="#b45309" font-weight="600">LTE · 共享 NAT</text>
+
+  <!-- Go2 body frame -->
+  <rect x="700" y="120" width="700" height="470" rx="16" fill="#fbfcfe" stroke="#93a4bb" stroke-width="2" stroke-dasharray="12 6"/>
+  <text x="722" y="152" font-size="15" font-weight="600" fill="#2a3a4f">Go2 EDU 背部搭载</text>
+  <text x="722" y="176" font-size="12.5" fill="#7b8aa0">交换机 + 4G 路由 + 独立 12 V 电池</text>
+
+  <!-- 4G router -->
+  <g>
+    <rect x="740" y="200" width="230" height="104" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="758" y="226" font-size="14.5" font-weight="600" fill="#2a3a4f">4G 路由（有人 G805S 等）</text>
+    <text x="758" y="250" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">LAN 192.168.123.1/24</text>
+    <text x="758" y="272" font-size="12.5" fill="#5b6b80">DHCP 关闭，或池从 .100 起</text>
+    <text x="758" y="292" font-size="12" fill="#b45309">管理页改默认口令</text>
+  </g>
+
+  <!-- ethernet router -> switch -->
+  <path d="M855 304 V 356" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="866" y="338" font-size="12" fill="#1d4ed8">以太网</text>
+
+  <!-- switch -->
+  <g>
+    <rect x="740" y="356" width="230" height="86" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="758" y="382" font-size="14.5" font-weight="600" fill="#2a3a4f">5 口非管理交换机</text>
+    <text x="758" y="406" font-size="12.5" fill="#5b6b80">无配置 · 纯二层转发</text>
+    <text x="758" y="426" font-size="12" fill="#5b6b80">链路 100 M 足够</text>
+  </g>
+
+  <!-- switch -> 161 -->
+  <path d="M970 386 H 1010 V 300 H 1046" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="1012" y="292" font-size="12" fill="#1d4ed8">以太网</text>
+  <!-- switch -> 18 -->
+  <path d="M970 412 H 1010 V 500 H 1046" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="1012" y="494" font-size="12" fill="#1d4ed8">以太网</text>
+
+  <!-- control board -->
+  <g>
+    <rect x="1046" y="252" width="310" height="96" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <rect x="1046" y="252" width="6" height="96" rx="3" fill="#94a3b8"/>
+    <text x="1068" y="278" font-size="14.5" font-weight="600" fill="#2a3a4f">底层运控板</text>
+    <text x="1068" y="302" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">192.168.123.161</text>
+    <text x="1068" y="324" font-size="12.5" fill="#5b6b80">固件内固定，不可改 · SSH 跳板进入</text>
+  </g>
+
+  <!-- jetson -->
+  <g>
+    <rect x="1046" y="452" width="310" height="112" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <rect x="1046" y="452" width="6" height="112" rx="3" fill="#0f766e"/>
+    <text x="1068" y="478" font-size="14.5" font-weight="600" fill="#2a3a4f">算力拓展坞（Jetson Orin Nano）</text>
+    <text x="1068" y="502" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">192.168.123.18 · unitree</text>
+    <text x="1068" y="524" font-size="12.5" fill="#5b6b80">跑 ROS 1 主节点 + 隧道客户端 + rosbridge</text>
+    <text x="1068" y="546" font-size="12" fill="#b45309">默认口令 123 必须改掉</text>
+  </g>
+
+  <!-- legend -->
+  <g>
+    <rect x="56" y="580" width="612" height="296" rx="12" fill="#ffffff" stroke="#d8e0ea" stroke-width="1.2"/>
+    <text x="78" y="610" font-size="15" font-weight="600" fill="#2a3a4f">三条链路，三种性质</text>
+
+    <line x1="78" y1="640" x2="146" y2="640" stroke="#1d4ed8" stroke-width="2.6"/>
+    <text x="158" y="645" font-size="13" fill="#2a3a4f">以太网 · 车身内 192.168.123.0/24，双向可达</text>
+
+    <line x1="78" y1="672" x2="146" y2="672" stroke="#b45309" stroke-width="2.4" stroke-dasharray="10 4"/>
+    <text x="158" y="677" font-size="13" fill="#2a3a4f">LTE · 只出不进，运营商共享 NAT，无公网 IP</text>
+
+    <line x1="78" y1="704" x2="146" y2="704" stroke="#0f766e" stroke-width="2.4" stroke-dasharray="7 5"/>
+    <text x="158" y="709" font-size="13" fill="#2a3a4f">隧道 · 由 Jetson 主动外连建立，远程由此进入</text>
+
+    <text x="78" y="748" font-size="13" font-weight="600" fill="#2a3a4f">三条硬约束</text>
+    <text x="78" y="774" font-size="12.5" fill="#5b6b80">1 · 4G 路由的 LAN 必须改成 192.168.123.1，不能留 192.168.0.x —— 否则 Unitree App 与 SDK 找不到狗</text>
+    <text x="78" y="798" font-size="12.5" fill="#5b6b80">2 · DHCP 要关掉或把池抬到 .100 以上 —— 否则可能把 .18 或 .161 分给别的设备</text>
+    <text x="78" y="822" font-size="12.5" fill="#5b6b80">3 · 远程不要直连 RViz —— 4G 上行 1–5 Mbps 撑不住 /odin1/cloud_slam，必须走 rosbridge 白名单</text>
+  </g>
+
+  <!-- right note -->
+  <g>
+    <rect x="700" y="600" width="700" height="286" rx="12" fill="#ffffff" stroke="#d8e0ea" stroke-width="1.2"/>
+    <text x="722" y="650" font-size="15" font-weight="600" fill="#2a3a4f">数据面在哪，控制面在哪</text>
+    <text x="722" y="680" font-size="12.5" fill="#5b6b80">ROS 1 是点对点 TCP：远程节点拿到 master 的地址后，会直接去连数据源。</text>
+    <text x="722" y="702" font-size="12.5" fill="#5b6b80">所以 Jetson 上的 ROS_IP 要报它自己的 100.x 隧道地址，而不是 192.168.123.18；</text>
+    <text x="722" y="724" font-size="12.5" fill="#5b6b80">否则远程 PC 会拿到一个它根本路由不到的地址，连接停在 “registering”。</text>
+    <text x="722" y="756" font-size="13" font-weight="600" fill="#2a3a4f">两条路，按带宽选</text>
+    <text x="722" y="782" font-size="12.5" fill="#5b6b80">窄带（4G）→ rosbridge + Foxglove 只订小话题：/tf /path /cmd_vel /stair_gait/status</text>
+    <text x="722" y="804" font-size="12.5" fill="#5b6b80">宽带（现场 WiFi）→ 直接 ROS_MASTER_URI 连 master，可开 RViz 看全量点云</text>
+    <text x="722" y="856" font-size="12" fill="#b45309">点云只有在需要看清建图时才按需开，开完就关</text>
+  </g>
+</svg>
+</div>
+</body>
+</html>
