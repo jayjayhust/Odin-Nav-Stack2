@@ -253,7 +253,10 @@ function quadStrip(cells, side, res, r, color, opacity){
   const n = cells.length;
   if (!n) return null;
   const pos = new Float32Array(n * 6 * 3);
-  const h = res * 0.92;
+  // Cells are drawn edge to edge: a 0.92 inset turned every layer into a
+  // checkerboard of dots, and a ring of dots does not read as an inflated
+  // volume. The grid is contiguous by construction, so the faces should be too.
+  const h = res;
   let p = 0;
   for (const [a, b] of cells){
     const x0 = a * res - r + (res - h) / 2, y0 = b * res - r + (res - h) / 2;
@@ -292,8 +295,8 @@ function updateWin(sc, prog){
       if (m){ winGroup.remove(m); m.geometry.dispose(); }
     }
     // unseen first, then the ring, then the raw returns on top
-    winMeshUnk  = quadStrip(unk,  side, res, r, WIN_COL.unk,  0.16);
-    winMeshInfl = quadStrip(infl, side, res, r, WIN_COL.infl, 0.40);
+    winMeshUnk  = quadStrip(unk,  side, res, r, WIN_COL.unk,  0.20);
+    winMeshInfl = quadStrip(infl, side, res, r, WIN_COL.infl, 0.55);
     winMeshOcc  = quadStrip(occ,  side, res, r, WIN_COL.occ,  0.88);
     for (const m of [winMeshUnk, winMeshInfl, winMeshOcc]){
       if (m){ m.renderOrder = 9; winGroup.add(m); }
