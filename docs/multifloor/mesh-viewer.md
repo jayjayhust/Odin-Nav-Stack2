@@ -121,7 +121,7 @@ Two implementation notes worth keeping:
     off (`NAVSIM_SKIP_SURFACES` unset) lets the inflation eat a 1.2 m doorway, and NeuPAN then walks into an
     oncoming pedestrian at 13.4 s (measured; DWA is unaffected). The skip therefore stays: a thinner ring beside
     a low obstacle, rather than a dead scenario.
-11. **Inflation is rebuilt every 0.5 s with the map** (`deinflate` + `inflate`). It used to run once at build
+11. **Inflation is rebuilt every 0.3 s with the map** (`deinflate` + `inflate`). It used to run once at build
     time, and `scan()` writes its observation back into a cell the inflation had recoloured (it only skips cells
     still marked `kFree`), so the ring beside a wall was erased one cell at a time.
 
