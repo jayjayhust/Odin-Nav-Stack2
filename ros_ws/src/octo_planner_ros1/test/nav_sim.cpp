@@ -972,6 +972,8 @@ struct Run {
   struct LocalWin {
     double t = 0, cx = 0, cy = 0, r = 2.0;
     std::vector<std::array<int, 2>> cells;     // dx, dy from the window corner
+    std::vector<std::array<int, 2>> occ;       // raw occupancy, before inflation
+    std::vector<std::array<int, 2>> infl;      // inflation ring only
   };
   std::vector<LocalWin> wins;
 };
@@ -1213,14 +1215,20 @@ Run simulate(const Scenario& sc, unsigned seed) {
             if (std::hypot(wx - lw.cx, wy - lw.cy) > lw.r) continue;
             int ix = 0, iy = 0, iz = 0;
             if (!grid.worldToIndex(wx, wy, base_z + 0.24, ix, iy, iz)) continue;
-            bool solid = false;
+            // Split the two states the local planner distinguishes: a cell the
+            // sensor actually returned as occupied, versus one that is only
+            // solid because of the two-cell inflation around a real return.
+            bool has_occ = false, has_infl = false;
             for (int dz = 0; dz <= 2; ++dz) {
               const int jz = iz + dz;
               if (jz >= grid.nz()) break;
               const uint8_t v = grid.at(ix, iy, jz);
-              if (v == VoxelGrid::kOccupied || v == VoxelGrid::kInflated) { solid = true; break; }
+              if (v == VoxelGrid::kOccupied) { has_occ = true; break; }
+              if (v == VoxelGrid::kInflated) has_infl = true;
             }
-            if (solid) lw.cells.push_back({a, b});
+            if (has_occ) lw.occ.push_back({a, b});
+            else if (has_infl) lw.infl.push_back({a, b});
+            if (has_occ || has_infl) lw.cells.push_back({a, b});
           }
         }
         out.wins.push_back(lw);
@@ -1746,12 +1754,19 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
     for (size_t i = 0; i < r.wins.size(); ++i) {
       if (i) o << ",";
       const auto& w = r.wins[i];
-      o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy << ",\"cells\":[";
-      for (size_t j = 0; j < w.cells.size(); ++j) {
-        if (j) o << ",";
-        o << "[" << w.cells[j][0] << "," << w.cells[j][1] << "]";
+      o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy;
+      const std::vector<std::array<int, 2>>* lists[3] = {&w.cells, &w.occ, &w.infl};
+      const char* names[3] = {"cells", "occ", "infl"};
+      for (int li = 0; li < 3; ++li) {
+        o << ",\"" << names[li] << "\":[";
+        const auto& vl = *lists[li];
+        for (size_t j = 0; j < vl.size(); ++j) {
+          if (j) o << ",";
+          o << "[" << vl[j][0] << "," << vl[j][1] << "]";
+        }
+        o << "]";
       }
-      o << "]}";
+      o << "}";
     }
     o << "]}";
   }

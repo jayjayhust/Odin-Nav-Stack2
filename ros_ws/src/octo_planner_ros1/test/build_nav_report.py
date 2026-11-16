@@ -239,27 +239,33 @@ PAGE = r"""<!DOCTYPE html>
     return lc.frames[k];
   }
 
-  // Only the box travels. Inside it, everything solid - body plus the two cells
-  // of inflation - is what the candidate rollouts are tested against; outside
-  // it the local planner has no opinion at all.
+  // The window is a disc of radius r, not a box: the simulator samples cells
+  // only where hypot(dx,dy) <= r, so anything drawn square would be lying.
+  // Red is a cell the sensor actually returned as occupied, amber is the two-cell
+  // inflation around it.
   function drawLocalWindow(ctx, mp, sc, t){
     const lc = sc.local_costmap;
     const lw = nearestWin(sc, t);
     if (!lc || !lw) return;
     const r = lc.r, res = lc.res;
-    const x0 = mp.sx(lw.cx - r), x1 = mp.sx(lw.cx + r);
-    const y0 = mp.sy(lw.cy + r), y1 = mp.sy(lw.cy - r);
+    const cx = mp.sx(lw.cx), cy = mp.sy(lw.cy);
+    const pxR = Math.abs(mp.sx(lw.cx + r) - cx);
     ctx.fillStyle = 'rgba(90,175,255,0.05)';
-    ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
-    ctx.fillStyle = 'rgba(242,178,74,0.40)';
-    for (const c of lw.cells){
-      const wx = lw.cx - r + c[0] * res, wy = lw.cy - r + c[1] * res;
-      ctx.fillRect(mp.sx(wx) - 1.0, mp.sy(wy) - 1.0, 2.0, 2.0);
-    }
+    ctx.beginPath(); ctx.arc(cx, cy, pxR, 0, Math.PI * 2); ctx.fill();
+    const drawCells = (list, style) => {
+      if (!list) return;
+      ctx.fillStyle = style;
+      for (const c of list){
+        const wx = lw.cx - r + c[0] * res, wy = lw.cy - r + c[1] * res;
+        ctx.fillRect(mp.sx(wx) - 1.2, mp.sy(wy) - 1.2, 2.4, 2.4);
+      }
+    };
+    drawCells(lw.infl, 'rgba(242,178,74,0.42)');
+    drawCells(lw.occ, 'rgba(255,92,92,0.85)');
     ctx.strokeStyle = 'rgba(90,175,255,0.85)';
     ctx.lineWidth = 1.3;
     ctx.setLineDash([5, 4]);
-    ctx.beginPath(); ctx.rect(x0, y0, x1 - x0, y1 - y0); ctx.stroke();
+    ctx.beginPath(); ctx.arc(cx, cy, pxR, 0, Math.PI * 2); ctx.stroke();
     ctx.setLineDash([]);
   }
 
