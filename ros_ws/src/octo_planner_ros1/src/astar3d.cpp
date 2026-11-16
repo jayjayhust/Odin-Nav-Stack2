@@ -164,7 +164,15 @@ AStar3D::Result AStar3D::plan(const VoxelGrid& grid,
           if (params.require_ground_support && !unknown_floor &&
               !grid.hasGroundSupport(nx, ny, nz,
                                      params.ground_support_xy_radius_cells)) {
-            continue;
+            // A tread fails the layer-below test for the reason spelled out in
+            // hasTreadSupport. Accept it on a stair column, where there is a
+            // wide face within one step below and clear air above.
+            if (!params.stair_tread_support ||
+                !grid.hasTreadSupport(nx, ny, nz, params.max_step_z_cells,
+                                      params.max_step_z_cells + 1,
+                                      params.max_step_z_cells)) {
+              continue;
+            }
           }
 
           const int nflat = flatten(grid, nx, ny, nz);

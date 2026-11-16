@@ -249,6 +249,8 @@ function buildMap(pos, idx, res, infR){
     const ix = Math.floor((x-lo[0])/res), iy = Math.floor((y-lo[1])/res),
           iz = Math.floor((z-lo[2])/res);
     insertOne(ix, iy, iz, upwardClear);
+    // Only a horizontal face stamps clearance and spreads: a wall or a riser
+    // is a surface you look at, not one you stand on.
     if (!upwardClear) return;
     for (let dy = -1; dy <= 1; ++dy)
       for (let dx = -1; dx <= 1; ++dx){
@@ -327,31 +329,76 @@ function buildMap(pos, idx, res, infR){
     return support(ix, iy, iz);
   }
 
+  // Can a dog be here? On a plate that is the floor-support test. On a flight
+  // it cannot be: every tread is one cell thick, and the 3x3 stamp from the
+  // next riser eats the cell beside it, so requiring an occupied cell exactly
+  // underneath rejects the cell above nearly every tread - which is precisely
+  // the gap the probe kept reporting between the top tread and the platform.
+  // On a stair the honest condition is: an upward facing surface somewhere
+  // within one riser below, and clear air above body height. That is what a
+  // stair gait does with its body anyway, and it is what an octomap planner
+  // gets for free, because it plans through free space and never asks what is
+  // underneath.
+  function walkable(ix, iy, iz){
+    if (iz < 1) return false;
+    if (supportOrUnknown(ix, iy, iz)) return true;
+    if (!stairCol[ix + iy*nx]) return false;
+    // The same test VoxelGrid::hasTreadSupport runs: some occupied cell within
+    // one step below must be part of a wide horizontal face, counted on the
+    // 5x5 box. A wall hit spans one or two cells and never passes; a tread or
+    // a plate spans many.
+    let landed = false;
+    for (let d = 1; d <= MAX_STEP_Z; ++d){
+      const k = iz - d;
+      if (k < 1) break;
+      if (data[F(ix, iy, k)] !== OCC) continue;
+      let span = 0;
+      for (let sy = -2; sy <= 2; ++sy)
+        for (let sx = -2; sx <= 2; ++sx){
+          const i2 = ix + sx, j2 = iy + sy;
+          if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+          if (data[F(i2, j2, k)] === OCC) ++span;
+        }
+      if (span >= 8){ landed = true; break; }
+    }
+    if (!landed) return false;
+    for (let u = 1; u <= MAX_STEP_Z + 1; ++u){
+      const k = iz + u;
+      if (k >= nz) break;
+      if (data[F(ix, iy, k)] === OCC) return false;
+    }
+    return true;
+  }
+
   // inflate(rxy, 0): a flat disk, never any z extent. Stair runs are exempt,
   // the same carve-out nav_sim makes for a stair core - a 0.30 m tread cannot
   // survive a 0.20 m side expansion from the next riser. A column counts as
   // stair when four or more of its occupied cells sit within three layers of
   // each other, which is a flight and never a floor plate.
+  // A column counts as stair when four or more of its occupied cells sit within
+  // three layers of each other, which is a flight and never a floor plate. The
+  // same test carves the flight out of the inflation band, and gates the stair
+  // walkability below.
+  const stairCol = new Uint8Array(nx*ny);
+  for (let j = 0; j < ny; ++j)
+    for (let i = 0; i < nx; ++i){
+      let run = 0, last = -99;
+      for (let k = 0; k < nz; ++k){
+        if (data[F(i, j, k)] !== OCC) continue;
+        run = (k - last <= MAX_STEP_Z) ? run + 1 : 1;
+        last = k;
+        if (run >= 4){ stairCol[i + j*nx] = 1; break; }
+      }
+    }
   const rxy = Math.max(0, Math.round(infR/res));
   if (rxy > 0){
-    const exempt = new Uint8Array(nx*ny);
-    for (let j = 0; j < ny; ++j)
-      for (let i = 0; i < nx; ++i){
-        let run = 0, last = -99;
-        for (let k = 0; k < nz; ++k){
-          if (data[F(i, j, k)] !== OCC) continue;
-          run = (k - last <= MAX_STEP_Z) ? run + 1 : 1;
-          last = k;
-          if (run >= 4){ exempt[i + j*nx] = 1; break; }
-        }
-      }
     const occ = [];
     for (let f = 0; f < cells; ++f) if (data[f] === OCC) occ.push(f);
     for (let oi = 0; oi < occ.length; ++oi){
       const f = occ[oi];
       const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
       const j = (rem / nx) | 0, i = rem - j*nx;
-      if (exempt[i + j*nx]) continue;
+      if (stairCol[i + j*nx]) continue;
       for (let dj = -rxy; dj <= rxy; ++dj){
         const jj = j + dj;
         if (jj < 0 || jj >= ny) continue;
@@ -380,7 +427,8 @@ function buildMap(pos, idx, res, infR){
         if (wz < zmin) zmin = wz;
         if (wz > zmax) zmax = wz;
       }
-  return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, nStand, nInfl,
+  return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
+          stairCol, nStand, nInfl,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -389,7 +437,7 @@ function buildMap(pos, idx, res, infR){
 const fmt3 = v => '[' + v.map(x => (+x).toFixed(2)).join(',') + ']';
 function planPath(m, sx, sy, sz, gx, gy, gz){
   const {res, lo, nx, ny, nz, data} = m;
-  const supportOrUnknown = m.supportOrUnknown;
+  const walkable = m.walkable;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   const cells = m.cells;
   const traversable = (i, j, k) =>
@@ -409,7 +457,7 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
           // Free is not enough: the layer above a tread or a desk is free too,
           // and snapping there put the goal 0.35 m in the air with nothing
           // under it. A start or goal has to be somewhere a dog can stand.
-          if (k < 1 || !supportOrUnknown(i, j, k)) continue;
+          if (k < 1 || !walkable(i, j, k)) continue;
           const d2 = di*di + dj*dj + dk*dk;
           if (d2 < bd){ bd = d2; best = F(i, j, k); }
         }
@@ -498,7 +546,7 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
           const nf = F(i, j, k);
           if (closed[nf]) continue;
           if (!traversable(i, j, k)) continue;
-          if (k < 1 || !supportOrUnknown(i, j, k)) continue;
+          if (k < 1 || !walkable(i, j, k)) continue;
           const step = res*Math.hypot(di, dj, dk);
           const tentative = gScore[cur] + step;
           if (tentative >= gScore[nf]) continue;
@@ -533,11 +581,34 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
 // how far up the building the connected component actually gets. A planner
 // that expands a few thousand nodes and stops is not necessarily wrong - it
 // may simply be standing on a component that never reaches the goal.
+function probeRow(m, y, x0, x1, label){
+  const {res, lo, nx, ny, nz, data} = m;
+  const F = (i, j, k) => (k*ny + j)*nx + i;
+  const j = Math.floor((y-lo[1])/res);
+  const i0 = Math.floor((x0-lo[0])/res), i1 = Math.floor((x1-lo[0])/res);
+  const out = [];
+  for (let i = i0; i <= i1; ++i){
+    const free = [], occ = [];
+    for (let k = 0; k < nz; ++k){
+      const v = data[F(i, j, k)];
+      if (v === OCC) occ.push(k);
+      else if (v === FREE && m.walkable(i, j, k)) free.push(k);
+    }
+    const raw = [];
+    for (let k = 3; k <= 12; ++k){
+      const v = data[F(i, j, k)];
+      if (v !== 0) raw.push(k + '=' + (v === 1 ? 'F' : v === 2 ? 'O' : 'I'));
+    }
+    out.push(i + ':walk[' + free.join(',') + ']raw[' + raw.join(' ') + ']');
+  }
+  console.log('PROBE ' + label + ' ' + out.join(' '));
+}
+
 function flood(m, x, y, z){
   const {res, lo, nx, ny, nz, data} = m;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   const ok = (i, j, k) => data[F(i, j, k)] === FREE;
-  const sup = m.supportOrUnknown;
+  const sup = m.walkable;
   const i0 = Math.floor((x-lo[0])/res), j0 = Math.floor((y-lo[1])/res),
         k0 = Math.floor((z-lo[2])/res);
   let s = -1, bd = 1e30, si = 0, sj = 0, sk = 0;
@@ -1253,16 +1324,28 @@ if (location.hash.indexOf('single') >= 0){
         state.start = [X0 + 4.20, Y0 + 1.60, Z0 + 0.02];
         state.goal  = [X0 + 1.30, Y0 + 1.60, Z0 + 0.62];
       } else {
-        state.start = [X0 + 11.55, Y0 + 5.80, Z0 + 0.02];
-        state.goal  = [X0 + 10.90, Y0 + 5.80, Z0 - 0.58];
+        // the flight drops eastward, so the run has to start on the west lip
+        state.start = [X0 + 7.80, Y0 + 5.80, Z0 + 0.02];
+        state.goal  = [X0 + 10.70, Y0 + 5.80, Z0 - 0.58];
       }
       const r = planPath(m, state.start[0], state.start[1], state.start[2],
                              state.goal[0], state.goal[1], state.goal[2]);
+      if (location.hash.indexOf('diag') >= 0 && r.pts){
+        let zlo = 1e9, zhi = -1e9;
+        for (const pt of r.pts){ zlo = Math.min(zlo, pt[2]); zhi = Math.max(zhi, pt[2]); }
+        console.log('PLAN', JSON.stringify({pts: r.pts.length, len: +r.len.toFixed(2),
+          exp: r.expanded, zlo: +zlo.toFixed(2), zhi: +zhi.toFixed(2),
+          a: r.pts[0].map(v => +v.toFixed(2)), b: r.pts[r.pts.length-1].map(v => +v.toFixed(2))}));
+      }
       if (r.error){
         const fl = flood(m, state.start[0], state.start[1], state.start[2]);
         console.log('FLOOD single', JSON.stringify({cells: fl.cells, from: fl.from, to: fl.to, by: fl.byStorey, start: fl.start}));
         const g = flood(m, state.goal[0], state.goal[1], state.goal[2]);
         console.log('FLOOD goal', JSON.stringify({cells: g.cells, from: g.from, to: g.to, start: g.start}));
+        if (location.hash.indexOf('diag') >= 0){
+          const X0p = m.lo[0], Y0p = m.lo[1];
+          probeRow(m, Y0p + 5.80, X0p + 7.60, X0p + 11.60, 'pit-lane');
+        }
         say(r.error); return;
       }
       state.path = r.pts;

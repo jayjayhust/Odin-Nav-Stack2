@@ -102,6 +102,21 @@ The dog's position is still driven by **the global route**; the local layer only
 
 `#demo,obs` and `#demo,ped` drop one of each automatically.
 
+## Two simulators, one robot: the same planning stack
+
+The point cloud simulator (`nav_sim.cpp`), this mesh page and the real robot run one three layer structure, not three separate implementations:
+
+| layer | what the repo implements | point cloud sim | mesh page |
+|---|---|---|---|
+| global | `astar3d.cpp`: 26 neighbours, no pure vertical step, at most `max_step_z = 3` cells per expansion, cost `res·|d| + z_bias·res·|Δz| + lateral` (defaults `z_bias = 0`, `lateral = 0`) | used directly | copied rule for rule, default parameters |
+| standable | `voxel_grid.cpp` `hasGroundSupport` (a thin sheet is separated from a wall hit by 8 occupied cells in a 5x5 box) plus `hasTreadSupport` for stairs | `stair_tread_support = false` (default) | on, with the same test |
+| local | `robots/go2/neupan/planner.yaml`: point set obstacles, `halfW + 0.05` hard reject, `receding 10 × 0.1 s` | `Scenario::planner = "neupan"` | the same constraint skeleton, no DUNE / PAN |
+| dynamic avoidance | candidate `(vx, vy, wz)` rollouts with a hard clearance threshold | same | same, plus obstacles and pedestrians you drop in |
+
+**The one deliberate difference is `stair_tread_support`, and that default is measured**: switching it on and running the ten `nav_sim` scenarios takes `four_floor · DWA` from `reached=1` to `reached=0 collided=1` (NeuPAN still arrives). So the robot and the point cloud sim keep it off, and the mesh page has to turn it on: its map is a voxelised triangle shell, with none of the 3x3 ground return stamping that leaves the point cloud flights plannable.
+
+With the flag off, all ten scenarios are **identical to before the change** - `office_loop / corridor_block / narrow_gate / stair_two_floor / four_floor` under both NeuPAN and DWA, matching `t / len / mincl / replans / swerves`, an empty `diff`.
+
 ## A one storey sample, built for obstacle tests
 
 The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: a 12 x 8 m room, 30 boxes and 360 triangles, **all mathematical boxes, nothing reconstructed**.
@@ -115,22 +130,25 @@ Generator: `make_example_single_floor.py`, rerun it after changing any number; i
 
 5,725 standable cells on the floor, of which the 0.30 m band costs 115 (2.0%) - cleaner than the four storey 3.7%, because there is no dense stair core.
 
-`#single` plans **floor to floor**: `(3.0, 4.2)` to `(9.6, 2.2)`, 44 cells / 7.3 m / 467 expanded, going round the columns and the desk.
+`#single` plans **floor to floor**: `(3.0, 4.2)` to `(9.6, 2.2)`, 44 cells / 7.26 m / 466 expanded, going round the columns and the desk.
 
-### The flight still does not plan, and the reason is measured
+### The flight plans now: 27 cells / 4.73 m, climbing from z 0.13 to 0.73
 
-`#single,stair` (floor to the 0.60 m platform) still reports no path. Probe: the start component is 4,009 cells covering k 9..13, the goal sits in a different 4,106 cell component. The gap is "top tread to platform face".
+`#single,stair` (floor to the 0.60 m platform) plans. Measured: 27 cells, 4.73 m, 160 expanded, path z from 0.13 to 0.73 - it really walks up the treads rather than going round the outside of the wall.
 
-Two real bugs were fixed this round, both live:
+**Why it took so long, measured rather than guessed**: `hasGroundSupport` demands an occupied cell exactly one layer underneath. A flight does not satisfy that - every tread is one cell thick, the next riser occupies the same layer, so the cell under a standing position is often empty or inflated. The flight then connects only through the sheet of cells floating above the treads: on the way up that sheet follows the flight and climbs to the platform, which is why ascent looked fine; on the way down it collapses to floor height and never reaches the pit bottom.
 
-1. **`snap` only checked FREE, not whether a dog could stand there** - the goal landed 0.35 m in the air above a tread with nothing under it. It now requires `supportOrUnknown`.
-2. **A 0.18 m riser is 1.2 cells**, so grid phase never lines up and adjacent treads differ by 1-2 cells, producing steps beyond `max_step_z` (0.45 m). It is now 0.15 m, exactly one cell.
+**The fix**: on a **stair column**, accept a cell when some occupied cell within `max_step_z` (3) below is part of a **wide horizontal face** - 8 or more occupied cells in the 5x5 window, the same span test `hasGroundSupport` already uses to tell a slab from a wall hit - and the four cells above are clear. A desk top is a wide face too, but a desk column holds only two or three occupied layers, so it never counts as a stair column and cannot be stood on from above.
 
-One gap remains. The next step is to measure the top tread cell and the platform edge cell - their k and their support state - rather than guessing again.
+Two real bugs from the previous round stay fixed: `snap` accepted a free cell it could not stand on (the goal sat 0.35 m in the air above a tread), and an 0.18 m riser is 1.2 cells so the grid phase never lined up (now 0.15 m, exactly one cell).
 
-**What works today**: loading the room, picking start and goal by clicking, planning round obstacles on the floor, dropping posts and pedestrians for the local layer. **What does not**: automatic planning up that flight.
+### The pit still does not plan - a known open item
 
-## Limits worth knowing
+`#singlepit` still reports no path. Measured: the pit floor is an isolated **74 cell component** at k=5, while the start component holds 4,799 cells across k 9..16. The east lip of the hole is a sheer 0.6 m wall with no treads; on the west side the four descending treads voxelise into one solid block, and the pit floor never connects to it.
+
+The next measurement is not another geometry parameter - it is which single layer is missing between those 74 cells and the foot of the flight. It was left alone this round because the relaxation above already bought the ascent and the four storey case, and locking that in was worth more than reopening the pit.
+
+## Limits worth knowing## Limits worth knowing
 
 - 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
 - The probe shares the planner's edge rules, so it proves "reachable under these rules", not that the dog can walk it: `stair_gait`, the 0.42 m body, and the site upstands are not modelled.

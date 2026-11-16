@@ -161,6 +161,41 @@ bool VoxelGrid::hasGroundSupport(int ix, int iy, int iz,
   return false;
 }
 
+bool VoxelGrid::isStairColumn(int ix, int iy, int max_gap_cells) const {
+  const int gap = std::max(1, max_gap_cells);
+  int run = 0, last = -1000;
+  for (int iz = 0; iz < nz_; ++iz) {
+    if (at(ix, iy, iz) != kOccupied) continue;
+    run = (iz - last <= gap) ? run + 1 : 1;
+    last = iz;
+    if (run >= 4) return true;
+  }
+  return false;
+}
+
+bool VoxelGrid::hasTreadSupport(int ix, int iy, int iz, int max_drop_cells,
+                                int headroom_cells, int max_gap_cells) const {
+  if (iz < 1) return false;
+  if (!isStairColumn(ix, iy, max_gap_cells)) return false;
+  bool landed = false;
+  for (int d = 1; d <= std::max(1, max_drop_cells); ++d) {
+    const int zl = iz - d;
+    if (zl < 1) break;
+    if (at(ix, iy, zl) != kOccupied) continue;
+    int span = 0;
+    for (int sy = -2; sy <= 2; ++sy)
+      for (int sx = -2; sx <= 2; ++sx)
+        if (at(ix + sx, iy + sy, zl) == kOccupied) ++span;
+    if (span >= 8) { landed = true; break; }   // a real face, not a wall hit
+  }
+  if (!landed) return false;
+  for (int u = 1; u <= std::max(1, headroom_cells); ++u) {
+    if (iz + u >= nz_) break;
+    if (at(ix, iy, iz + u) == kOccupied) return false;
+  }
+  return true;
+}
+
 int VoxelGrid::groundBelow(int ix, int iy, int iz_hint) const {
   if (ix < 0 || iy < 0 || ix >= nx_ || iy >= ny_) return -1;
   int iz = std::min(iz_hint, nz_ - 1);

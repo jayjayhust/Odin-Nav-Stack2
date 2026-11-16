@@ -24,7 +24,7 @@ def box(x0, x1, y0, y1, z0, z1, tag=""):
 # ---------------------------------------------------------------- room shell --
 W, D, H, T = 12.0, 8.0, 3.40, 0.16
 # floor is tiled around the pit: x 8.80..10.40, y 5.00..6.60 is open
-PY0, PY1, PX0, PX1 = 5.00, 6.60, 8.60, 11.00
+PY0, PY1, PX0, PX1 = 5.00, 6.60, 8.20, 11.40
 FO = -0.10                       # floor slab is 0.10 thick below z=0
 box(0, PX0, 0, D, FO, 0, "floor")
 box(PX1, W, 0, D, FO, 0, "floor")

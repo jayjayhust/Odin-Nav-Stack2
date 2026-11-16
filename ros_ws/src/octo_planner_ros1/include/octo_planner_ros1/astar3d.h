@@ -30,6 +30,19 @@ class AStar3D {
     int max_iterations = 500000;
     bool require_ground_support = true;
     int ground_support_xy_radius_cells = 0;
+
+    // Accept a stair tread whose supporting face is up to max_step_z cells
+    // below, instead of demanding an occupied cell exactly one layer under.
+    // See VoxelGrid::hasTreadSupport for why a flight needs it.
+    //
+    // Off by default, and that default is measured, not cautious: turning it
+    // on makes four_floor · DWA collide (reached=0, collided=1) while NeuPAN
+    // still reaches. The point-cloud scenes stamp ground returns over a 3x3
+    // neighbourhood, which leaves flights plannable under the strict rule,
+    // so nothing here needs the relaxation. A surface-voxelised model - an
+    // imported OBJ, the mesh page - does need it, because its treads arrive
+    // as one cell thick shells with no stamped plate under them.
+    bool stair_tread_support = false;
     int snap_search_radius_cells = 12;
     bool allow_diagonal = true;
     // A single expansion may climb at most this many cells in z. Keeps the

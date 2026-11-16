@@ -83,6 +83,29 @@ class VoxelGrid {
   // from iz_hint. Returns -1 when the column holds no surface.
   int groundBelow(int ix, int iy, int iz_hint) const;
 
+  // A column that holds a flight: four or more occupied cells stacked with no
+  // gap wider than max_gap_cells. A plate contributes one or two layers, a
+  // wall hit one per layer, so neither reaches four.
+  bool isStairColumn(int ix, int iy, int max_gap_cells) const;
+
+  // Would a dog standing here be on a tread?
+  //
+  // hasGroundSupport demands an occupied cell exactly one layer below, and on
+  // a flight that is false for most treads: the tread is one cell thick, and
+  // the next riser shares its z layer, so the cell beside it is occupied while
+  // the cell underneath the standing position is not. The flight then only
+  // connects through a sheet of cells floating above the treads, which climbs
+  // fine but cannot be entered from below - the reason a descent has never
+  // planned.
+  //
+  // The honest condition on a stair is: some occupied cell within
+  // max_drop_cells below is part of a wide horizontal face (the same 5x5 span
+  // test hasGroundSupport uses to tell a slab from a wall hit), and the air
+  // above headroom_cells is clear. Only consulted on a stair column, otherwise
+  // a tabletop would be standable from above.
+  bool hasTreadSupport(int ix, int iy, int iz, int max_drop_cells,
+                       int headroom_cells, int max_gap_cells) const;
+
   // Nearest traversable cell to (ix,iy,iz) inside a cubic window, or false.
   // allow_inflated: start and goal often sit inside the robot-radius band
     // (against a wall, at a stair head); accepting INFLATED there keeps the
