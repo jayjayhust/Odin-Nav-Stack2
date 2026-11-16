@@ -38,7 +38,11 @@ box(0, T, T, D - T, 0, H, "wall")
 box(W - T, W, T, D - T, 0, H, "wall")
 
 # ------------------------------------------------------- up-going platform --
-PLAT = 0.60
+import sys
+RISE = float(sys.argv[sys.argv.index('--rise')+1]) if '--rise' in sys.argv else 0.15
+TREAD = float(sys.argv[sys.argv.index('--tread')+1]) if '--tread' in sys.argv else 0.45
+OUT = sys.argv[sys.argv.index('--out')+1] if '--out' in sys.argv else 'example_single_floor.obj'
+PLAT = RISE * 4
 box(0.60, 2.00, 0.60, 2.60, 0, PLAT, "platform")
 box(0.60, 2.00, 0.60, 2.60, PLAT, PLAT, "platform-cap")   # the walking face
 # four treads going east off the platform edge, 0.30 tread / 0.18 rise
@@ -46,8 +50,8 @@ box(0.60, 2.00, 0.60, 2.60, PLAT, PLAT, "platform-cap")   # the walking face
 # three. A 0.30 riser looked aligned but the grid origin comes from the
 # model's own bounds, so the phase is never guaranteed and 2 cells became 3.
 for i in range(4):
-    x0 = 2.00 + i * 0.45
-    box(x0, x0 + 0.45, 0.80, 2.40, 0, PLAT - 0.15 * (i + 1), "tread-up")
+    x0 = 2.00 + i * TREAD
+    box(x0, x0 + TREAD, 0.80, 2.40, 0, PLAT - RISE * (i + 1), "tread-up")
 
 # --------------------------------------------------------- down-going pit --
 box(PX0, PX1, PY0, PY1, -PLAT - 0.10, -PLAT, "pit-floor")
@@ -58,9 +62,9 @@ box(PX0, PX1, PY0, PY1, -PLAT - 0.10, -PLAT, "pit-floor")
 box(PX1 - 0.06, PX1, PY0, PY1, -PLAT, 0, "pit-wall")
 # four treads dropping west into the pit from the open edge at x 8.80
 for i in range(4):
-    x0 = PX0 + i * 0.45
-    box(x0, x0 + 0.45, PY0 + 0.10, PY1 - 0.10, -PLAT,
-        -0.15 * (i + 1), "tread-down")
+    x0 = PX0 + i * TREAD
+    box(x0, x0 + TREAD, PY0 + 0.10, PY1 - 0.10, -PLAT,
+        -RISE * (i + 1), "tread-down")
 
 # ------------------------------------------------------------- obstacles --
 box(3.80, 4.20, 3.30, 3.70, 0, H, "column")
@@ -93,6 +97,6 @@ def write_obj(path):
 
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
-    out = os.path.join(here, "example_single_floor.obj")
+    out = OUT if os.path.isabs(OUT) else os.path.join(here, OUT)
     write_obj(out)
     print("%s  %d boxes  %d bytes" % (out, len(BOXES), os.path.getsize(out)))

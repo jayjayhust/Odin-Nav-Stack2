@@ -49,8 +49,9 @@
   <button class="btn primary" id="pick">选择模型文件…</button>
   <button class="btn" id="demo">示例 · 四层带楼梯</button>
   <button class="btn" id="demo1">示例 · 单层带阶梯</button>
+  <button class="btn" id="demo2">示例 · 单层（25 cm 极限梯）</button>
   <span class="lbl">分辨率</span>
-  <select id="res"><option value="0.10">0.10 m</option><option value="0.15" selected>0.15 m</option><option value="0.20">0.20 m</option><option value="0.30">0.30 m</option></select>
+  <select id="res"><option value="0.05">0.05 m</option><option value="0.10">0.10 m</option><option value="0.15" selected>0.15 m</option><option value="0.20">0.20 m</option><option value="0.30">0.30 m</option></select>
   <span class="lbl">膨胀</span>
   <select id="inf"><option value="0.00">0 m</option><option value="0.30" selected>0.30 m</option><option value="0.45">0.45 m</option><option value="0.60">0.60 m</option></select>
   <button class="btn" id="setStart">点模型设起点</button>
@@ -80,13 +81,14 @@
 </div>
 
 <div class="foot">
-  <b>怎么判定可走：</b>三角面按法向分成水平面与竖直面——水平面给「这一列有地板，站在这个高度」，竖直面投影到 XY 后按膨胀半径做距离场，靠近墙的格子禁行。相邻两列的高度差超过 0.30 m 就走不过去，所以楼梯是一级一级上得去的，而楼板与楼板之间那 3.42 m 走不过去。
+  <b>怎么判定可走：</b>三角面按法向分成水平面与竖直面——水平面给「这一列有地板，站在这个高度」，竖直面投影到 XY 后按膨胀半径做距离场，靠近墙的格子禁行。相邻两列的高度差超过 0.45 m 就走不过去，所以楼梯是一级一级上得去的，而楼板与楼板之间那 3.42 m 走不过去。
 </div>
 
 <script>/*__THREE__*/</script>
 <script>
 const DATA_OBJ = /*__OBJ__*/;
 const DATA_OBJ1 = /*__OBJ2__*/;
+const DATA_OBJ2 = /*__OBJ3__*/;
 
 // ---------- scene ----------------------------------------------------------
 const host = document.getElementById('cv');
@@ -207,10 +209,16 @@ function parseSTL(buf){
 //   - a cell is standable only if something solid sits under it.
 const UNKNOWN = 0, FREE = 1, OCC = 2, INFL = 3;
 const CLEARANCE = 20;          // voxel_grid.cpp: insertSurfacePoint(..., 20)
-const MAX_STEP_Z = 3;          // nav_sim.cpp: max_step_z_cells = 3
-const SNAP_R = 12;             // nav_sim.cpp: snap_search_radius_cells = 12
+// nav_sim.cpp states these in cells at 0.15 m. They are kept in metres here and
+// converted per map, so the same rule survives a 0.05 m grid where one 25 cm
+// riser is five cells instead of three.
+const MAX_STEP_M = 0.45, SNAP_M = 1.80;
+let MAX_STEP_Z = 3;            // 0.45 m, in cells of the current map
+let SNAP_R = 12;               // 1.80 m, in cells of the current map
 
 function buildMap(pos, idx, res, infR){
+  MAX_STEP_Z = Math.max(1, Math.round(MAX_STEP_M / res));
+  SNAP_R = Math.max(4, Math.round(SNAP_M / res));
   const pad = 0.6;
   let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
   for (let i = 0; i < pos.length; i += 3){
@@ -1084,6 +1092,14 @@ document.getElementById('demo1').onclick = () => {
   loadModel(o.pos, o.idx, '示例 · 单层办公间');
 };
 
+document.getElementById('demo2').onclick = () => {
+  // the 25 cm sample needs a 0.05 m grid: 0.25 is five cells and a 0.28 tread
+  // about six, both exact, so no rule has to bend to fit it
+  document.getElementById('res').value = '0.05';
+  const o = parseOBJ(DATA_OBJ2);
+  loadModel(o.pos, o.idx, '示例 · 单层（25 cm 极限梯）');
+};
+
 document.getElementById('pick').onclick = () => document.getElementById('file').click();
 document.getElementById('file').onchange = e => {
   const f = e.target.files && e.target.files[0];
@@ -1302,8 +1318,9 @@ function tick(){
 tick();
 
 if (location.hash.indexOf('single') >= 0){
+  const is25 = location.hash.indexOf('single25') >= 0;
   setTimeout(() => {
-    document.getElementById('demo1').click();
+    (is25 ? document.getElementById('demo2') : document.getElementById('demo1')).click();
     setTimeout(() => {
       const m = state.map;
       if (!m) return;
@@ -1318,18 +1335,20 @@ if (location.hash.indexOf('single') >= 0){
       // Floor to floor is the working case: it crosses the room, goes round
       // the columns and the desk, and leaves the flight alone so the dog can
       // have obstacles dropped in front of it.
+      const upStartX = is25 ? 4.60 : 4.20, upGoalZ = is25 ? 1.02 : 0.62;
+      const pitGoalZ = is25 ? 0.98 : 0.58;
       if (kind === 'floor'){
         // open floor at both ends: the platform occupies x 0.6..2.0 / y 0.6..2.6
         // and the pit x 8.6..11.0 / y 5.0..6.6, so neither end may sit there
         state.start = [X0 + 3.00, Y0 + 4.20, Z0 + 0.02];
         state.goal  = [X0 + 9.60, Y0 + 2.20, Z0 + 0.02];
       } else if (kind === 'stair'){
-        state.start = [X0 + 4.20, Y0 + 1.60, Z0 + 0.02];
-        state.goal  = [X0 + 1.30, Y0 + 1.60, Z0 + 0.62];
+        state.start = [X0 + upStartX, Y0 + 1.60, Z0 + 0.02];
+        state.goal  = [X0 + 1.30, Y0 + 1.60, Z0 + upGoalZ];
       } else {
         // the flight drops eastward, so the run has to start on the west lip
         state.start = [X0 + 7.80, Y0 + 5.80, Z0 + 0.02];
-        state.goal  = [X0 + 10.70, Y0 + 5.80, Z0 - 0.58];
+        state.goal  = [X0 + 10.70, Y0 + 5.80, Z0 - pitGoalZ];
       }
       const r = planPath(m, state.start[0], state.start[1], state.start[2],
                              state.goal[0], state.goal[1], state.goal[2]);

@@ -103,6 +103,25 @@ The dog's position is still driven by **the global route**; the local layer only
 `#demo,obs` and `#demo,ped` drop one of each automatically.
 
 
+
+### The 25 cm limit flight at 0.05 m - option 1, done
+
+25 cm is the Go2's climbing limit. To represent it honestly the page changes the **grid, not the rules**: the single storey room gains a `示例 · 单层（25 cm 极限梯）` button with rise 0.25 / tread 0.28, a 1.00 m platform, a 1.00 m pit, and a 0.05 m grid (0.25 is 5 cells, 0.28 about 6, all on the lattice).
+
+| | 0.15 m standard flight | 0.05 m limit flight |
+|---|---|---|
+| grid | 80×53×37, about 150 thousand cells | 265×185×116, about **5.7 million** |
+| standable | about 5,900 | 87,191 |
+| floor | 44 cells / 7.26 m / 466 expanded | 131 cells / 7.4 m / **10,380 expanded** |
+| ascent | 27 cells / 4.73 m, z 0.13 to 0.73 | **65 cells / 3.94 m, z -0.03 to 1.07** (a 1.00 m platform) |
+| descent | 19 cells / 3.11 m, z 0.13 to -0.47 | **57 cells / 3.59 m, z -0.03 to -1.03** |
+
+Not one rule changed. Two cell counts became lengths: `max_step_z` is written as 0.45 m and `snap_search_radius` as 1.80 m, converted per map - at 0.15 m they are still 3 and 12, so the old paths are unchanged to the cell (27, 19, and the four storey 115).
+
+**The cost is real**: expanded nodes go from 466 to 10,380, A* more than twenty times slower, and the map costs about 38 times the memory. That is why 25 cm is only offered on the single storey sample; the four storey room stays at 0.15 m, where a 0.05 m grid would be around 200 million cells and the page would hang.
+
+A 30 cm flight still does not plan (measured: the goal component holds 33 cells), so 25 cm is the upper edge of this voxel scheme - which lands exactly on the robot's own limit.
+
 ### Trying a step-edge test instead of a layer count (rejected, kept for the record)
 
 25 cm is the Go2's climbing limit and the sample sits at 0.15 m. To support 25 cm directly, `stairCol` was rewritten to look for a step edge - a lateral neighbour whose top differs by one riser - instead of counting occupied layers. Two versions were measured:
