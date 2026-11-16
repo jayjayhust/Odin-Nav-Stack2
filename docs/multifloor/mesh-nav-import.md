@@ -155,22 +155,23 @@ With the flag off, all ten scenarios are **identical to before the change** - `o
 
 ## A one storey sample, built for obstacle tests
 
-The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: a 12 x 8 m room, 30 boxes and 360 triangles, **all mathematical boxes, nothing reconstructed**.
+The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: an **18 x 10 m** room, **44 boxes and 528 triangles**, **all mathematical boxes, nothing reconstructed**.
 
 - four walls at 3.4 m, no ceiling so the interior stays readable;
 - two 0.4 m columns, a 1.2 x 0.8 x 0.75 desk, a 1.6 m partition, a 0.4 m barrel;
 - **up**: four treads, 0.15 m riser / 0.45 m going, onto a 0.60 m platform;
-- **down**: the same four treads, into a -0.60 m pit (the floor is split into four slabs around it).
+- **down**: the same four treads, into a -0.60 m pit (the floor is split into four slabs around it);
+- **a crossing**: eight risers up, a 1.50 m landing, eight risers down - next section.
 
-Generator: `make_example_single_floor.py`, rerun it after changing any number; it writes `example_single_floor.obj` (10,570 B).
+The room grew from 12 x 8 m to 18 x 10 m to fit that last piece. The grid is **130 x 76 x 37 cells**, **9,891 standable cells** on the floor, of which the 0.30 m band costs 210 (2.1%) - cleaner than the four storey 3.7%, because there is no dense stair core.
 
-5,725 standable cells on the floor, of which the 0.30 m band costs 115 (2.0%) - cleaner than the four storey 3.7%, because there is no dense stair core.
+Generator: `make_example_single_floor.py`, rerun it after changing any number; it writes `example_single_floor.obj` (44 boxes / 15,721 B), and `--rise 0.25 --tread 0.28 --out example_single_floor_25cm.obj` writes the 25 cm tier (44 boxes / 15,665 B).
 
 `#single` plans **floor to floor**: `(3.0, 4.2)` to `(9.6, 2.2)`, 44 cells / 7.26 m / 466 expanded, going round the columns and the desk.
 
-### The flight plans now: 27 cells / 4.73 m, climbing from z 0.13 to 0.73
+### The flight plans now: 26 cells / 4.62 m, climbing from z 0.13 to 0.73
 
-`#single,stair` (floor to the 0.60 m platform) plans. Measured: 27 cells, 4.73 m, 160 expanded, path z from 0.13 to 0.73 - it really walks up the treads rather than going round the outside of the wall.
+`#single,stair` (floor to the 0.60 m platform) plans. Measured: 26 cells, 4.62 m, 169 expanded, path z from 0.13 to 0.73 - it really walks up the treads rather than going round the outside of the wall. Enlarging the room did not change it.
 
 **Why it took so long, measured rather than guessed**: `hasGroundSupport` demands an occupied cell exactly one layer underneath. A flight does not satisfy that - every tread is one cell thick, the next riser occupies the same layer, so the cell under a standing position is often empty or inflated. The flight then connects only through the sheet of cells floating above the treads: on the way up that sheet follows the flight and climbs to the platform, which is why ascent looked fine; on the way down it collapses to floor height and never reaches the pit bottom.
 
@@ -178,14 +179,25 @@ Generator: `make_example_single_floor.py`, rerun it after changing any number; i
 
 Two real bugs from the previous round stay fixed: `snap` accepted a free cell it could not stand on (the goal sat 0.35 m in the air above a tread), and an 0.18 m riser is 1.2 cells so the grid phase never lined up (now 0.15 m, exactly one cell).
 
-### The pit still does not plan - a known open item
+### The pit plans too: 19 cells / 3.11 m, from z 0.13 down to -0.47
 
-`#singlepit` still reports no path. Measured: the pit floor is an isolated **74 cell component** at k=5, while the start component holds 4,799 cells across k 9..16. The east lip of the hole is a sheer 0.6 m wall with no treads; on the west side the four descending treads voxelise into one solid block, and the pit floor never connects to it.
+`#singlepit` reported no path for a long time, and the attempts along the way - an edge test, a tread inflation exemption, a semantic ramp - were all wrong. The real cause was dull: **the 6 cm coping ring around the hole has its top face at exactly z = 0**, and the floor's 3x3 stamping then laid one occupied layer right across the hole, sealing the descending flight at floor height.
 
-The next measurement is not another geometry parameter - it is which single layer is missing between those 74 cells and the foot of the flight. It was left alone this round because the relaxation above already bought the ascent and the four storey case, and locking that in was worth more than reopening the pit.
+**The fix**: keep only the real retaining wall on the east lip (`PX1-0.06..PX1`) and delete the other three decorative 6 cm rings. The pit plans immediately: 19 cells, 3.11 m, path z from 0.13 to -0.47, and the 25 cm tier does the same.
+
+### The crossing: eight up, a 1.50 m landing, eight down
+
+A bridge straight across the room: from x = 4.00 m, eight treads each one `RISE` higher, an 8 x `RISE` landing 1.50 m long and 1.40 m wide, then eight treads back to the floor. At the 0.15 m tier the deck sits 1.20 m up and reaches x ~ 12.70; at the 25 cm tier it is 2.00 m up and reaches x ~ 9.98. Every box is solid from z = 0, nothing floats.
+
+| hash | terrain | 0.15 m tier | 25 cm tier |
+|---|---|---|---|
+| `#single,ridge` | floor at the foot of the flight to the **landing deck** (eight risers are unavoidable) | 38 cells / 6.67 m / 471 expanded / z 0.13 to 1.33 | 29 cells / 5.07 m / 258 expanded / z 0.17 to 2.12 |
+| `#single,ridgedn` | landing deck to the floor east of the bridge (eight risers down) | 36 cells / 6.25 m / 1,009 expanded / z 1.33 to 0.13 | 26 cells / 4.62 m / 242 expanded / z 2.12 to 0.17 |
+
+Why those endpoints: the first attempt was "floor west of the bridge to floor east of it", and it gave **76 cells / 11.93 m with z flat at 0.13** - A* went round the bridge, because climbing eight risers does not beat walking 1.4 m around it. Putting the goal **on the landing deck** (1.20 m up, reachable only up a flight) turns "must climb" into something a measurement can confirm. The bridge is still walkable round; that is stated rather than hidden.
 
 ## Limits worth knowing
 
-- 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
+- 9,891 standable cells (one storey) and 5,940 (four storey); the inflation band costs 2-4% of the plate, not the old version's striped floor.
 - The probe shares the planner's edge rules, so it proves "reachable under these rules", not that the dog can walk it: `stair_gait`, the 0.42 m body, and the site upstands are not modelled.
 - The thin strips in the view are the model's own counter tops, desk tops and stair treads - real horizontal faces, not breaks.

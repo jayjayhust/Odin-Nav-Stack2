@@ -1401,7 +1401,9 @@ if (location.hash.indexOf('single') >= 0){
       // map, whose pit is deeper, so every z target sat 0.40 m low and the
       // platform goal landed inside the block.
       const X0 = m.lo[0], Y0 = m.lo[1], Z0 = 0;
-      const kind = location.hash.indexOf('pit') >= 0 ? 'pit'
+      const kind = location.hash.indexOf('ridgedn') >= 0 ? 'ridgedn'
+                 : location.hash.indexOf('ridge') >= 0 ? 'ridge'
+                 : location.hash.indexOf('pit') >= 0 ? 'pit'
                  : location.hash.indexOf('stair') >= 0 ? 'stair' : 'floor';
       // Floor to floor is the working case: it crosses the room, goes round
       // the columns and the desk, and leaves the flight alone so the dog can
@@ -1416,6 +1418,21 @@ if (location.hash.indexOf('single') >= 0){
       } else if (kind === 'stair'){
         state.start = [X0 + upStartX, Y0 + 1.60, Z0 + 0.02];
         state.goal  = [X0 + 1.30, Y0 + 1.60, Z0 + upGoalZ];
+      } else if (kind === 'ridge' || kind === 'ridgedn'){
+        // The crossing is eight risers up, a landing, eight risers down. Its
+        // landing is 1.20 m up and only the flights reach it, so a goal on the
+        // landing forces the climb - a plan cannot slip round the side, which
+        // is exactly what it did when both ends were plain floor.
+        const ridgeT = is25 ? 0.28 : 0.45, ridgeR = is25 ? 0.25 : 0.15;
+        const landX = 4.00 + 8 * ridgeT + 0.75, landZ = 8 * ridgeR + 0.01;
+        const eastX = 4.00 + 16 * ridgeT + 1.50 + 0.90;
+        if (kind === 'ridge'){
+          state.start = [X0 + 2.60, Y0 + 7.90, Z0 + 0.02];
+          state.goal  = [X0 + landX, Y0 + 7.90, Z0 + landZ];
+        } else {
+          state.start = [X0 + landX, Y0 + 7.90, Z0 + landZ];
+          state.goal  = [X0 + eastX, Y0 + 7.90, Z0 + 0.02];
+        }
       } else {
         // the flight drops eastward, so the run has to start on the west lip
         state.start = [X0 + 7.80, Y0 + 5.80, Z0 + 0.02];
@@ -1441,6 +1458,27 @@ if (location.hash.indexOf('single') >= 0){
           probeRow(m, Y0p + 1.60, X0p + 1.20, X0p + 4.20, 'up-lane');
         }
         say(r.error); return;
+      }
+      // #single,close frames the terrain instead of the whole room, for shots
+      if (location.hash.indexOf('close') >= 0){
+        if (kind === 'ridge' || kind === 'ridgedn'){
+          // whole crossing end to end: flights on both sides, landing between
+          cam.target.set(X0 + (is25 ? 6.99 : 8.35), Y0 + 7.90, Z0 + 0.45);
+          cam.dist = 10.6;
+          cam.pitch = 0.52;
+          cam.yaw = -1.45;     // from the south, so the crossing runs left-right
+        } else if (kind === 'pit'){
+          cam.target.set(X0 + 9.60, Y0 + 5.80, Z0 - 0.20);
+          cam.dist = 6.4;
+          cam.pitch = 0.34;
+          cam.yaw = 0;
+        } else {
+          cam.target.set(X0 + 2.90, Y0 + 1.60, Z0 + 0.30);
+          cam.dist = 6.4;
+          cam.pitch = 0.30;    // low, from the floor end, so the risers read
+          cam.yaw = 0;
+        }
+        applyCam();
       }
       state.path = r.pts;
       const g = new THREE.BufferGeometry().setFromPoints(r.pts.map(q => new THREE.Vector3(q[0], q[1], q[2])));

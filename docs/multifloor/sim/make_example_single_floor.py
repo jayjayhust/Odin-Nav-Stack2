@@ -5,8 +5,9 @@ The four storey sample is hard to use for obstacle tests: everything sits
 inside a wall of stairs and the camera has to dive through three plates to see
 what you just dropped. One room is the right size for that, so it gets its own
 model - floor, four walls, two columns, a desk, a partition, a barrel, an
-up-going flight onto a 0.72 m platform, and a down-going flight into a 0.72 m
-pit. All of it boxes: no point cloud, no reconstruction.
+up-going flight onto a 0.60 m platform, a down-going flight into a 0.60 m
+pit, and a crossing built as eight risers up, a flat landing and eight risers
+down. All of it boxes: no point cloud, no reconstruction.
 
 Z is up. The page reads OBJ with Z as height, same as example_four_floor.obj.
 """
@@ -22,7 +23,7 @@ def box(x0, x1, y0, y1, z0, z1, tag=""):
 
 
 # ---------------------------------------------------------------- room shell --
-W, D, H, T = 12.0, 8.0, 3.40, 0.16
+W, D, H, T = 18.0, 10.0, 3.40, 0.16
 # floor is tiled around the pit: x 8.80..10.40, y 5.00..6.60 is open
 PY0, PY1, PX0, PX1 = 5.00, 6.60, 8.20, 11.40
 FO = -0.10                       # floor slab is 0.10 thick below z=0
@@ -65,6 +66,22 @@ for i in range(4):
     x0 = PX0 + i * TREAD
     box(x0, x0 + TREAD, PY0 + 0.10, PY1 - 0.10, -PLAT,
         -RISE * (i + 1), "tread-down")
+
+# ------------------------------------------------ up 8 / flat / down 8 ridge --
+# A whole crossing laid out as one terrain: eight risers up, a flat landing,
+# eight risers down, all on the same line so a plan has to take the climb,
+# walk the landing and descend again. Solid from the floor up, like the model
+# staircase it stands in for.
+NX, NY0, NY1 = 8, 7.20, 8.60
+RX, LAND = 4.00, 1.50
+for i in range(NX):
+    x0 = RX + i * TREAD
+    box(x0, x0 + TREAD, NY0, NY1, 0, RISE * (i + 1), "ridge-up")
+LX0 = RX + NX * TREAD
+box(LX0, LX0 + LAND, NY0, NY1, 0, RISE * NX, "ridge-landing")
+for i in range(NX):
+    x0 = LX0 + LAND + i * TREAD
+    box(x0, x0 + TREAD, NY0, NY1, 0, RISE * (NX - i - 1), "ridge-down")
 
 # ------------------------------------------------------------- obstacles --
 box(3.80, 4.20, 3.30, 3.70, 0, H, "column")
