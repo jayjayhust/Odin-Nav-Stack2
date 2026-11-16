@@ -102,6 +102,34 @@ The dog's position is still driven by **the global route**; the local layer only
 
 `#demo,obs` and `#demo,ped` drop one of each automatically.
 
+## A one storey sample, built for obstacle tests
+
+The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: a 12 x 8 m room, 30 boxes and 360 triangles, **all mathematical boxes, nothing reconstructed**.
+
+- four walls at 3.4 m, no ceiling so the interior stays readable;
+- two 0.4 m columns, a 1.2 x 0.8 x 0.75 desk, a 1.6 m partition, a 0.4 m barrel;
+- **up**: four treads, 0.15 m riser / 0.45 m going, onto a 0.60 m platform;
+- **down**: the same four treads, into a -0.60 m pit (the floor is split into four slabs around it).
+
+Generator: `make_example_single_floor.py`, rerun it after changing any number; it writes `example_single_floor.obj` (10,570 B).
+
+5,725 standable cells on the floor, of which the 0.30 m band costs 115 (2.0%) - cleaner than the four storey 3.7%, because there is no dense stair core.
+
+`#single` plans **floor to floor**: `(3.0, 4.2)` to `(9.6, 2.2)`, 44 cells / 7.3 m / 467 expanded, going round the columns and the desk.
+
+### The flight still does not plan, and the reason is measured
+
+`#single,stair` (floor to the 0.60 m platform) still reports no path. Probe: the start component is 4,009 cells covering k 9..13, the goal sits in a different 4,106 cell component. The gap is "top tread to platform face".
+
+Two real bugs were fixed this round, both live:
+
+1. **`snap` only checked FREE, not whether a dog could stand there** - the goal landed 0.35 m in the air above a tread with nothing under it. It now requires `supportOrUnknown`.
+2. **A 0.18 m riser is 1.2 cells**, so grid phase never lines up and adjacent treads differ by 1-2 cells, producing steps beyond `max_step_z` (0.45 m). It is now 0.15 m, exactly one cell.
+
+One gap remains. The next step is to measure the top tread cell and the platform edge cell - their k and their support state - rather than guessing again.
+
+**What works today**: loading the room, picking start and goal by clicking, planning round obstacles on the floor, dropping posts and pedestrians for the local layer. **What does not**: automatic planning up that flight.
+
 ## Limits worth knowing
 
 - 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
