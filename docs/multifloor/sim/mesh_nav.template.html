@@ -1,0 +1,840 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>导入 mesh · 全局导航规划</title>
+<style>
+  :root{--bg:#070d15;--fg:#dbe6f4;--dim:#7f93ad;--line:#1c2b3d;--acc:#4fc3ff}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.5 -apple-system,"Segoe UI",Roboto,"Helvetica Neue","PingFang SC","Microsoft YaHei",sans-serif}
+  .hd{padding:22px 28px 10px}
+  .hd h1{margin:0 0 6px;font-size:22px;letter-spacing:.4px}
+  .hd p{margin:0;color:var(--dim);font-size:13px}
+  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:14px 28px 12px;border-bottom:1px solid var(--line)}
+  .grp{display:flex;gap:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#0c151f}
+  .grp button{border:0;background:transparent;color:var(--dim);padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+  .grp button:hover{color:#fff}
+  .grp button.on{background:#17324a;color:#fff}
+  .btn{border:1px solid var(--line);background:#0c151f;color:var(--fg);border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
+  .btn:hover{border-color:#2e4a68}
+  .btn.primary{background:#123b5c;border-color:#1d5c8c;color:#eaf6ff}
+  .btn.primary:hover{background:#164b73}
+  .btn:disabled{opacity:.4;cursor:not-allowed}
+  select{background:#0c151f;color:var(--fg);border:1px solid var(--line);border-radius:9px;padding:8px 10px;font-size:13px;font-family:inherit}
+  .lbl{color:var(--dim);font-size:12.5px}
+  .val{color:var(--acc);font-variant-numeric:tabular-nums}
+  #cv{height:min(62vh,640px);margin:14px 28px 0;border:1px solid var(--line);border-radius:12px;overflow:hidden;position:relative}
+  #hud{position:absolute;left:14px;top:14px;padding:12px 14px;border-radius:10px;
+       background:rgba(8,15,24,.82);border:1px solid #1a2a3d;font-size:12.5px;line-height:1.7;max-width:330px}
+  #hud b{color:#fff}
+  #hud .k{color:var(--dim)} #hud .v{color:var(--acc);font-variant-numeric:tabular-nums}
+  #say{position:absolute;right:14px;bottom:14px;padding:8px 12px;border-radius:9px;
+       background:rgba(8,15,24,.85);border:1px solid #1a2a3d;font-size:12.5px;color:#cfe3f7;max-width:420px}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px 28px 4px;font-size:12.5px;color:var(--dim)}
+  .sw{display:inline-block;width:10px;height:10px;border-radius:2px;margin-right:6px;vertical-align:1px}
+  .foot{padding:8px 28px 26px;color:#6a7c92;font-size:12.5px}
+  .foot b{color:#9db2c9;font-weight:600}
+</style>
+</head>
+<body>
+
+<div class="hd">
+  <h1>导入 mesh · 全局导航规划</h1>
+  <p>载入任意 OBJ / STL 模型（含多层楼梯），页面自己判定哪是地板、哪是墙，然后在可通行面上做 3D A*。</p>
+</div>
+
+<div class="bar">
+  <input type="file" id="file" accept=".obj,.stl,.txt" style="display:none">
+  <button class="btn primary" id="pick">选择模型文件…</button>
+  <button class="btn" id="demo">示例 · 四层带楼梯</button>
+  <span class="lbl">分辨率</span>
+  <select id="res"><option value="0.10">0.10 m</option><option value="0.15" selected>0.15 m</option><option value="0.20">0.20 m</option><option value="0.30">0.30 m</option></select>
+  <span class="lbl">膨胀</span>
+  <select id="inf"><option value="0.00">0 m</option><option value="0.30" selected>0.30 m</option><option value="0.45">0.45 m</option><option value="0.60">0.60 m</option></select>
+  <button class="btn" id="setStart">点模型设起点</button>
+  <button class="btn" id="setGoal">点模型设终点</button>
+  <button class="btn primary" id="go" disabled>规划</button>
+  <button class="btn" id="clear">清空</button>
+</div>
+
+<div class="legend">
+  <span><span class="sw" style="background:#ffcf3f"></span>可通行面</span>
+  <span><span class="sw" style="background:#ff5a5a"></span>膨胀后的墙 / 不可走</span>
+  <span><span class="sw" style="background:#4fc3ff"></span>全局路径</span>
+  <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
+  <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
+  <span><span class="sw" style="background:#8fa3bb"></span>原始模型</span>
+</div>
+
+<div id="cv">
+  <div id="hud">等待载入模型</div>
+  <div id="say">先点「示例」看效果，也可以直接选自己的 OBJ / STL 文件</div>
+</div>
+
+<div class="foot">
+  <b>怎么判定可走：</b>三角面按法向分成水平面与竖直面——水平面给「这一列有地板，站在这个高度」，竖直面投影到 XY 后按膨胀半径做距离场，靠近墙的格子禁行。相邻两列的高度差超过 0.30 m 就走不过去，所以楼梯是一级一级上得去的，而楼板与楼板之间那 3.42 m 走不过去。
+</div>
+
+<script>/*__THREE__*/</script>
+<script>
+const DATA_OBJ = /*__OBJ__*/;
+
+// ---------- scene ----------------------------------------------------------
+const host = document.getElementById('cv');
+const W = () => host.clientWidth, H = () => host.clientHeight;
+const renderer = new THREE.WebGLRenderer({antialias:true});
+renderer.setPixelRatio(Math.min(2, devicePixelRatio || 1));
+renderer.setSize(W(), H());
+renderer.setClearColor(0x070d15, 1);
+host.appendChild(renderer.domElement);
+
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(42, W() / H(), 0.05, 600);
+const ORIGIN = new THREE.Vector3(0, 0, 0);
+camera.up.set(0, 0, 1);
+scene.add(new THREE.HemisphereLight(0xbcd6f2, 0x101820, 1.0));
+const sun = new THREE.DirectionalLight(0xffffff, 1.05);
+sun.position.set(8, -12, 22);
+scene.add(sun);
+const rim = new THREE.DirectionalLight(0x8fc3ff, 0.45);
+rim.position.set(-14, 10, 6);
+scene.add(rim);
+
+let cam = {yaw: -0.9, pitch: 0.42, dist: 30, target: new THREE.Vector3()};
+function applyCam(){
+  const cp = Math.cos(cam.pitch);
+  camera.position.set(
+    cam.target.x + cam.dist * cp * Math.cos(cam.yaw),
+    cam.target.y + cam.dist * cp * Math.sin(cam.yaw),
+    cam.target.z + cam.dist * Math.sin(cam.pitch));
+  camera.lookAt(cam.target);
+}
+applyCam();
+
+// ---------- state ----------------------------------------------------------
+const state = {
+  mode: null,          // 'start' | 'goal' | null
+  map: null,           // built map
+  start: null, goal: null, path: null,
+  res: 0.15, inf: 0.45,
+};
+
+let root = new THREE.Group();
+scene.add(root);
+let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
+let markStart = null, markGoal = null, rays = 0;
+
+// ---------- OBJ / STL ------------------------------------------------------
+function parseOBJ(text){
+  const pos = [], idx = [];
+  const lines = text.split('\n');
+  for (let i = 0; i < lines.length; ++i){
+    const ln = lines[i];
+    if (ln.length < 2) continue;
+    const c0 = ln[0], c1 = ln[1];
+    if (c0 === 'v' && (c1 === ' ' || c1 === '\t')){
+      const a = ln.trim().split(/\s+/);
+      pos.push(+a[1], +a[2], +a[3]);
+    } else if (c0 === 'f' && (c1 === ' ' || c1 === '\t')){
+      const a = ln.trim().split(/\s+/);
+      const vs = [];
+      for (let k = 1; k < a.length; ++k){
+        const s = a[k].split('/')[0];
+        const n = parseInt(s, 10);
+        vs.push(n > 0 ? n - 1 : pos.length / 3 + n);
+      }
+      for (let k = 1; k + 1 < vs.length; ++k) idx.push(vs[0], vs[k], vs[k+1]);
+    }
+  }
+  return {pos: new Float32Array(pos), idx: new Uint32Array(idx)};
+}
+
+function parseSTL(buf){
+  const dv = new DataView(buf);
+  // binary if the header says so and the count matches the file size
+  const maybe = dv.getUint32(80, true);
+  if (80 + 4 + maybe * 50 === buf.byteLength){
+    const pos = new Float32Array(maybe * 9), idx = new Uint32Array(maybe * 3);
+    let o = 84;
+    for (let f = 0; f < maybe; ++f){
+      o += 12;                                    // normal, recomputed later
+      for (let v = 0; v < 3; ++v){
+        pos[9*f + 3*v]     = dv.getFloat32(o, true);
+        pos[9*f + 3*v + 1] = dv.getFloat32(o + 4, true);
+        pos[9*f + 3*v + 2] = dv.getFloat32(o + 8, true);
+        idx[3*f + v] = 3*f + v;
+        o += 12;
+      }
+      o += 2;
+    }
+    return {pos, idx};
+  }
+  // ascii
+  const text = new TextDecoder().decode(buf);
+  const pos = [], idx = [];
+  const re = /vertex\s+([-\d.eE+]+)\s+([-\d.eE+]+)\s+([-\d.eE+]+)/g;
+  let m;
+  while ((m = re.exec(text))){ pos.push(+m[1], +m[2], +m[3]); }
+  for (let i = 0; i + 2 < pos.length / 3; i += 3){ idx.push(i, i+1, i+2); }
+  return {pos: new Float32Array(pos), idx: new Uint32Array(idx)};
+}
+
+// ---------- map: floors per column, walls projected to XY ------------------
+function buildMap(pos, idx, res, infR){
+  const np = pos.length / 3;
+  if (!np) return null;
+  let x0 = 1e30, y0 = 1e30, z0 = 1e30, x1 = -1e30, y1 = -1e30, z1 = -1e30;
+  for (let i = 0; i < np; ++i){
+    const x = pos[3*i], y = pos[3*i+1], z = pos[3*i+2];
+    if (x < x0) x0 = x; if (x > x1) x1 = x;
+    if (y < y0) y0 = y; if (y > y1) y1 = y;
+    if (z < z0) z0 = z; if (z > z1) z1 = z;
+  }
+  const pad = 0.6;
+  const lo = [x0 - pad, y0 - pad, z0 - pad];
+  const nx = Math.ceil((x1 - x0 + 2*pad) / res) + 2;
+  const ny = Math.ceil((y1 - y0 + 2*pad) / res) + 2;
+  const nz = Math.ceil((z1 - z0 + 2*pad) / res) + 2;
+  const cells = nx * ny;
+  if (cells * nz > 6e7) return {tooBig: true, nx, ny, nz};
+
+  const zs = new Map();        // column -> array of surface z (metres, plate top)
+  const wallXY = new Uint8Array(cells);
+  const ax = new Float32Array(9);
+
+  for (let f = 0; f < idx.length; f += 3){
+    const a = idx[f] * 3, b = idx[f+1] * 3, c = idx[f+2] * 3;
+    const ax0 = pos[a], ay0 = pos[a+1], az0 = pos[a+2];
+    const bx = pos[b], by = pos[b+1], bz = pos[b+2];
+    const cx = pos[c], cy = pos[c+1], cz = pos[c+2];
+    // normal
+    const e1 = [bx-ax0, by-ay0, bz-az0], e2 = [cx-ax0, cy-ay0, cz-az0];
+    let nX = e1[1]*e2[2] - e1[2]*e2[1];
+    let nY = e1[2]*e2[0] - e1[0]*e2[2];
+    let nZ = e1[0]*e2[1] - e1[1]*e2[0];
+    const nl = Math.hypot(nX, nY, nZ);
+    if (!nl) continue;
+    nZ /= nl;
+    const horizontal = Math.abs(nZ) > 0.65;
+    // A vertical face is only a wall if it is tall. A stair riser is 0.19 m and
+    // would otherwise inflate 0.45 m into the tread next to it, sealing the
+    // flight it is part of.
+    const zspan = Math.max(az0, bz, cz) - Math.min(az0, bz, cz);
+    const vertical   = Math.abs(nZ) < 0.35 && zspan > 0.35;
+    // sample the triangle on a lattice no coarser than one cell
+    const step = res * 0.8;
+    const L1 = Math.hypot(bx-ax0, by-ay0, bz-az0);
+    const L2 = Math.hypot(cx-ax0, cy-ay0, cz-az0);
+    const n = Math.max(1, Math.min(400, Math.ceil(Math.max(L1, L2) / step)));
+    for (let i = 0; i <= n; ++i){
+      for (let j = 0; j <= n - i; ++j){
+        const u = i / n, v = j / n;
+        const px = ax0 + (bx-ax0)*u + (cx-ax0)*v;
+        const py = ay0 + (by-ay0)*u + (cy-ay0)*v;
+        const pz = az0 + (bz-az0)*u + (cz-az0)*v;
+        const ci = Math.floor((px - lo[0]) / res);
+        const cj = Math.floor((py - lo[1]) / res);
+        if (ci < 0 || cj < 0 || ci >= nx || cj >= ny) continue;
+        const key = ci + cj * nx;
+        if (horizontal){
+          let arr = zs.get(key);
+          if (!arr){ arr = []; zs.set(key, arr); }
+          arr.push(pz);
+        } else if (vertical){
+          wallXY[key] = 1;
+        }
+      }
+    }
+  }
+
+  // collapse each column's surface samples into distinct standing heights.
+  // A plate one cell thick shows up as several samples a few mm apart; the
+  // height that matters is the top of the plate, and heights within 0.10 m of
+  // each other are the same plate.
+  const heights = new Float32Array(cells);      // packed count at index 0? use Map
+  const hList = new Map();
+  for (const [key, arr] of zs){
+    arr.sort((p, q) => p - q);
+    // A plate reports both its top and its bottom face, and the one you stand
+    // on is the top. Group samples that are within a plate thickness of each
+    // other and keep the group's maximum.
+    const out = [];
+    let segTop = -1e9, last = -1e9;
+    for (let i = 0; i < arr.length; ++i){
+      const v = arr[i];
+      // 0.10 m, not 0.20: a riser is 0.19 and a coarser gap merges two steps
+      // into one, which turns a flight into 0.38 m jumps that nothing can climb
+      if (v - last > 0.10){
+        if (segTop > -1e8) out.push(segTop);
+        segTop = v;
+      } else if (v > segTop){
+        segTop = v;
+      }
+      last = v;
+    }
+    if (segTop > -1e8) out.push(segTop);
+    if (out.length) hList.set(key, out);
+  }
+
+  // inflate the walls in XY with a BFS distance field, capped at infR.
+  // Runs after hList on purpose.
+  const blocked = new Uint8Array(cells);
+  if (infR > 0){
+    const rad = Math.ceil(infR / res);
+    const q = [];
+    for (let k = 0; k < cells; ++k) if (wallXY[k]){ q.push(k); blocked[k] = 1; }
+    let head = 0, dist = 0;
+    const seen = new Uint8Array(cells);
+    for (const k of q) seen[k] = 1;
+    while (head < q.length){
+      const end = q.length;
+      const d = dist;
+      if (d >= rad) break;
+      for (; head < end; ++head){
+        const k = q[head], i = k % nx, j = (k / nx) | 0;
+        for (let dj = -1; dj <= 1; ++dj) for (let di = -1; di <= 1; ++di){
+          if (!di && !dj) continue;
+          const ii = i + di, jj = j + dj;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+          const kk = ii + jj * nx;
+          if (seen[kk]) continue;
+          seen[kk] = 1;
+          // A column that carries a floor is somewhere you can stand - the top
+          // of a platform block, for one - and inflating a wall over it would
+          // erase the landing the flight arrives at. Inflation spreads only
+          // into columns that have no floor at all.
+          if (!hList.has(kk)){ blocked[kk] = 1; q.push(kk); }
+        }
+      }
+      ++dist;
+    }
+  }
+
+  return {res, infR, lo, nx, ny, nz, hList, blocked, cellCount: cells, tooBig: false};
+}
+
+// ---------- 2.5D A* --------------------------------------------------------
+function planPath(m, sx, sy, sz, gx, gy, gz){
+  const {res, lo, nx, ny, hList, blocked} = m;
+  const cols = nx * ny;
+  const keyOf = (i, j) => i + j * nx;
+
+  // nearest walkable column + its height closest to the requested z
+  function snap(x, y, z){
+    const i0 = Math.floor((x - lo[0]) / res), j0 = Math.floor((y - lo[1]) / res);
+    let best = null, bd = 1e9;
+    for (let dj = -6; dj <= 6; ++dj) for (let di = -6; di <= 6; ++di){
+      const i = i0 + di, j = j0 + dj;
+      if (i < 0 || j < 0 || i >= nx || j >= ny) continue;
+      const k = keyOf(i, j);
+      if (blocked[k]) continue;
+      const hs = hList.get(k);
+      if (!hs) continue;
+      for (let li = 0; li < hs.length; ++li){
+        const d = Math.hypot(i*res + lo[0] - x, j*res + lo[1] - y, hs[li] - z);
+        // prefer the column we asked for, then the height we asked for
+        const dd = d + 0.02 * Math.hypot(di, dj);
+        if (dd < bd){ bd = dd; best = {i, j, li}; }
+      }
+    }
+    return best;
+  }
+
+  const s = snap(sx, sy, sz), g = snap(gx, gy, gz);
+  if (!s || !g) return {error: '起点或终点附近没有可通行面 (snap ' +
+      JSON.stringify(s) + ' / ' + JSON.stringify(g) + ')'};
+
+  const nNode = cols * 8;                       // at most 8 heights tracked per column
+  const NN = cols * 8;
+  const gScore = new Float32Array(NN).fill(Infinity);
+  const from = new Int32Array(NN).fill(-1);
+  const closed = new Uint8Array(NN);
+  const hidx = new Uint8Array(NN);              // which level index this node holds
+
+  const nodeId = (k, li) => k * 8 + li;
+  const nodeIJ = id => { const k = Math.floor(id / 8); return [k % nx, (k / nx) | 0, id % 8]; };
+
+  const hOf = (i, j, li) => {
+    const hs = hList.get(keyOf(i, j));
+    return hs ? hs[li] : null;
+  };
+  const hx = (i, j, li) => { const h = hOf(i, j, li); return h === null ? null : i*res + lo[0]; };
+  const hy = (i, j, li) => j*res + lo[1];
+
+  const gH = hOf(g.i, g.j, g.li);
+  function heur(i, j, h){
+    return Math.hypot(i*res + lo[0] - (g.i*res + lo[0]),
+                     j*res + lo[1] - (g.j*res + lo[1]),
+                     h - (gH === null ? h : gH));
+  }
+
+  // binary heap on f
+  const heapF = [], heapId = [];
+  function push(id, f){
+    let n = heapF.length;
+    heapF.push(f); heapId.push(id);
+    while (n > 0){
+      const p = (n - 1) >> 1;
+      if (heapF[p] <= heapF[n]) break;
+      [heapF[p], heapF[n]] = [heapF[n], heapF[p]];
+      [heapId[p], heapId[n]] = [heapId[n], heapId[p]];
+      n = p;
+    }
+  }
+  function pop(){
+    const f = heapF[0], id = heapId[0];
+    const lf = heapF.pop(), li = heapId.pop();
+    if (heapF.length){
+      heapF[0] = lf; heapId[0] = li;
+      let n = 0;
+      for (;;){
+        const a = 2*n + 1, b = 2*n + 2;
+        let m = n;
+        if (a < heapF.length && heapF[a] < heapF[m]) m = a;
+        if (b < heapF.length && heapF[b] < heapF[m]) m = b;
+        if (m === n) break;
+        [heapF[m], heapF[n]] = [heapF[n], heapF[m]];
+        [heapId[m], heapId[n]] = [heapId[n], heapId[m]];
+        n = m;
+      }
+    }
+    return [id, f];
+  }
+
+  const sH = hOf(s.i, s.j, s.li);
+  const startId = nodeId(keyOf(s.i, s.j), s.li);
+  const goalId  = nodeId(keyOf(g.i, g.j), g.li);
+  gScore[startId] = 0;
+  push(startId, heur(s.i, s.j, sH));
+  hidx[startId] = s.li;
+
+  let expanded = 0;
+  const LIMIT = 400000;
+  while (heapF.length && expanded < LIMIT){
+    const [id] = pop();
+    if (closed[id]) continue;
+    closed[id] = 1;
+    ++expanded;
+    if (id === goalId) break;
+    const [i, j, li] = nodeIJ(id);
+    const h = hOf(i, j, li);
+    if (h === null) continue;
+    // Within one column, a plate reports its top and its bottom as separate
+    // heights, and without an edge between them a start point that snapped
+    // to the underside can never reach the surface it is standing on.
+    {
+      const hs = hList.get(keyOf(i, j));
+      for (let lj = 0; lj < hs.length; ++lj){
+        if (lj === li) continue;
+        const dz = hs[lj] - h;
+        if (Math.abs(dz) > 0.40) continue;
+        const id2 = nodeId(keyOf(i, j), lj);
+        if (closed[id2]) continue;
+        const ng = gScore[id] + 1.2 * Math.abs(dz);
+        if (ng < gScore[id2]){
+          gScore[id2] = ng;
+          from[id2] = id;
+          push(id2, ng + heur(i, j, hs[lj]));
+        }
+      }
+    }
+    for (let dj = -1; dj <= 1; ++dj) for (let di = -1; di <= 1; ++di){
+      if (!di && !dj) continue;
+      const ii = i + di, jj = j + dj;
+      if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+      const kk = keyOf(ii, jj);
+      if (blocked[kk]) continue;
+      const hs = hList.get(kk);
+      if (!hs) continue;
+      for (let lj = 0; lj < hs.length; ++lj){
+        const dz = hs[lj] - h;
+        // A riser is 0.19 and a plate is 0.06 thick, so two neighbouring
+        // columns on the same flight differ by one step at most. A storey is
+        // 3.42 and can never be crossed here.
+        if (Math.abs(dz) > 0.40) continue;
+        const id2 = nodeId(kk, lj);
+        if (closed[id2]) continue;
+        const step = res * Math.hypot(di, dj) + 1.8 * Math.abs(dz);
+        const ng = gScore[id] + step;
+        if (ng < gScore[id2]){
+          gScore[id2] = ng;
+          from[id2] = id;
+          hidx[id2] = lj;
+          push(id2, ng + heur(ii, jj, hs[lj]));
+        }
+      }
+    }
+  }
+
+  if (!isFinite(gScore[goalId])){
+    return {error: '没有可通行的路线：起 ' + JSON.stringify(s) + ' 终 ' + JSON.stringify(g) +
+      '，展开 ' + expanded + ' 个节点，' +
+      'blocked 列 ' + (() => { let n = 0; for (const k of m.hList.keys()) if (m.blocked[k]) ++n; return n; })() +
+      ' / ' + m.hList.size};
+  }
+
+  const pts = [];
+  let cur = goalId;
+  while (cur !== -1){
+    const [i, j, li] = nodeIJ(cur);
+    const h = hOf(i, j, li);
+    pts.push([i*res + lo[0] + res*0.5, j*res + lo[1] + res*0.5, h]);
+    if (cur === startId) break;
+    cur = from[cur];
+  }
+  pts.reverse();
+  let len = 0;
+  for (let i = 1; i < pts.length; ++i)
+    len += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1], pts[i][2]-pts[i-1][2]);
+  return {pts, len, expanded, nodes: NN};
+}
+
+// ---------- drawing -------------------------------------------------------
+const COL_FLOOR = 0xffcf3f, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
+const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
+
+function clearRoot(){
+  while (root.children.length){
+    const o = root.children.pop();
+    o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && c.material.dispose) c.material.dispose(); });
+  }
+  srcMesh = walkMesh = wallMesh = pathLine = null;
+  markStart = markGoal = null;
+}
+
+function makeSrcMesh(pos, idx){
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setIndex(new THREE.BufferAttribute(idx, 1));
+  g.computeVertexNormals();
+  const m = new THREE.MeshStandardMaterial({
+    color: 0x8fa3bb, transparent: true, opacity: 0.42, roughness: 0.9,
+    metalness: 0.05, side: THREE.DoubleSide, depthWrite: false});
+  const mesh = new THREE.Mesh(g, m);
+  mesh.renderOrder = 2;
+  return mesh;
+}
+
+function makePlanes(m){
+  const {res, lo, nx, ny, hList, blocked} = m;
+  const quad = new THREE.PlaneGeometry(res, res);
+  quad.translate(res*0.5, res*0.5, 0);
+  const nWalk = hList.size;
+  const walk = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({
+    color: COL_FLOOR, transparent: true, opacity: 0.55}), nWalk);
+  walk.renderOrder = 3;
+  const dum = new THREE.Object3D();
+  let w = 0;
+  const cWalk = new THREE.Color(COL_FLOOR), cWall = new THREE.Color(COL_WALL);
+  const tmp = new THREE.Color();
+  for (const [key, hs] of hList){
+    const i = key % nx, j = (key / nx) | 0;
+    const isBlocked = blocked[key];
+    for (let li = 0; li < hs.length; ++li){
+      dum.position.set(i*res + lo[0] + res*0.5, j*res + lo[1] + res*0.5, hs[li] + 0.004);
+      dum.rotation.set(0, 0, 0);
+      dum.scale.set(1, 1, 1);
+      dum.updateMatrix();
+      walk.setMatrixAt(w, dum.matrix);
+      // blocked columns keep the plate but tint it red: the wall is what
+      // blocks, not the floor, and seeing the plate explains the gap
+      tmp.copy(isBlocked ? cWall : cWalk);
+      walk.setColorAt(w, tmp);
+      ++w;
+    }
+  }
+  walk.count = w;
+  if (!walk.instanceColor) walk.instanceColor = null;
+  walk.instanceMatrix.needsUpdate = true;
+  return walk;
+}
+
+function makeBall(p, color){
+  const g = new THREE.SphereGeometry(0.16, 16, 12);
+  const m = new THREE.MeshBasicMaterial({color, transparent: true, opacity: 0.95});
+  const s = new THREE.Mesh(g, m);
+  s.position.set(p[0], p[1], p[2] + 0.1);
+  s.renderOrder = 9;
+  return s;
+}
+
+function makeDog(p){
+  const g = new THREE.Group();
+  const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.20, 0.12),
+                    new THREE.MeshStandardMaterial({color: 0xd9e6f5, roughness: 0.6}));
+  body.position.z = 0.30;
+  g.add(body);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.14, 0.12),
+                    new THREE.MeshStandardMaterial({color: 0xbfd2e6}));
+  head.position.set(0.26, 0, 0.32);
+  g.add(head);
+  const legM = new THREE.MeshStandardMaterial({color: 0x9fb4ca});
+  [[0.14,0.08],[0.14,-0.08],[-0.14,0.08],[-0.14,-0.08]].forEach(([x, y]) => {
+    const leg = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.02, 0.30, 8), legM);
+    leg.position.set(x, y, 0.15);
+    g.add(leg);
+  });
+  g.position.set(p[0], p[1], p[2]);
+  return g;
+}
+
+// ---------- load --------------------------------------------------------
+function showHud(html){ document.getElementById('hud').innerHTML = html; }
+function say(t){ document.getElementById('say').textContent = t; }
+
+function loadModel(pos, idx, name){
+  clearRoot();
+  state.start = state.goal = state.path = null;
+  const sp = pos.length / 3;
+  if (!sp){ say('这个文件里没有三角面'); return; }
+  srcMesh = makeSrcMesh(pos, idx);
+  root.add(srcMesh);
+
+  const res = +document.getElementById('res').value;
+  const infR = +document.getElementById('inf').value;
+  state.res = res; state.inf = infR;
+  const t0 = performance.now();
+  const m = buildMap(pos, idx, res, infR);
+  if (!m){ say('模型读取失败'); return; }
+  if (m.tooBig){
+    say('模型太大：' + m.nx + '×' + m.ny + '×' + m.nz + ' 格，换大一点的分辨率再试');
+    showHud('<b>' + name + '</b><br><span class="k">格数超限</span>');
+    return;
+  }
+  state.map = m;
+  walkMesh = makePlanes(m);
+  root.add(walkMesh);
+
+  // frame
+  const cx = m.lo[0] + m.nx * res / 2, cy = m.lo[1] + m.ny * res / 2;
+  let zmin = 1e30, zmax = -1e30;
+  for (const [k, hs] of m.hList) for (const h of hs){ if (h < zmin) zmin = h; if (h > zmax) zmax = h; }
+  cam.target.set(cx, cy, (zmin + zmax) / 2);
+  cam.dist = Math.max(6, Math.max(m.nx * res, m.ny * res, (zmax - zmin) * 1.2) * 1.9);
+  applyCam();
+
+  const ms = performance.now() - t0;
+  showHud('<b>' + name + '</b><br>' +
+    '<span class="k">三角面</span> <span class="v">' + (idx.length/3).toLocaleString() + '</span> · ' +
+    '<span class="k">列</span> <span class="v">' + m.hList.size.toLocaleString() + '</span><br>' +
+    '<span class="k">格</span> <span class="v">' + m.nx + '×' + m.ny + '×' + m.nz + '</span> · ' +
+    '<span class="k">分辨率</span> <span class="v">' + res + ' m</span><br>' +
+    '<span class="k">膨胀</span> <span class="v">' + infR + ' m</span> · ' +
+    '<span class="k">建图</span> <span class="v">' + Math.round(ms) + ' ms</span><br>' +
+    '<span class="k">可走高度</span> <span class="v">' + (zmin).toFixed(2) + ' … ' + (zmax).toFixed(2) + ' m</span>');
+  document.getElementById('go').disabled = !(state.start && state.goal);
+  say('点「点模型设起点」，在模型上点一下');
+}
+
+document.getElementById('demo').onclick = () => {
+  const o = parseOBJ(DATA_OBJ);
+  loadModel(o.pos, o.idx, '示例 · 四层办公楼');
+};
+
+document.getElementById('pick').onclick = () => document.getElementById('file').click();
+document.getElementById('file').onchange = e => {
+  const f = e.target.files && e.target.files[0];
+  if (!f) return;
+  const r = new FileReader();
+  r.onload = () => {
+    let o;
+    if (/\.stl$/i.test(f.name)){
+      o = parseSTL(r.result);
+    } else {
+      o = parseOBJ(r.result);
+    }
+    loadModel(o.pos, o.idx, f.name);
+  };
+  if (/\.stl$/i.test(f.name)) r.readAsArrayBuffer(f);
+  else r.readAsText(f);
+};
+
+document.getElementById('res').onchange = () => {
+  if (!srcMesh) return;
+  const g = srcMesh.geometry;
+  const pos = g.attributes.position.array, idx = g.index ? g.index.array : null;
+  loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
+};
+
+document.getElementById('inf').onchange = () => {
+  if (!srcMesh) return;
+  const g = srcMesh.geometry;
+  const pos = g.attributes.position.array, idx = g.index ? g.index.array : null;
+  loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
+};
+
+// ---------- picking -------------------------------------------------------
+const ray = new THREE.Raycaster();
+function pick(ev){
+  const r = host.getBoundingClientRect();
+  const nx = ((ev.clientX - r.left) / r.width) * 2 - 1;
+  const ny = -((ev.clientY - r.top) / r.height) * 2 + 1;
+  ray.setFromCamera({x: nx, y: ny}, camera);
+  const hit = ray.intersectObject(srcMesh, false)[0];
+  return hit ? hit.point : null;
+}
+
+host.addEventListener('click', ev => {
+  if (!state.mode) return;
+  const p = pick(ev);
+  if (!p){ say('没点到模型上'); return; }
+  if (state.mode === 'start'){
+    state.start = [p.x, p.y, p.z];
+    if (markStart) { root.remove(markStart); markStart.geometry.dispose(); }
+    markStart = makeBall(state.start, COL_S);
+    root.add(markStart);
+  } else {
+    state.goal = [p.x, p.y, p.z];
+    if (markGoal) { root.remove(markGoal); markGoal.geometry.dispose(); }
+    markGoal = makeBall(state.goal, COL_G);
+    root.add(markGoal);
+  }
+  state.mode = null;
+  say('起点 (' + state.start.map(v => v.toFixed(2)).join(', ') + ')  终点 ' +
+      (state.goal ? '(' + state.goal.map(v => v.toFixed(2)).join(', ') + ')' : '未设'));
+  document.getElementById('go').disabled = !(state.start && state.goal);
+});
+
+document.getElementById('setStart').onclick = () => { state.mode = 'start'; say('在地板上点一下，设起点'); };
+document.getElementById('setGoal').onclick  = () => { state.mode = 'goal';  say('在目标楼层的地板上点一下，设终点'); };
+
+document.getElementById('go').onclick = () => {
+  if (!state.map || !state.start || !state.goal) return;
+  const t0 = performance.now();
+  const r = planPath(state.map, state.start[0], state.start[1], state.start[2] + 0.05,
+                                state.goal[0],  state.goal[1],  state.goal[2]  + 0.05);
+  const ms = performance.now() - t0;
+  if (r.error){ say(r.error); return; }
+  state.path = r.pts;
+  if (pathLine){ root.remove(pathLine); pathLine.geometry.dispose(); }
+  const pp = new Float32Array(r.pts.length * 3);
+  for (let i = 0; i < r.pts.length; ++i){
+    pp[3*i] = r.pts[i][0]; pp[3*i+1] = r.pts[i][1]; pp[3*i+2] = r.pts[i][2] + 0.06;
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+  pathLine = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: COL_PATH, transparent: true, opacity: 0.98, depthTest: false, depthWrite: false}));
+  pathLine.renderOrder = 10;
+  root.add(pathLine);
+  say('路径 ' + r.pts.length + ' 点 · ' + r.len.toFixed(1) + ' m · A* ' +
+      Math.round(ms) + ' ms · 展开 ' + r.expanded + ' 节点');
+};
+
+document.getElementById('clear').onclick = () => {
+  clearRoot();
+  state.map = state.start = state.goal = state.path = null;
+  showHud('等待载入模型');
+  say('先点「示例」看效果，也可以直接选自己的 OBJ / STL 文件');
+  document.getElementById('go').disabled = true;
+};
+
+// ---------- orbit --------------------------------------------------------
+let drag = null;
+host.addEventListener('pointerdown', e => {
+  if (e.button === 2) drag = {pan: true, x: e.clientX, y: e.clientY, tx: cam.target.x, ty: cam.target.y};
+  else if (e.button === 0 && !state.mode) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
+});
+window.addEventListener('pointermove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  if (drag.rot){
+    cam.yaw = drag.yaw - dx * 0.006;
+    cam.pitch = Math.max(-0.25, Math.min(1.45, drag.pitch + dy * 0.005));
+  } else if (drag.pan){
+    const s = cam.dist * 0.0016;
+    cam.target.x = drag.tx - Math.sin(cam.yaw) * dx * s;
+    cam.target.y = drag.ty + Math.cos(cam.yaw) * dx * s;
+  }
+  applyCam();
+});
+window.addEventListener('pointerup', () => drag = null);
+host.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = Math.max(2, Math.min(300, cam.dist * (1 + Math.sign(e.deltaY) * 0.08)));
+  applyCam();
+}, {passive: false});
+host.addEventListener('contextmenu', e => e.preventDefault());
+
+window.addEventListener('resize', () => {
+  renderer.setSize(W(), H());
+  camera.aspect = W() / H();
+  camera.updateProjectionMatrix();
+});
+
+// ---------- tick ---------------------------------------------------------
+let spin = 0;
+function tick(){
+  requestAnimationFrame(tick);
+  spin += 0.0012;
+  if (!drag) { /* no idle motion: the scene is a map, not a turntable */ }
+  renderer.render(scene, camera);
+}
+tick();
+
+// hash: #demo loads the sample and plans between two points on 1F and 4F, so a
+// screenshot of this page proves the whole chain without a mouse.
+if (location.hash.indexOf('demo') >= 0){
+  setTimeout(() => {
+    const infSel = document.getElementById('inf');
+    if (location.hash.indexOf('nofill') >= 0) infSel.value = '0.00';
+    document.getElementById('demo').click();
+    setTimeout(() => {
+      if (!state.map) return;
+      // floor plate tops, not undersides: a slab contributes a horizontal
+      // face at its top and one at its bottom, and standing on the underside
+      // of a floor is not a thing
+      let zb = 1e30, zt = -1e30, bestS = null, bestG = null;
+      for (const [k, hs] of state.map.hList){
+        if (state.map.blocked[k]) continue;
+        const i = k % state.map.nx, j = (k / state.map.nx) | 0;
+        for (const h of hs){
+          if (h < zb){ zb = h; bestS = [i, j, h]; }
+          if (h > zt){ zt = h; bestG = [i, j, h]; }
+        }
+      }
+      // the lowest horizontal face is the underside of the ground slab; the
+      // floor you can actually stand on is its top, a plate thickness higher
+      const sCol0 = bestS;
+      const gCol0 = bestG;
+      let stairCols = 0;
+      for (const [, hs] of state.map.hList) for (const h of hs)
+        if (h > 0.15 && h < 3.4) ++stairCols;
+      console.log('columns between 1F and 2F:', stairCols);
+      // what the stair well actually looks like to the map
+      const nx0 = state.map.nx, res0 = state.map.res, lo0 = state.map.lo;
+      let nStair = 0, sample = [];
+      for (const [k, hs] of state.map.hList){
+        const i = k % nx0, j = (k / nx0) | 0;
+        const wx = i*res0 + lo0[0], wy = j*res0 + lo0[1];
+        if (wx > 2.6 && wx < 7.5 && wy > 0.4 && wy < 3.2){
+          ++nStair;
+          if (sample.length < 6) sample.push([+wx.toFixed(2), +wy.toFixed(2), hs.map(h => +h.toFixed(2))]);
+        }
+      }
+      console.log('stair well columns:', nStair, JSON.stringify(sample));
+      let sCol = null, gCol = null;
+      for (const [k, hs] of state.map.hList){
+        if (state.map.blocked[k]) continue;
+        const i = k % state.map.nx, j = (k / state.map.nx) | 0;
+        for (const h of hs){
+          if (sCol0 && Math.abs(h - sCol0[2]) < 0.25 && hs.length >= 1 && !sCol) sCol = [i, j, h];
+          if (gCol0 && Math.abs(h - gCol0[2]) < 0.25) gCol = [i, j, h];
+        }
+      }
+      console.log('demo picks', sCol, gCol, 'zb', zb, 'zt', zt);
+      if (sCol && gCol){
+        state.start = [sCol[0]*state.map.res + state.map.lo[0] + 0.05, sCol[1]*state.map.res + state.map.lo[1] + 0.05, sCol[2]];
+        state.goal  = [gCol[0]*state.map.res + state.map.lo[0] + 0.05, gCol[1]*state.map.res + state.map.lo[1] + 0.05, gCol[2]];
+        markStart = makeBall(state.start, COL_S); root.add(markStart);
+        markGoal  = makeBall(state.goal,  COL_G); root.add(markGoal);
+        document.getElementById('go').disabled = false;
+        document.getElementById('go').click();
+      }
+    }, 500);
+  }, 200);
+}
+</script>
+</body>
+</html>
