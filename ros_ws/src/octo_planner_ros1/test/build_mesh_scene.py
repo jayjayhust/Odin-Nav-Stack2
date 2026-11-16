@@ -18,7 +18,7 @@ VOX = 0.12
 STEP_RISE = 0.19
 SRC = "../../../../docs/multifloor/sim/nav_sim_data.json"
 DST = "../../../../docs/multifloor/sim/mesh_scene_data.json"
-STEPS = (0.25, 0.5, 0.75, 1.0)
+STEPS = (1.0,)
 
 NEIGH = ((1,0,0),(-1,0,0),(0,1,0),(0,-1,0),(0,0,1),(0,0,-1))
 # each face: corner offsets in (i,j,k), wound CCW seen from outside
@@ -161,7 +161,7 @@ def stair_treads(obstacles, zones):
     """
     if not zones:
         return []
-    out = []
+    out, groups = [], {}
     for x0, x1, y0, y1, z0, z1 in zones:
         cy = 0.5 * (y0 + y1)
         for o in obstacles:
@@ -177,20 +177,87 @@ def stair_treads(obstacles, zones):
             level = bz0 + 0.04
             if not (z0 <= level <= z1 + 0.05):
                 continue
-            # widen into the well of the flight, away from the panel
-            if 0.5 * (ay0 + ay1) < cy:
-                wy0, wy1 = ay1, min(y1, ay1 + 1.15)
+            # A step often has a balustrade on both sides, and each panel would
+            # otherwise yield its own tread - two blocks at the same level,
+            # pointing into each other. Group by the step's x span and level
+            # first, then take the union of the panels' y range: with both
+            # panels that is the flight's clear width, with one it is the width
+            # assumed above.
+            key = (round(ax0, 3), round(level, 3))
+            groups.setdefault(key, [ax1, []])[1].append((ay0, ay1))
+    for (kx0, level), (kx1, ys) in groups.items():
+        wy0 = min(a for a, _ in ys)
+        wy1 = max(b for _, b in ys)
+        if wy1 - wy0 < 0.90:
+            if 0.5 * (wy0 + wy1) < cy:
+                wy1 = min(y1, wy0 + 1.15)
             else:
-                wy0, wy1 = max(y0, ay0 - 1.15), ay0
-            # A tread alone is a 12 cm plate on a 19 cm rise, so consecutive
-            # plates leave a 7 cm slot that reads as a ramp. Carry each step
-            # down to the one below it instead: the block is then the tread's
-            # top face plus its riser, which is exactly the surface a flight
-            # has - and the arris between two steps becomes visible.
-            out.append((ax0, wy0, ax1, wy1, level - STEP_RISE, level))
+                wy0 = max(y0, wy1 - 1.15)
+        # A tread alone is a 12 cm plate on a 19 cm rise, so consecutive
+        # plates leave a 7 cm slot that reads as a ramp. Carry each step down
+        # to the one below it instead: the block is then the tread's top face
+        # plus its riser, which is exactly the surface a flight has - and the
+        # arris between two steps becomes visible.
+        out.append((kx0, wy0, kx1, wy1, level - STEP_RISE, level))
     return out
 
-def build(points, lo, hi, zones=None, treads=None):
+
+def zone_slices(lo, zones, shape):
+    nx, ny, nz = shape
+    out = []
+    for x0, x1, y0, y1, z0, z1 in zones:
+        out.append((
+            slice(max(0, int(np.floor((x0 - lo[0]) / VOX))), min(nx, int(np.ceil((x1 - lo[0]) / VOX)) + 1)),
+            slice(max(0, int(np.floor((y0 - lo[1]) / VOX))), min(ny, int(np.ceil((y1 - lo[1]) / VOX)) + 1)),
+            slice(max(0, int(np.floor((z0 - lo[2]) / VOX))), min(nz, int(np.ceil((z1 - lo[2]) / VOX)) + 1)),
+        ))
+    return out
+
+
+def stair_panels(obstacles, zones):
+    """The balustrade panels themselves, one per step per side.
+
+    They are the only part of a flight that a sweep standing on it actually
+    returns, so they stay: the panels give the flight its boundary, and each
+    one also reports the level of the tread beside it.
+    """
+    if not zones:
+        return []
+    out = []
+    for x0, x1, y0, y1, z0, z1 in zones:
+        for o in obstacles:
+            if o.get("k") != 0:
+                continue
+            ax0, ay0, ax1, ay1 = o["a"]
+            bz0, bz1 = o["z"]
+            if ax1 - ax0 > 0.45 or ay1 - ay0 > 0.20 or bz0 < 0.06 or bz1 - bz0 < 0.70:
+                continue
+            if not (x0 - 0.2 <= ax0 <= x1 + 0.2 and y0 - 0.2 <= ay0 <= y1 + 0.2):
+                continue
+            out.append((ax0, ay0, ax1, ay1, bz0, bz1))
+    return out
+
+
+def stair_landing(treads, zones):
+    """The landing at the head of each flight, taken from the top of that flight.
+
+    Every flight ends at the same x, so a tread sitting within half a metre of
+    the core's far side is a flight head - one per side of the well, one per
+    storey. Nothing is scanned on the landing itself (it is the floor the next
+    flight starts from), so without this each storey loses the whole depth of
+    the core between the two flights.
+    """
+    if not treads or not zones:
+        return []
+    out = []
+    for x0, x1, y0, y1, z0, z1 in zones:
+        for t in treads:
+            if t[2] < x1 - 0.40:
+                continue
+            out.append((t[2], y0 + 0.12, x1 - 0.10, y1 - 0.12, t[5] - 0.12, t[5]))
+    return out
+
+def build(points, lo, hi, zones=None, treads=None, panels=None, landings=None):
     """lo/hi is the voxel-grid origin and its far corner, in world metres.
 
     The grid must cover every point in the scene, so the caller derives it from
@@ -219,17 +286,23 @@ def build(points, lo, hi, zones=None, treads=None):
     occ = prune_floating(occ)
     occ = fill_stair_columns(occ, lo, zones)
     occ = bridge_stair_risers(occ, lo, zones)
+    # Inside a stair core the sweep contributes almost nothing usable: standing
+    # on a tread, the tread is under the sensor and the riser faces away, so
+    # what comes back is the balustrade plus rubble. Keeping that rubble next to
+    # the recovered treads is what made the flights look broken. Clear the core
+    # and put back only what is known exactly - treads, panels, landing.
+    for sl in zone_slices(lo, zones or [], occ.shape):
+        occ[sl] = False
     # The treads are added after the morphology, not before: the segments of a
     # flight are one cell thick and one cell apart in z, so any closing pass
     # fuses them into a single smooth ramp and the steps stop reading as steps.
     # They are the one thing here that is already exact - a flat box at the
     # level its own balustrade panel reports - so nothing needs to touch them.
-    if treads:
-        for tx0, ty0, tx1, ty1, tz0, tz1 in treads:
-            a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
-            a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
-            sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
-            occ[sl] = True
+    for tx0, ty0, tx1, ty1, tz0, tz1 in (treads or []) + (panels or []) + (landings or []):
+        a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
+        a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
+        sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
+        occ[sl] = True
     verts, vmap, tris = [], {}, []
     for i, j, k in zip(*np.nonzero(occ)):
         for d in NEIGH:
@@ -269,9 +342,11 @@ def main():
         frames, cum_pts = [], 0
         for frac in STEPS:
             k = max(1, int(round(frac * n)))
-            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi,
-                          sc.get("stair") or [],
-                          stair_treads(sc.get("obstacles") or [], sc.get("stair") or []))
+            zs = sc.get("stair") or []
+            tr = stair_treads(sc.get("obstacles") or [], zs)
+            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi, zs, tr,
+                          stair_panels(sc.get("obstacles") or [], zs),
+                          stair_landing(tr, zs))
             cum_pts = int(sum(len(p) for p in pts[:k]))
             va = np.array(v, dtype=np.int16).reshape(-1)
             i16 = len(v) < 65535

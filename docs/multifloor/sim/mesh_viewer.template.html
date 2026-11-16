@@ -217,7 +217,9 @@ function geometryFor(frame, origin){
   }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setIndex(new THREE.BufferAttribute(use, 1));
+  // setIndex takes a plain typed array; handing it a BufferAttribute of the
+  // clipped index left the mesh empty.
+  geo.setIndex(use);
   geo.computeVertexNormals();
   // One material, colour carried by the vertex: faces looking up are floor,
   // vertical faces are walls, faces looking down are ceiling/underside.
@@ -700,6 +702,10 @@ if (hp[7] === '1' && DATA.scenes[initScene].stair && DATA.scenes[initScene].stai
                                                 DATA.scenes[initScene].org[1],
                                                 DATA.scenes[initScene].org[2]));
   }
+  const c = CLIP;
+  cam.target.set((c[0] + c[1]) / 2, (c[2] + c[3]) / 2, (c[4] + c[5]) / 2);
+  if (!hp[3]) cam.dist = 6;
+  applyCam();
 }
 if (hp[4] === '1'){
   state.follow = true;
