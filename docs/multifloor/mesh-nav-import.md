@@ -31,14 +31,31 @@ Four storey sample (`example_four_floor.obj`, 293 boxes, 3,516 faces): 5,952 sta
 3. **Overhanging treads all rejected.** `require_ground_support` wants something solid underneath, and a tread has nothing under it because nothing was ever measured there. Relaxed the way `nav_sim` does with `allow_unknown_cells`: an UNKNOWN cell underneath counts as "may be supported".
 4. **Start point in a corner.** A stratum centroid lands on a pillar or inside a rail; now the cell with the most open neighbours on that stratum is taken.
 
-## What still does not work
+## Cross storey planning: it works
 
-On the four storey sample, start on 1F and goal on 4F, A* exhausts 5,148 nodes and reports no path.
+Four storey sample, start on 1F, goal on 4F:
 
-Confirmed: the standable surface is continuous (about 600 cells per storey), stair treads are recognised, and inflation at zero is not the cause.
+| Inflation | Path | Length | Expanded |
+|---|---|---|---|
+| 0 m | 134 cells | 30.0 m | 4,453 |
+| 0.30 m | 140 cells | 31.4 m | 3,604 |
 
-Unknown: whether the 4F standable stratum joins the top of the flight. Next step is to cut that segment out and check the gap - `max_step_z=3` at 0.15 m is 0.45 m, so half a cell of misalignment between the flight top and the plate is enough to break it.
+30 m is plausible for four storeys: three flights are about 21 m, the rest is level running at both ends.
 
-## Fallback
+## Why it looked broken for several rounds
 
-If that segment never joins in a flat grid, partition by storey and use the stairs as the only inter-storey edge - which is what `floor_manager` in the repo already does, and far cheaper than searching a flat grid.
+The repeated "no path" was never the planner. It was where the demo put the goal:
+
+- The old demo chose the goal by widest stratum, and picked a small detached plate on 4F.
+- A reachability probe (`flood()`, same edge rules as the planner) measured it: **the start component is 5,148 cells and reaches from storey 0 to storey 3** (`{0:831, 1:1531, 2:1442, 3:1344}`), so the stairs were connected all along; **the goal component is 162 cells, all on storey 3** - an island.
+- The start could not walk to that island, so A* exhausted its frontier and reported no path. The report was correct; the test point was wrong.
+
+Fix: run `flood()` from the start first, then choose the goal only inside that reachable set, on the highest stratum that is still a real plate (`>=150` cells). Both inflation settings now plan.
+
+This probe is worth keeping: **when a plan fails, measure the two components before suspecting the algorithm**.
+
+## Limits worth knowing
+
+- 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
+- The probe shares the planner's edge rules, so it proves "reachable under these rules", not that the dog can walk it: `stair_gait`, the 0.42 m body, and the site upstands are not modelled.
+- The thin strips in the view are the model's own counter tops, desk tops and stair treads - real horizontal faces, not breaks.

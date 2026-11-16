@@ -506,6 +506,63 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
     len += Math.hypot(pts[i2][0]-pts[i2-1][0], pts[i2][1]-pts[i2-1][1], pts[i2][2]-pts[i2-1][2]);
   return {pts, len, expanded};
 }
+// ---------- reachability probe ---------------------------------------------
+// Floods from one cell with the same edge rules the planner uses, and reports
+// how far up the building the connected component actually gets. A planner
+// that expands a few thousand nodes and stops is not necessarily wrong - it
+// may simply be standing on a component that never reaches the goal.
+function flood(m, x, y, z){
+  const {res, lo, nx, ny, nz, data} = m;
+  const F = (i, j, k) => (k*ny + j)*nx + i;
+  const ok = (i, j, k) => data[F(i, j, k)] === FREE;
+  const sup = m.supportOrUnknown;
+  const i0 = Math.floor((x-lo[0])/res), j0 = Math.floor((y-lo[1])/res),
+        k0 = Math.floor((z-lo[2])/res);
+  let s = -1, bd = 1e30, si = 0, sj = 0, sk = 0;
+  for (let dk = -SNAP_R; dk <= SNAP_R; ++dk)
+    for (let dj = -SNAP_R; dj <= SNAP_R; ++dj)
+      for (let di = -SNAP_R; di <= SNAP_R; ++di){
+        const i = i0+di, j = j0+dj, k = k0+dk;
+        if (!ok(i, j, k)) continue;
+        const d2 = di*di + dj*dj + dk*dk;
+        if (d2 < bd){ bd = d2; s = F(i, j, k); si = i; sj = j; sk = k; }
+      }
+  if (s < 0) return {error: 'no free cell near start'};
+  const seen = new Uint8Array(m.cells);
+  const q = [s];
+  seen[s] = 1;
+  let head = 0, n = 1, kmax = sk, kmin = sk;
+  const hist = {};
+  while (head < q.length){
+    const cur = q[head++];
+    const ci = cur % nx, cj = ((cur/nx)|0) % ny, ck = (cur/(nx*ny))|0;
+    if (ck > kmax) kmax = ck;
+    if (ck < kmin) kmin = ck;
+    const storey = Math.round((lo[2] + (ck+0.5)*res) / 3.42);
+    hist[storey] = (hist[storey]||0) + 1;
+    for (let dk = -MAX_STEP_Z; dk <= MAX_STEP_Z; ++dk){
+      const k = ck + dk;
+      if (k < 0 || k >= nz) continue;
+      for (let dj = -1; dj <= 1; ++dj){
+        const j = cj + dj;
+        if (j < 0 || j >= ny) continue;
+        for (let di = -1; di <= 1; ++di){
+          if (!di && !dj && !dk) continue;
+          if (dk !== 0 && !di && !dj) continue;
+          const i = ci + di;
+          if (i < 0 || i >= nx) continue;
+          const f = F(i, j, k);
+          if (seen[f] || !ok(i, j, k)) continue;
+          if (k < 1 || !sup(i, j, k)) continue;
+          seen[f] = 1; ++n; q.push(f);
+        }
+      }
+    }
+  }
+  return {cells: n, from: sk, to: kmax, lowestStorey: Math.round((lo[2]+(kmin+0.5)*res)/3.42),
+          byStorey: hist, start: [si, sj, sk], seen};
+}
+
 // ---------- drawing -------------------------------------------------------
 const COL_FLOOR = 0xffcf3f, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
 const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
@@ -825,13 +882,14 @@ if (location.hash.indexOf('demo') >= 0){
       for (let k = 0; k < m.nz; ++k) if (cnt[k] >= maxC*0.5){ if (kLo < 0) kLo = k; kHi = k; }
       // Pick the most open cell on each of those two strata: a centroid can
       // land on a pillar or inside a handrail and leave the search in a pocket.
-      function bestOn(k){
+      function bestOn(k, mask){
         let bi = -1, bj = -1, bn = -1;
         for (let j = 1; j < m.ny-1; ++j)
           for (let i = 1; i < m.nx-1; ++i){
             const v = m.data[F(i, j, k)];
             if (v !== FREE && v !== INFL) continue;
             if (!m.supportOrUnknown(i, j, k)) continue;
+            if (mask && !mask[F(i, j, k)]) continue;
             let n = 0;
             for (let dj = -1; dj <= 1; ++dj)
               for (let di = -1; di <= 1; ++di){
@@ -844,8 +902,32 @@ if (location.hash.indexOf('demo') >= 0){
           }
         return bn > 0 ? [bi, bj, k] : null;
       }
-      const s0 = bestOn(kLo), g0 = bestOn(kHi);
-      if (!s0 || !g0) return;
+      const s0 = bestOn(kLo, null);
+      if (!s0) return;
+      // The goal has to sit on the component the start can actually reach.
+      // Picking the widest stratum by area alone landed on a detached plate
+      // on 4F - 162 cells, an island - and the search then "failed" for a
+      // reason that was never the planner's.
+      const wS = [m.lo[0] + (s0[0]+0.5)*m.res, m.lo[1] + (s0[1]+0.5)*m.res, m.lo[2] + (s0[2]+0.5)*m.res];
+      const reach = flood(m, wS[0], wS[1], wS[2]);
+      if (!reach.seen){
+        console.log('demo: start has no free cell');
+        return;
+      }
+      // highest stratum in the reachable set that is still a real plate
+      const cntR = new Int32Array(m.nz);
+      for (let k = 0; k < m.nz; ++k){
+        let c = 0;
+        for (let j = 0; j < m.ny; ++j)
+          for (let i = 0; i < m.nx; ++i)
+            if (reach.seen[F(i, j, k)]) ++c;
+        cntR[k] = c;
+      }
+      let topK = -1;
+      for (let k = 0; k < m.nz; ++k) if (cntR[k] >= 150) topK = k;
+      const g0 = bestOn(topK, reach.seen);
+      if (!g0) return;
+      console.log('demo reach', reach.cells, 'cells, top storey k', topK, 'goal', g0);
       const toWorld = v => [m.lo[0] + (v[0]+0.5)*m.res, m.lo[1] + (v[1]+0.5)*m.res,
                             m.lo[2] + (v[2]+0.5)*m.res];
       state.start = toWorld(s0);
@@ -853,6 +935,9 @@ if (location.hash.indexOf('demo') >= 0){
       markStart = makeBall(state.start, COL_S); root.add(markStart);
       markGoal = makeBall(state.goal, COL_G); root.add(markGoal);
       console.log('demo picks', s0, g0, 'strata', kLo, kHi);
+      if (location.hash.indexOf('diag') >= 0){
+        console.log('FLOOD start', JSON.stringify(reach));
+      }
       {
         const F2 = (i,j,k) => (k*m.ny+j)*m.nx+i;
         const fmt = [];
