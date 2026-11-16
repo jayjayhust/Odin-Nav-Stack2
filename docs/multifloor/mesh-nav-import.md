@@ -84,6 +84,24 @@ The page follows the same split: NeuPAN on level segments, and on a flight the y
 
 The page now matches the first. The comparison lives in `3d-planner-and-stairs`.
 
+## Dropping your own obstacles on the route
+
+- **Post**: click the button, then click a walkable face and a red post appears there (r=0.30 m, h=1.1 m).
+- **Pedestrian**: r=0.22 m, h=1.65 m, walking at **0.28 m/s** (the speed the simulator's scenes use), bouncing off the map bounds.
+- **Clear**: removes all. A drag never places one - a pointer that moved more than 5 px is treated as orbiting.
+
+Obstacles enter the local layer the way a live return does: **no inflation**, filtered to the body band `base_z +0.12 .. +0.55`, and anything within `halfW 0.175 + 0.05 m` is illegal.
+
+### The dog stops, and that is the right answer
+
+When no candidate survives in the local window, `state.blocked` latches and the dog stops advancing - exactly what NeuPAN does when PAN finds no feasible solution: it parks and keeps receding rather than pushing through. The yellow line falls back to the centre line.
+
+### One simplification, stated plainly
+
+The dog's position is still driven by **the global route**; the local layer only answers go / stop and **does not take over steering**. Real NeuPAN publishes `/cmd_vel` and the dog genuinely swerves. Here the swerve shows up as the yellow leg deflecting while the dog still hugs the blue line. To see the dog itself turn, run real NeuPAN in ROS.
+
+`#demo,obs` and `#demo,ped` drop one of each automatically.
+
 ## Limits worth knowing
 
 - 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.

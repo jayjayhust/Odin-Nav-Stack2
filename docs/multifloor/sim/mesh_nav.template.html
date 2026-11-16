@@ -56,6 +56,10 @@
   <button class="btn" id="setGoal">点模型设终点</button>
   <button class="btn primary" id="go" disabled>规划</button>
   <button class="btn" id="clear">清空</button>
+  <button class="btn" id="placeStatic">放障碍（立柱）</button>
+  <button class="btn" id="placePed">放行人（会走）</button>
+  <button class="btn" id="clearObs">清障碍</button>
+  <span class="lbl" id="obsCount">障碍 0</span>
 </div>
 
 <div class="legend">
@@ -120,10 +124,15 @@ const state = {
   map: null,           // built map
   start: null, goal: null, path: null,
   res: 0.15, inf: 0.45,
+  obs: [],             // obstacles the user drops in
+  place: null,         // 'static' | 'ped' while placing
+  blocked: false,      // last local decision: no legal candidate
 };
+const obsGroup = new THREE.Group();
 
 let root = new THREE.Group();
 scene.add(root);
+scene.add(obsGroup);
 let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
 let localLine = null, winBox = null, dogMesh = null;
 let pathLen = 0, prog = 0, lastLocal = -1;
@@ -560,6 +569,73 @@ function flood(m, x, y, z){
           byStorey: hist, start: [si, sj, sk], seen};
 }
 
+// ---------- obstacles the user drops in ------------------------------------
+// These enter the local layer the way a live return would: a cylinder checked
+// against the body height band, with halfW + 0.05 as a hard reject. Nothing is
+// inflated - NeuPAN constrains the point set, not a grid.
+const COL_OBS = 0xff5a5a, COL_PED = 0xff9a3c;
+
+function addObstacle(x, y, z, ped){
+  const o = {
+    x, y, z,
+    r: ped ? 0.22 : 0.30,        // a person is narrower than a post
+    h: ped ? 1.65 : 1.10,
+    ped: !!ped,
+    vx: 0, vy: 0,
+    mesh: null,
+  };
+  if (ped){
+    // 0.28 m/s is the pedestrian speed the simulator's scenes use
+    const a = Math.random() * Math.PI * 2;
+    o.vx = 0.28 * Math.cos(a); o.vy = 0.28 * Math.sin(a);
+  }
+  // CylinderGeometry runs along Y; this scene stands things along Z, so the
+  // axis has to be turned before the base is dropped onto the floor.
+  const g = new THREE.CylinderGeometry(o.r, o.r, o.h, 14);
+  g.rotateX(Math.PI / 2);
+  g.translate(0, 0, o.h / 2);
+  // opaque on purpose: transparent meshes here fight the half transparent
+  // walkable faces for draw order and end up invisible
+  const mat = new THREE.MeshStandardMaterial({
+    color: o.ped ? COL_PED : COL_OBS, roughness: 0.5,
+  });
+  o.mesh = new THREE.Mesh(g, mat);
+  o.mesh.position.set(o.x, o.y, o.z);
+  obsGroup.add(o.mesh);
+  state.obs.push(o);
+  return o;
+}
+
+function stepObstacles(dt, m){
+  const x0 = m.lo[0] + 0.4, x1 = m.lo[0] + m.nx*m.res - 0.4;
+  const y0 = m.lo[1] + 0.4, y1 = m.lo[1] + m.ny*m.res - 0.4;
+  for (const o of state.obs){
+    if (!o.ped) continue;
+    o.x += o.vx * dt; o.y += o.vy * dt;
+    if (o.x < x0 || o.x > x1){ o.vx = -o.vx; o.x = Math.min(x1, Math.max(x0, o.x)); }
+    if (o.y < y0 || o.y > y1){ o.vy = -o.vy; o.y = Math.min(y1, Math.max(y0, o.y)); }
+    o.mesh.position.set(o.x, o.y, o.z);
+  }
+}
+
+function clearObstacles(){
+  for (const o of state.obs) obsGroup.remove(o.mesh);
+  state.obs.length = 0;
+  state.blocked = false;
+}
+
+// Distance from the dog to the nearest obstacle surface, filtered by the same
+// body band as the point set: an obstacle that cannot be hit is not a hit.
+function obstacleClearance(obs, px, py, baseZ){
+  let best = 1e9;
+  for (const o of obs){
+    if (o.z + o.h < baseZ + 0.12 || o.z > baseZ + 0.55) continue;
+    const d = Math.hypot(o.x - px, o.y - py) - o.r;
+    if (d < best) best = d;
+  }
+  return best;
+}
+
 // ---------- local layer, the way the deployed planner constrains it ---------
 // robots/go2/neupan/planner.yaml: differential drive, max_speed 0.625 m/s and
 // 0.875 rad/s, receding 10 steps of 0.1 s, collision_threshold 0.05 m.
@@ -668,7 +744,8 @@ function neupanLeg(m, pose, target){
       y += (c[0]*Math.sin(yaw) + c[1]*Math.cos(yaw)) * NEU_ROLL_H;
       yaw += c[2] * NEU_ROLL_H;
       if (k % 2 === 0){
-        const d = nearestPointDist(pts, x, y, z0);
+        const d = Math.min(nearestPointDist(pts, x, y, z0),
+                           obstacleClearance(state.obs, x, y, z0));
         // hard constraint: half width + 5 cm, exactly as PAN enforces it
         if (d < HALF_W + CLR_HARD){ bad = true; break; }
         mincl = Math.min(mincl, d - HALF_W);
@@ -714,6 +791,18 @@ function startLocalDemo(){
   root.add(dogMesh);
   winBox = makeWinBox(p0, LOCAL_HALF);
   root.add(winBox);
+  // a dropped post right on the route is the honest test of the local layer:
+  // the dog should refuse, not walk through it
+  if (location.hash.indexOf('obs') >= 0){
+    const q = pathAt(pts, Math.min(pathLen, prog + 2.2));
+    addObstacle(q[0], q[1], q[2], false);
+    updObsCount();
+  }
+  if (location.hash.indexOf('ped') >= 0){
+    const q = pathAt(pts, Math.min(pathLen, prog + 3.0));
+    addObstacle(q[0], q[1], q[2], true);
+    updObsCount();
+  }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3*600), 3));
   g.setDrawRange(0, 0);
@@ -990,7 +1079,49 @@ document.getElementById('go').onclick = () => {
       Math.round(ms) + ' ms · 展开 ' + r.expanded + ' 节点');
 };
 
+function syncPlace(){
+  document.getElementById('placeStatic').classList.toggle('primary', state.place === 'static');
+  document.getElementById('placePed').classList.toggle('primary', state.place === 'ped');
+}
+function updObsCount(){
+  document.getElementById('obsCount').textContent = '障碍 ' + state.obs.length;
+}
+document.getElementById('placeStatic').onclick = () => {
+  state.place = state.place === 'static' ? null : 'static';
+  syncPlace();
+  say(state.place ? '在可通行面上点一下放一根立柱' : '不放了');
+};
+document.getElementById('placePed').onclick = () => {
+  state.place = state.place === 'ped' ? null : 'ped';
+  syncPlace();
+  say(state.place ? '在可通行面上点一下放一个会走的人' : '不放了');
+};
+document.getElementById('clearObs').onclick = () => {
+  clearObstacles(); updObsCount(); state.blocked = false;
+};
+
+// click to place: a drag never counts, so orbiting does not drop posts
+let pdX = 0, pdY = 0;
+host.addEventListener('pointerdown', e => { pdX = e.clientX; pdY = e.clientY; });
+host.addEventListener('pointerup', e => {
+  if (!state.place || !state.map) return;
+  if (Math.hypot(e.clientX - pdX, e.clientY - pdY) > 5) return;
+  const rect = host.getBoundingClientRect();
+  const ndc = new THREE.Vector2(((e.clientX - rect.left)/rect.width)*2 - 1,
+                                -((e.clientY - rect.top)/rect.height)*2 + 1);
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(ndc, camera);
+  const hit = (walkMesh && ray.intersectObject(walkMesh, false)[0]) ||
+              (srcMesh && ray.intersectObject(srcMesh, false)[0]);
+  if (!hit) return;
+  addObstacle(hit.point.x, hit.point.y, hit.point.z, state.place === 'ped');
+  updObsCount();
+  say('障碍 ' + state.obs.length + ' 个：' + (state.place === 'ped' ? '行人会自己走' : '立柱不动') +
+      ' · 局部层会绕开或停');
+});
+
 document.getElementById('clear').onclick = () => {
+  clearObstacles(); updObsCount(); syncPlace();
   clearRoot();
   state.map = state.start = state.goal = state.path = null;
   showHud('等待载入模型');
@@ -1039,8 +1170,12 @@ function tick(){
   const now = performance.now();
   const dt = lastClock ? Math.min(0.12, (now - lastClock)/1000) : 0;
   lastClock = now;
+  if (state.map) stepObstacles(dt, state.map);
   if (state.path && pathLen > 0.5 && dogMesh){
-    prog += dt * 1.2;                 // a real Go2 trots about this fast
+    // The local layer's verdict is stop-or-go here, not a steering command: the
+    // dog still follows the route, but a blocked window parks it the way
+    // NeuPAN would keep receding without a legal move.
+    if (!state.blocked) prog += dt * 1.2;
     if (prog > pathLen) prog = 0;     // loop, so the page keeps demonstrating
     const p = pathAt(state.path, prog);
     dogMesh.position.set(p[0], p[1], p[2]);
@@ -1053,13 +1188,14 @@ function tick(){
       const nxt = pathAt(state.path, Math.min(pathLen, prog + 0.35));
       const yaw = Math.atan2(nxt[1] - p[1], nxt[0] - p[0]);
       let leg;
+      state.blocked = false;
       if (isStair(state.path, prog)){
         leg = stairLeg(state.path, prog);        // stair_gait has the flight
         if (winBox) winBox.visible = false;
       } else {
         if (winBox) winBox.visible = true;
         leg = neupanLeg(state.map, [p[0], p[1], p[2], yaw], tgt);
-        if (!leg) leg = stairLeg(state.path, prog);
+        if (!leg){ state.blocked = true; leg = stairLeg(state.path, prog); }
       }
       updateLocalLine(leg);
       if (dogMesh) dogMesh.rotation.z = yaw;
