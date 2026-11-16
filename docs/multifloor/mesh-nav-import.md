@@ -102,6 +102,20 @@ The dog's position is still driven by **the global route**; the local layer only
 
 `#demo,obs` and `#demo,ped` drop one of each automatically.
 
+
+### Trying a step-edge test instead of a layer count (rejected, kept for the record)
+
+25 cm is the Go2's climbing limit and the sample sits at 0.15 m. To support 25 cm directly, `stairCol` was rewritten to look for a step edge - a lateral neighbour whose top differs by one riser - instead of counting occupied layers. Two versions were measured:
+
+| version | 25 cm flight | four storey demo |
+|---|---|---|
+| one-sided (any neighbour differs by 1..3 cells) | ascent **works**: 22 cells / 3.65 m, z 0.17 up to 1.22 (a 1.00 m platform); the pit works too, 19 cells / 3.35 m down to -0.88 | **broken**: path 1 cell / 0.0 m, inflation eating 2,668 cells against the usual 218 |
+| two-sided (a step must have height on both sides) | the flight **breaks at both ends**, no path up or down | back to normal |
+
+One-sided is too loose: it calls every plate rim a step and scrambles the four storey terrain. Two-sided is too tight: the top and bottom tread of any flight is necessarily one-sided, so the flight snaps off at both ends. Reverted to the layer count - conservative, but the 0.15 m flight, the four storey run and the pit are all stable under it.
+
+To genuinely support 25 cm the right move is a **0.05 m resolution** (0.25 is 5 cells, a 0.28 tread about 6, exact on the lattice, no rule change). The cost is roughly 80 thousand cells growing to 2.6 million, and loading plus A* both get noticeably slower. That is not done yet, pending your call.
+
 ## Two simulators, one robot: the same planning stack
 
 The point cloud simulator (`nav_sim.cpp`), this mesh page and the real robot run one three layer structure, not three separate implementations:
