@@ -1,0 +1,442 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Go2 点云转 mesh 实体渲染</title>
+<style>
+  *{box-sizing:border-box}
+  body{margin:0;background:#070d17;color:#c8d6e5;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  header{padding:22px 28px 10px}
+  h1{margin:0;font-size:24px;font-weight:650;color:#eaf2ff;letter-spacing:.3px}
+  .sub{margin:8px 0 0;font-size:13.5px;color:#7f93ad;line-height:1.7;max-width:1080px}
+  .bar{display:flex;flex-wrap:wrap;gap:10px;align-items:center;padding:14px 28px 6px}
+  .chip{background:#0f1725;border:1px solid #1e2b3f;color:#9fb3cc;border-radius:7px;padding:7px 13px;font-size:13px;cursor:pointer;transition:.15s}
+  .chip:hover{border-color:#2c4562;color:#dbe8f7}
+  .chip.on{background:#12313b;border-color:#2a7c8a;color:#8fe6f0}
+  .grp{display:flex;gap:6px;background:#0b111c;border:1px solid #1a2434;border-radius:9px;padding:4px}
+  .grp .chip{border:none;background:transparent}
+  .lab{font-size:12.5px;color:#6f839c;margin-right:2px}
+  input[type=range]{-webkit-appearance:none;height:4px;border-radius:2px;background:#1d2a3d;outline:none;width:190px}
+  input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;height:14px;border-radius:50%;background:#6ee1eb;cursor:pointer;box-shadow:0 0 0 3px rgba(110,225,235,.15)}
+  .val{font-variant-numeric:tabular-nums;font-size:12.5px;color:#8fe6f0;min-width:44px}
+  #stage{position:relative;margin:10px 28px 0;border:1px solid #172233;border-radius:12px;overflow:hidden;background:#05090f}
+  #cv{display:block;width:100%;height:min(64vh,660px)}
+  .hud{position:absolute;left:14px;top:12px;background:rgba(8,14,23,.78);border:1px solid #1b2839;border-radius:9px;padding:11px 14px;font-size:12.5px;line-height:1.85;pointer-events:none;backdrop-filter:blur(6px)}
+  .hud b{color:#eaf2ff;font-weight:600}
+  .hud .k{color:#7f93ad}
+  .hud .v{color:#8fe6f0;font-variant-numeric:tabular-nums}
+  .tip{position:absolute;right:14px;bottom:12px;font-size:11.5px;color:#5f7288;pointer-events:none}
+  .legend{display:flex;gap:18px;flex-wrap:wrap;padding:12px 28px 4px;font-size:12.5px;color:#7f93ad}
+  .sw{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+  footer{padding:8px 28px 26px;font-size:12px;color:#5f7288;line-height:1.8;max-width:1100px}
+</style>
+</head>
+<body>
+<header>
+  <h1>点云 → mesh 实体渲染</h1>
+  <p class="sub" id="sub">把仿真里扫描到的点云体素化、抽成表面网格，再用实体面渲染。
+    和点云视图看的是同一份数据：洞里就是没扫到的方向。拖动透明度可以穿墙看内部结构。</p>
+  <p class="sub" style="margin-top:6px"><a href="nav_sim.html" style="color:#6ee1eb;text-decoration:none">← 返回点云视图（nav_sim.html）</a></p>
+</header>
+<div class="bar">
+  <span class="lab">场景</span>
+  <div class="grp" id="scenes"></div>
+  <span class="lab" style="margin-left:10px">透明度</span>
+  <input type="range" id="alpha" min="8" max="100" value="100" step="1">
+  <span class="val" id="alphaV">100%</span>
+  <div class="grp" id="presets">
+    <button class="chip on" data-a="100">实体</button>
+    <button class="chip" data-a="45">半透</button>
+    <button class="chip" data-a="15">透视</button>
+  </div>
+  <div class="grp" style="margin-left:auto">
+    <button class="chip on" id="play">播放</button>
+    <button class="chip" id="reset">复位</button>
+    <button class="chip" id="camReset">视角复位</button>
+  </div>
+</div>
+<div class="bar">
+  <span class="lab">进度</span>
+  <input type="range" id="prog" min="0" max="100" value="100" step="1" style="width:280px">
+  <span class="val" id="progV">100%</span>
+  <span class="lab" style="margin-left:10px">已扫描点</span>
+  <span class="val" id="ptsV">—</span>
+</div>
+<div id="stage">
+  <canvas id="cv"></canvas>
+  <div class="hud" id="hud"></div>
+  <div class="tip">左键拖拽旋转 · 滚轮缩放 · 右键平移</div>
+</div>
+<div class="legend">
+  <span><span class="sw" style="background:#7f8ea6"></span>地面</span>
+  <span><span class="sw" style="background:#c6d4e6"></span>墙面 / 障碍</span>
+  <span><span class="sw" style="background:#5ce0a3"></span>机器人</span>
+  <span><span class="sw" style="background:#5aa9e6"></span>全局路径</span>
+</div>
+<footer>网格由 <code>test/build_mesh_scene.py</code> 从 <code>nav_sim_data.json</code> 的累积点云生成：
+每档先把点按 0.12 m 体素占据，闭运算补一格缝，再剔除被邻居挡住的六个面，只留外表面。
+顶点与索引按二进制打包后内联在本页，因此页面可离线打开。</footer>
+<script>/*__THREE__*/</script>
+<script>
+const DATA = /*__DATA__*/;
+
+const cv = document.getElementById('cv');
+const renderer = new THREE.WebGLRenderer({canvas: cv, antialias: true, alpha: false});
+renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+renderer.setClearColor(0x05090f, 1);
+
+const scene = new THREE.Scene();
+scene.fog = new THREE.Fog(0x05090f, 40, 140);
+const camera = new THREE.PerspectiveCamera(46, 1, 0.1, 600);
+
+scene.add(new THREE.HemisphereLight(0x9fb8d6, 0x1a2233, 0.55));
+const key = new THREE.DirectionalLight(0xffffff, 0.72); key.position.set(12, 18, 22); scene.add(key);
+const fill = new THREE.DirectionalLight(0x8fb6dd, 0.30); fill.position.set(-16, -10, -14); scene.add(fill);
+const rim = new THREE.DirectionalLight(0x6ee1eb, 0.22); rim.position.set(0, 8, -30); scene.add(rim);
+scene.add(new THREE.AmbientLight(0x2c3a52, 0.85));
+
+// --- camera orbit -----------------------------------------------------------
+// Data is z-up (ROS convention); three defaults to y-up, so lift the camera
+// axis instead of rotating the world.
+camera.up.set(0, 0, 1);
+const cam = {yaw: -0.95, pitch: 0.50, dist: 26, target: new THREE.Vector3()};
+function applyCam(){
+  const cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
+  camera.position.set(
+    cam.target.x + cam.dist * cp * Math.cos(cam.yaw),
+    cam.target.y + cam.dist * cp * Math.sin(cam.yaw),
+    cam.target.z + cam.dist * sp);
+  camera.lookAt(cam.target);
+}
+applyCam();
+
+let drag = null;
+cv.addEventListener('contextmenu', e => e.preventDefault());
+cv.addEventListener('mousedown', e => {
+  drag = {x: e.clientX, y: e.clientY, b: e.button};
+  cv.style.cursor = 'grabbing';
+});
+window.addEventListener('mouseup', () => { drag = null; cv.style.cursor = 'grab'; });
+window.addEventListener('mousemove', e => {
+  if (!drag) return;
+  const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
+  drag.x = e.clientX; drag.y = e.clientY;
+  if (drag.b === 0){
+    cam.yaw -= dx * 0.0072;
+    cam.pitch = Math.max(0.04, Math.min(1.50, cam.pitch + dy * 0.0062));
+  } else {
+    const s = cam.dist * 0.0016;
+    const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw);
+    cam.target.x -= (cy * dx + sy * dy) * s;
+    cam.target.y -= (sy * dx - cy * dy) * s;
+  }
+  applyCam();
+});
+cv.addEventListener('wheel', e => {
+  e.preventDefault();
+  cam.dist = Math.max(3, Math.min(160, cam.dist * (1 + Math.sign(e.deltaY) * 0.09)));
+  applyCam();
+}, {passive: false});
+
+
+
+// --- state ----------------------------------------------------------------
+const state = {scene: 0, alpha: 1, prog: 1, playing: true, t0: performance.now()};
+let meshGroup = null, matWall = null, robot = null, trailPath = null, grid = null;
+
+function clearGroup(g){
+  if (!g) return;
+  g.traverse(o => { if (o.geometry) o.geometry.dispose(); });
+  scene.remove(g);
+}
+
+// --- decode ----------------------------------------------------------------
+function i16At(bin, o){
+  const v = bin.charCodeAt(o) | (bin.charCodeAt(o+1) << 8);
+  return (v << 16) >> 16;
+}
+
+function geometryFor(frame, origin){
+  const bin = atob(frame.v);
+  const nv = frame.nv, vox = DATA.vox;
+  const pos = new Float32Array(nv * 3);
+  for (let i = 0; i < nv; ++i){
+    const o = 6 * i;
+    pos[3*i]   = origin.x + (i16At(bin, o) - 1) * vox;
+    pos[3*i+1] = origin.y + (i16At(bin, o+2) - 1) * vox;
+    pos[3*i+2] = origin.z + (i16At(bin, o+4) - 1) * vox;
+  }
+  const binI = atob(frame.i);
+  const ni = frame.ni, wide = frame.id === 'u32';
+  const idx = wide ? new Uint32Array(ni) : new Uint16Array(ni);
+  for (let k = 0; k < ni; ++k){
+    const o = k * (wide ? 4 : 2);
+    idx[k] = wide
+      ? ((binI.charCodeAt(o) | (binI.charCodeAt(o+1) << 8) |
+          (binI.charCodeAt(o+2) << 16) | (binI.charCodeAt(o+3) << 24)) >>> 0)
+      : (binI.charCodeAt(o) | (binI.charCodeAt(o+1) << 8));
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.computeVertexNormals();
+  // One material, colour carried by the vertex: faces looking up are floor,
+  // vertical faces are walls, faces looking down are ceiling/underside.
+  const nor = geo.attributes.normal.array;
+  const col = new Float32Array(nv * 3);
+  for (let i = 0; i < nv; ++i){
+    const ny = nor[3*i+1];
+    const c = ny > 0.6 ? [0.30,0.35,0.43]
+            : ny < -0.6 ? [0.20,0.24,0.30]
+            : [0.62,0.70,0.80];
+    col[3*i] = c[0]; col[3*i+1] = c[1]; col[3*i+2] = c[2];
+  }
+  geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return geo;
+}
+
+// --- scene build -----------------------------------------------------------
+function frameIndex(sc, prog){
+  const f = sc.frames;
+  let k = 0;
+  for (let i = 0; i < f.length; ++i) if (f[i].frac <= prog + 1e-6) k = i;
+  return k;
+}
+
+function buildScene(idx){
+  const sc = DATA.scenes[idx];
+  state.scene = idx;
+  clearGroup(meshGroup);
+  meshGroup = new THREE.Group();
+
+  const origin = new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]);
+  const k = frameIndex(sc, state.prog);
+  const geo = geometryFor(sc.frames[k], origin);
+  matWall = new THREE.MeshStandardMaterial({
+    vertexColors: true, roughness: 0.82, metalness: 0.06,
+    emissive: 0x0d1622, emissiveIntensity: 1,
+    transparent: state.alpha < 0.99, opacity: state.alpha,
+    depthWrite: state.alpha >= 0.99, side: THREE.DoubleSide
+  });
+  const mesh = new THREE.Mesh(geo, matWall);
+  meshGroup.add(mesh);
+
+  // ground grid
+  const cx = (sc.world[0] + sc.world[2]) / 2, cy = (sc.world[1] + sc.world[3]) / 2;
+  const span = Math.max(sc.world[2] - sc.world[0], sc.world[3] - sc.world[1]) * 1.35;
+  grid = new THREE.GridHelper(span, Math.round(span / 0.5), 0x1b2b3d, 0x122033);
+  grid.rotation.x = Math.PI / 2;   // GridHelper is xz by default
+  grid.position.set(cx, cy, sc.z_range[0]);
+  meshGroup.add(grid);
+
+  // global path
+  const path = sc.path || [];
+  if (path.length > 1){
+    const pp = new Float32Array(path.length * 3);
+    for (let i = 0; i < path.length; ++i){
+      pp[3*i] = path[i][0]; pp[3*i+1] = path[i][1]; pp[3*i+2] = path[i][2];
+    }
+    const pg = new THREE.BufferGeometry();
+    pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
+    trailPath = new THREE.Line(pg, new THREE.LineBasicMaterial({
+      color: 0x9fe6ff, transparent: true, opacity: 0.9,
+      depthTest: false, depthWrite: false}));
+    trailPath.renderOrder = 7;
+    meshGroup.add(trailPath);
+  }
+
+  // robot body: 0.52 x 0.34 footprint, 0.30 tall
+  const rg = new THREE.BoxGeometry(0.52, 0.34, 0.30);
+  const rm = new THREE.MeshStandardMaterial({color: 0x5ce0a3, metalness: 0.25, roughness: 0.5, transparent: true, opacity: 0.92});
+  robot = new THREE.Mesh(rg, rm);
+  const nose = new THREE.Mesh(
+    new THREE.ConeGeometry(0.09, 0.22, 4),
+    new THREE.MeshStandardMaterial({color: 0xffe08a, roughness: 0.6})
+  );
+  nose.rotation.z = -Math.PI / 2;
+  nose.rotation.x = Math.PI / 2;
+  nose.position.set(0.34, 0, 0);
+  robot.add(nose);
+  const beacon = new THREE.Mesh(
+    new THREE.SphereGeometry(0.11, 12, 10),
+    new THREE.MeshBasicMaterial({color: 0x5ce0a3, transparent: true, opacity: 0.9,
+                                 depthTest: false, depthWrite: false})
+  );
+  beacon.renderOrder = 8;
+  robot.add(beacon);
+  meshGroup.add(robot);
+
+  scene.add(meshGroup);
+
+  // frame the scene
+  const mid = new THREE.Vector3(
+    (sc.world[0]+sc.world[2])/2, (sc.world[1]+sc.world[3])/2, (sc.z_range[0]+sc.z_range[1])/2);
+  const d = Math.max(10, Math.max(sc.world[2]-sc.world[0], sc.world[3]-sc.world[1]) * 2.1,
+                          (sc.z_range[1]-sc.z_range[0]) * 1.5);
+  cam.target.copy(mid);
+  cam.dist = d;
+  applyCam();
+  updateHud(sc);
+}
+
+// --- robot follow / hud ----------------------------------------------------
+function robotAt(idx, prog){
+  const sc = DATA.scenes[idx];
+  const tr = sc.trace || [];
+  if (!tr.length || !robot) return;
+  const tEnd = tr.length - 1;
+  const f = Math.max(0, Math.min(1, prog));
+  const t = f * tEnd;
+  const i0 = Math.floor(t), i1 = Math.min(tEnd, i0 + 1), w = t - i0;
+  const a = tr[i0], b = tr[i1];
+  const x = a[0] + (b[0] - a[0]) * w;
+  const y = a[1] + (b[1] - a[1]) * w;
+  const z = a[2] + (b[2] - a[2]) * w + 0.16;
+  const yaw = a[3] + (((b[3] - a[3] + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * w;
+  robot.position.set(x, y, z);
+  robot.rotation.set(0, 0, yaw);
+}
+
+function updateHud(sc){
+  const k = frameIndex(sc, state.prog);
+  const f = sc.frames[k];
+  const tris = Math.round(f.ni / 3);
+  document.getElementById('hud').innerHTML =
+    '<b>' + sc.name + '</b><br>' +
+    '<span class="k">已扫描点</span> <span class="v">' + f.pts.toLocaleString() + '</span> · ' +
+    '<span class="k">顶点</span> <span class="v">' + f.nv.toLocaleString() + '</span><br>' +
+    '<span class="k">三角面</span> <span class="v">' + tris.toLocaleString() + '</span> · ' +
+    '<span class="k">体素</span> <span class="v">' + DATA.vox + ' m</span><br>' +
+    '<span class="k">这一档</span> <span class="v">t = ' + f.t.toFixed(1) + ' s · ' +
+    Math.round(f.frac * 100) + '% 扫描</span>';
+  document.getElementById('ptsV').textContent = f.pts.toLocaleString();
+}
+
+// --- ui --------------------------------------------------------------------
+const scBox = document.getElementById('scenes');
+DATA.scenes.forEach((sc, i) => {
+  const b = document.createElement('button');
+  b.className = 'chip' + (i === 0 ? ' on' : '');
+  b.textContent = sc.name;
+  b.onclick = () => {
+    scBox.querySelectorAll('.chip').forEach(c => c.classList.remove('on'));
+    b.classList.add('on');
+    state.prog = 1;
+    document.getElementById('prog').value = 100;
+    document.getElementById('progV').textContent = '100%';
+    buildScene(i);
+  };
+  scBox.appendChild(b);
+});
+
+function setAlpha(a){
+  state.alpha = a / 100;
+  document.getElementById('alpha').value = a;
+  document.getElementById('alphaV').textContent = a + '%';
+  document.querySelectorAll('#presets .chip').forEach(c =>
+    c.classList.toggle('on', Number(c.dataset.a) === a));
+  if (matWall){
+    matWall.opacity = state.alpha;
+    matWall.transparent = state.alpha < 0.99;
+    // Solid needs depth writes; translucent must not write depth or the
+    // back faces cull in front of the front ones and the shell disappears.
+    matWall.depthWrite = state.alpha >= 0.99;
+    // Nearly invisible walls need a touch of self-illumination or the shell
+    // dissolves into the dark background.
+    matWall.emissive.setHex(state.alpha < 0.6 ? 0x2a3c55 : 0x0d1622);
+    matWall.needsUpdate = true;
+  }
+}
+document.getElementById('alpha').oninput = e => setAlpha(Number(e.target.value));
+document.querySelectorAll('#presets .chip').forEach(c => c.onclick = () => setAlpha(Number(c.dataset.a)));
+
+document.getElementById('prog').oninput = e => {
+  state.prog = Number(e.target.value) / 100;
+  document.getElementById('progV').textContent = e.target.value + '%';
+  const sc = DATA.scenes[state.scene];
+  const k = frameIndex(sc, state.prog);
+  if (matWall && sc.frames[k]){
+    const old = meshGroup.children[0];
+    if (old){
+      const geo = geometryFor(sc.frames[k], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+      old.geometry.dispose();
+      old.geometry = geo;
+    }
+  }
+  updateHud(sc);
+};
+
+const playBtn = document.getElementById('play');
+playBtn.onclick = () => {
+  state.playing = !state.playing;
+  playBtn.classList.toggle('on', state.playing);
+  playBtn.textContent = state.playing ? '播放' : '暂停';
+};
+document.getElementById('reset').onclick = () => {
+  state.prog = 0;
+  document.getElementById('prog').value = 0;
+  document.getElementById('progV').textContent = '0%';
+  const sc = DATA.scenes[state.scene];
+  const old = meshGroup.children[0];
+  if (old){
+    old.geometry.dispose();
+    old.geometry = geometryFor(sc.frames[frameIndex(sc, 0)], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+  }
+  robotAt(state.scene, 0);
+  updateHud(sc);
+};
+document.getElementById('camReset').onclick = () => {
+  const sc = DATA.scenes[state.scene];
+  cam.target.set((sc.world[0]+sc.world[2])/2, (sc.world[1]+sc.world[3])/2, (sc.z_range[0]+sc.z_range[1])/2);
+  cam.yaw = -0.95; cam.pitch = 0.50;
+  cam.dist = Math.max(10, Math.max(sc.world[2]-sc.world[0], sc.world[3]-sc.world[1]) * 2.1);
+  applyCam();
+};
+
+function resize(){
+  const w = cv.clientWidth || 900, h = cv.clientHeight || 600;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener('resize', resize);
+
+let raf = 0;
+function tick(now){
+  raf = requestAnimationFrame(tick);
+  if (state.playing){
+    const dt = Math.min(0.05, (now - state.t0) / 1000);
+    state.t0 = now;
+    state.prog = state.prog + dt / 26;
+    if (state.prog > 1) state.prog = 1;
+    document.getElementById('prog').value = Math.round(state.prog * 100);
+    document.getElementById('progV').textContent = Math.round(state.prog * 100) + '%';
+    const sc = DATA.scenes[state.scene];
+    const k = frameIndex(sc, state.prog);
+    const old = meshGroup.children[0];
+    if (old && old.userData.k !== k){
+      old.userData.k = k;
+      old.geometry.dispose();
+      old.geometry = geometryFor(sc.frames[k], new THREE.Vector3(sc.world[0], sc.world[1], sc.z_range[0]));
+      updateHud(sc);
+    }
+  }
+  state.t0 = state.t0 || now;
+  robotAt(state.scene, state.prog);
+  renderer.render(scene, camera);
+}
+
+const hp = (location.hash || '').replace('#', '').split(',');
+const initScene = Math.min(DATA.scenes.length - 1, Math.max(0, Number(hp[0]) || 0));
+const initAlpha = hp[1] ? Math.max(8, Math.min(100, Number(hp[1]))) : 100;
+buildScene(initScene);
+setAlpha(initAlpha);
+if (initScene > 0){
+  document.querySelectorAll('#scenes .chip').forEach((c, i) => c.classList.toggle('on', i === initScene));
+}
+resize();
+state.t0 = performance.now();
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

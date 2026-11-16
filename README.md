@@ -389,6 +389,7 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | 4 | [Multifloor Navigation on Go2](docs/multifloor/README.zh-CN.md) | Four-storey missions: per-floor maps, floor switching, stair transitions, `stair_gait` |
 | 5 | [4G Remote Debugging](docs/multifloor/remote-debug.md) | Onboard switch + 4G router: IP plan, tunnel, ROS 1 `ROS_IP`, bandwidth, power |
 | 6 | [LAN Debugging](docs/multifloor/lan-debug.md) | Cable into the switch or the router's local WiFi: static IP, `ROS_IP` switching, loss triage |
+| 7 | [Point Cloud to Mesh Viewer](docs/multifloor/mesh-viewer.md) | Solid mesh built from the swept clouds: transparency, cross-floor route, known limits |
 
 ## 5.3 Feature Status at a Glance
 
