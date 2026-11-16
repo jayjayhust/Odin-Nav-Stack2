@@ -141,6 +141,10 @@ Two implementation notes worth keeping:
 23. **No balustrade.** It exists on the real stair, but drawn solid it hides the one thing this model is for - the risers you can count.
 24. **`stair_bbox`** ships alongside: the model's own extents, so a link can aim the camera at the stair. Clipping still uses the core box, because clipping to the exact box shaves off the cell the meshed stair grows by.
 25. **Clear the core plus a 0.40 m margin.** The sweep leaves a ragged band against the stair - 2,975 cells on the left side alone in the four storey scene - and that band sits outside the declared core, so the model was written with a halo of rubble around it that reads as stray mesh in the middle of the flight.
+26. **Semantic geometry.** The page now defaults to a surface built from the boxes the scenario declares - walls, floors, columns, door gaps - plus the parametric stair, and from no points at all. A floor is one plane, a wall is one elevation, a handrail is one plate, and nothing ragged can appear because nothing ragged is read. The sweep is still there, one chip away.
+27. **Multi storey drops its walls, single storey keeps them.** One storey of walls is a room and should stay; four storeys of walls is a closed glass block that hides every floor and flight. Single storey 16,170 vertices, four storey 26,710.
+28. **Storey cut.** The semantic surface is a closed shell, so 1F/2F/3F/4F slices it at the 3.42 m storey height, keeping the triangles whose centroid falls in that storey.
+
 
 
 

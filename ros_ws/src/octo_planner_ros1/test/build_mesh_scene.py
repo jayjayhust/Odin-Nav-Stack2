@@ -357,7 +357,33 @@ def stair_landing(treads, zones):
             out.append((t[2], y0 + 0.12, x1 - 0.10, y1 - 0.12, t[5] - 0.12, t[5]))
     return out
 
-def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None):
+def _stamp(occ, lo, shape, x0, y0, x1, y1, z0, z1):
+    nx, ny, nz = shape
+    a0 = np.floor(np.array([x0, y0, z0]) / VOX + 1e-9).astype(int) + 1
+    a1 = np.ceil(np.array([x1, y1, z1]) / VOX - 1e-9).astype(int) + 1
+    sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
+    occ[sl] = True
+
+
+def _surface(occ, lo, nx, ny, nz):
+    verts, vmap, tris = [], {}, []
+    for i, j, k in zip(*np.nonzero(occ)):
+        for d in NEIGH:
+            ni, nj, nk = i+d[0], j+d[1], k+d[2]
+            if 0 <= ni < nx and 0 <= nj < ny and 0 <= nk < nz and occ[ni, nj, nk]:
+                continue
+            quad = []
+            for off in FACES[d]:
+                key = ((i+off[0]) + (j+off[1])*nx + (k+off[2])*nx*ny)
+                if key not in vmap:
+                    vmap[key] = len(verts)
+                    verts.append((int(i+off[0]), int(j+off[1]), int(k+off[2])))
+                quad.append(vmap[key])
+            tris += [int(quad[0]), int(quad[1]), int(quad[2]), int(quad[0]), int(quad[2]), int(quad[3])]
+    return verts, tris
+
+
+def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None, clean=False):
     """lo/hi is the voxel-grid origin and its far corner, in world metres.
 
     The grid must cover every point in the scene, so the caller derives it from
@@ -368,6 +394,17 @@ def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None):
     ny = int(np.ceil((hi[1] - lo[1]) / VOX)) + 2
     nz = int(np.ceil((hi[2] - lo[2]) / VOX)) + 2
     occ = np.zeros((nx, ny, nz), bool)
+    if clean:
+        # Semantic mode: no return is used at all. The scene declares its walls,
+        # floors, columns and door frames as boxes, and the stair is parametric,
+        # so a floor is one flat plane, a wall is one vertical plane and a
+        # handrail is one thin plate. Nothing ragged can survive because nothing
+        # ragged is ever read.
+        for tx0, ty0, tx1, ty1, tz0, tz1 in (boxes or []):
+            _stamp(occ, lo, (nx, ny, nz), tx0, ty0, tx1, ty1, tz0, tz1)
+        for tx0, ty0, tx1, ty1, tz0, tz1 in (treads or []):
+            _stamp(occ, lo, (nx, ny, nz), tx0, ty0, tx1, ty1, tz0, tz1)
+        return _surface(occ, lo, nx, ny, nz)
     if len(points):
         idx = np.floor((points - lo) / VOX).astype(int) + 1
         idx[:,0] = np.clip(idx[:,0], 0, nx-1)
@@ -417,21 +454,8 @@ def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None):
         a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
         sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
         occ[sl] = True
-    verts, vmap, tris = [], {}, []
-    for i, j, k in zip(*np.nonzero(occ)):
-        for d in NEIGH:
-            ni, nj, nk = i+d[0], j+d[1], k+d[2]
-            if 0 <= ni < nx and 0 <= nj < ny and 0 <= nk < nz and occ[ni, nj, nk]:
-                continue
-            quad = []
-            for off in FACES[d]:
-                key = ((i+off[0]) + (j+off[1])*nx + (k+off[2])*nx*ny)
-                if key not in vmap:
-                    vmap[key] = len(verts)
-                    verts.append((int(i+off[0]), int(j+off[1]), int(k+off[2])))
-                quad.append(vmap[key])
-            tris += [int(quad[0]), int(quad[1]), int(quad[2]), int(quad[0]), int(quad[2]), int(quad[3])]
-    return verts, tris
+    return _surface(occ, lo, nx, ny, nz)
+
 
 def main():
     src = json.load(open(os.path.join(os.path.dirname(__file__), SRC)))
@@ -454,11 +478,40 @@ def main():
         hi = hi + 1.5 * VOX
         # cumulative cloud at each step of the run
         frames, cum_pts = [], 0
+        geom = None
         for frac in STEPS:
             k = max(1, int(round(frac * n)))
             zs = sc.get("stair") or []
             tr = stair_model(sc.get("obstacles") or [], zs)
             v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi, zs, tr)
+            if frac == STEPS[-1] and not geom:
+                # Walls are the one kind of box left out of the semantic
+                # surface: a storey of them is a closed shell, and four storeys
+                # of shell is a glass block you cannot see a flight through.
+                # Floor slabs, columns, platform blocks and the flight stay, so
+                # what is drawn is the thing being discussed - a floor, a flight
+                # and the posts between them.
+                def is_wall(o):
+                    x0, y0, x1, y1 = o["a"]
+                    z0, z1 = o["z"]
+                    dx, dy, dz = x1 - x0, y1 - y0, z1 - z0
+                    return (min(dx, dy, dz) < 0.35 and dz > 2.0 and max(dx, dy) > 1.5)
+                # A single storey keeps its walls - that is what a room looks
+                # like. Only a multi storey drops them, because stacked shells
+                # hide the floors and flights this view exists to show.
+                multi = (float(sc["z_range"][1]) - float(sc["z_range"][0])) > 3.5
+                solid = [(o["a"][0], o["a"][1], o["a"][2], o["a"][3],
+                          o["z"][0], o["z"][1])
+                         for o in (sc.get("obstacles") or [])
+                         if o.get("k") == 0 and (o.get("appear") or -1) <= 0
+                         and (multi is False or not is_wall(o))]
+                gv, gt = build(np.zeros((0, 3)), lo, hi, zs, tr, boxes=solid, clean=True)
+                i16g = len(gv) < 65535
+                geom = {"nv": len(gv), "ni": len(gt),
+                        "v": base64.b64encode(np.array(gv, dtype=np.int16).reshape(-1).tobytes()).decode(),
+                        "vd": "i16",
+                        "i": base64.b64encode(np.array(gt, dtype=np.uint16 if i16g else np.uint32).tobytes()).decode(),
+                        "id": "u16" if i16g else "u32"}
             # the model's own box, so "只看楼梯" clips to the stair rather than
             # to the whole core, which also contains scan fragments
             if tr:
@@ -510,14 +563,16 @@ def main():
                "planners": [sc["name"].split(" · ")[-1] if " · " in sc["name"] else "single"],
                "trace": sc["trace"], "path": sc["global_path"], "frames": frames,
                "robot": {"half_len": 0.26, "half_wid": 0.17, "base_z": 0.32},
-               "win": win}
+               "geom": geom, "win": win}
         seen[name] = rec
         out["scenes"].append(rec)
     text = json.dumps(out, separators=(",", ":"))
     open(os.path.join(os.path.dirname(__file__), DST), "w").write(text)
     for r in out["scenes"]:
         f = r["frames"][-1]
-        print("%-22s verts %7d tris %7d" % (r["name"], f["nv"], f["ni"]))
+        g = r.get("geom")
+        print("%-22s verts %7d tris %7d   clean %7d / %7d" % (r["name"], f["nv"], f["ni"],
+              g["nv"] if g else 0, g["ni"] if g else 0))
     print("total %.1f MB" % (len(text) / 1e6))
 
 if __name__ == "__main__":

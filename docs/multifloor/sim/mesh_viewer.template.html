@@ -42,12 +42,23 @@
   <span class="lab">场景</span>
   <div class="grp" id="scenes"></div>
   <span class="lab" style="margin-left:10px">透明度</span>
-  <input type="range" id="alpha" min="8" max="100" value="100" step="1">
+  <input type="range" id="alpha" min="8" max="100" value="50" step="1">
   <span class="val" id="alphaV">100%</span>
   <div class="grp" id="presets">
     <button class="chip on" data-a="100">实体</button>
     <button class="chip" data-a="45">半透</button>
     <button class="chip" data-a="15">透视</button>
+  </div>
+  <div class="grp" id="storeyTog">
+    <button class="chip on">全部</button>
+    <button class="chip">1F</button>
+    <button class="chip">2F</button>
+    <button class="chip">3F</button>
+    <button class="chip">4F</button>
+  </div>
+  <div class="grp" id="cleanTog">
+    <button class="chip on">几何</button>
+    <button class="chip">扫描</button>
   </div>
   <div class="grp" id="winTog" style="margin-left:auto">
     <button class="chip on">局部窗口</button>
@@ -150,7 +161,10 @@ cv.addEventListener('wheel', e => {
 
 
 // --- state ----------------------------------------------------------------
-const state = {scene: 0, alpha: 1, prog: 1, playing: true, showWin: true, follow: false, t0: performance.now()};
+// The semantic surface is a closed shell - from outside it is a glass box - so
+// it starts half transparent, which is what lets the floors inside read.
+const state = {scene: 0, alpha: 0.5, prog: 1, playing: true, showWin: true, follow: false,
+               clean: true, storey: 0, t0: performance.now()};
 let meshGroup = null, matWall = null, robot = null, trailPath = null, grid = null;
 
 function clearGroup(g){
@@ -177,6 +191,47 @@ function i16At(bin, o){
 // on every side, so without this the treads are only visible by dropping the
 // whole model to 15% opacity and looking through three walls.
 let CLIP = null;
+
+// The scene ships two surfaces: the meshed sweep and, if the scenario declares
+// its own boxes, a semantic version built from those - flat floor, vertical
+// wall, thin handrail, no rubble. `clean` picks the latter by default.
+function framesOf(sc, prog){
+  if (state.clean && sc.geom) return sc.geom;
+  return sc.frames[Math.max(0, frameIndex(sc, prog))];
+}
+// A storey band, in world z. The semantic surface is a closed shell, so four
+// floors stacked read as one fogged block; cutting to a single storey instead
+// shows exactly that storey's floor, walls and flight.
+const STOREY_H = 3.42;
+function bandOf(sc){
+  if (!state.storey || !state.clean) return null;
+  const base = sc.stair && sc.stair[0] ? sc.stair[0][4] : 0;
+  const k = state.storey - 1;
+  return [base + k * STOREY_H - 0.12, base + (k + 1) * STOREY_H + 0.12];
+}
+
+// Keeps only the triangles whose centroid falls inside the band. The index has
+// to go back as a typed BufferAttribute - a bare array leaves the index empty
+// and the canvas black.
+function clipBand(geo, band){
+  const pos = geo.getAttribute('position'), idx = geo.getIndex();
+  if (!idx) return geo;
+  const keep = [];
+  for (let i = 0; i < idx.count; i += 3){
+    const a = idx.getX(i), b = idx.getX(i+1), c = idx.getX(i+2);
+    const z = (pos.getZ(a) + pos.getZ(b) + pos.getZ(c)) / 3;
+    if (z >= band[0] && z <= band[1]) keep.push(a, b, c);
+  }
+  geo.setIndex(new THREE.BufferAttribute(new Uint32Array(keep), 1));
+  geo.computeVertexNormals();
+  return geo;
+}
+
+function geoOf(sc, prog){
+  const geo = geometryFor(framesOf(sc, prog), new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
+  const band = bandOf(sc);
+  return band ? clipBand(geo, band) : geo;
+}
 
 function geometryFor(frame, origin){
   const bin = atob(frame.v);
@@ -359,7 +414,7 @@ function buildScene(idx){
 
   const origin = new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]);
   const k = frameIndex(sc, state.prog);
-  const geo = geometryFor(sc.frames[k], origin);
+  const geo = geoOf(sc, state.prog);
   matWall = new THREE.MeshStandardMaterial({
     vertexColors: true, roughness: 0.82, metalness: 0.06,
     emissive: 0x0d1622, emissiveIntensity: 1,
@@ -559,8 +614,7 @@ document.querySelector('#stairTog .chip').onclick = e => {
   const old = meshGroup.children[0];
   if (old){
     old.geometry.dispose();
-    old.geometry = geometryFor(sc.frames[frameIndex(sc, state.prog)],
-                               new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
+    old.geometry = geoOf(sc, state.prog);
   }
   if (CLIP){
     const c = CLIP;
@@ -578,7 +632,7 @@ document.getElementById('prog').oninput = e => {
   if (matWall && sc.frames[k]){
     const old = meshGroup.children[0];
     if (old){
-      const geo = geometryFor(sc.frames[k], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
+      const geo = geoOf(sc, state.prog);
       old.geometry.dispose();
       old.geometry = geo;
     }
@@ -604,6 +658,24 @@ document.getElementById('reset').onclick = () => {
   updateHud(sc);
   updateWin(sc, state.prog);
 };
+document.querySelectorAll('#storeyTog .chip').forEach((c, i) => c.onclick = e => {
+  state.storey = i;
+  document.querySelectorAll('#storeyTog .chip').forEach((x, j) => x.classList.toggle('on', j === i));
+  const sc = DATA.scenes[state.scene];
+  const old = meshGroup.children[0];
+  if (old){ old.geometry.dispose(); old.geometry = geoOf(sc, state.prog); }
+  updateHud(sc);
+});
+document.querySelectorAll('#cleanTog .chip').forEach((c, i) => c.onclick = e => {
+  state.clean = (i === 0);
+  state.alpha = i === 0 ? 0.5 : 1;
+  document.getElementById('alpha').value = Math.round(state.alpha*100);
+  document.querySelectorAll('#cleanTog .chip').forEach((x, j) => x.classList.toggle('on', j === i));
+  const sc = DATA.scenes[state.scene];
+  const old = meshGroup.children[0];
+  if (old){ old.geometry.dispose(); old.geometry = geoOf(sc, state.prog); }
+  updateHud(sc);
+});
 document.querySelector('#followTog .chip').onclick = e => {
   state.follow = !state.follow;
   e.currentTarget.classList.toggle('on', state.follow);
@@ -646,7 +718,7 @@ function tick(now){
     if (old && old.userData.k !== k){
       old.userData.k = k;
       old.geometry.dispose();
-      old.geometry = geometryFor(sc.frames[k], new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
+      old.geometry = geoOf(sc, state.prog);
       updateHud(sc);
     }
   }
@@ -686,8 +758,7 @@ if (hp[2]){
   const old0 = meshGroup.children[0];
   if (old0){
     old0.geometry.dispose();
-    old0.geometry = geometryFor(sc0.frames[frameIndex(sc0, initProg)],
-                                new THREE.Vector3(sc0.org[0], sc0.org[1], sc0.org[2]));
+    old0.geometry = geoOf(sc0, initProg);
   }
   robotAt(initScene, initProg);
   updateHud(sc0);
@@ -715,15 +786,16 @@ if (hp[7] === '1' && DATA.scenes[initScene].stair && DATA.scenes[initScene].stai
   const g0 = meshGroup.children[0];
   if (g0){
     g0.geometry.dispose();
-    g0.geometry = geometryFor(DATA.scenes[initScene].frames[frameIndex(DATA.scenes[initScene], state.prog)],
-                              new THREE.Vector3(DATA.scenes[initScene].org[0],
-                                                DATA.scenes[initScene].org[1],
-                                                DATA.scenes[initScene].org[2]));
+    g0.geometry = geoOf(DATA.scenes[initScene], state.prog);
   }
   const c = CLIP;
   cam.target.set((c[0] + c[1]) / 2, (c[2] + c[3]) / 2, (c[4] + c[5]) / 2);
   if (!hp[3]) cam.dist = 6;
   applyCam();
+}
+if (hp[8]){  // storey cut: 0 all, 1..4 a single floor
+  state.storey = Math.max(0, Math.min(4, Number(hp[8]) || 0));
+  document.querySelectorAll('#storeyTog .chip').forEach((x, j) => x.classList.toggle('on', j === state.storey));
 }
 if (hp[4] === '1'){
   state.follow = true;
