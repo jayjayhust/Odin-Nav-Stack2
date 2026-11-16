@@ -871,6 +871,14 @@ if (location.hash.indexOf('demo') >= 0){
       }
       document.getElementById('go').disabled = false;
       document.getElementById('go').click();
+      // #demo,close pulls the camera in so a screenshot shows the floor plate
+      // rather than the whole block
+      if (location.hash.indexOf('close') >= 0){
+        cam.dist = cam.dist * 0.45;
+        cam.target.set(m.lo[0] + m.nx*m.res*0.5, m.lo[1] + m.ny*m.res*0.5,
+                       m.lo[2] + 6*m.res*0.5);
+        applyCam();
+      }
     }, 500);
   }, 200);
 }
