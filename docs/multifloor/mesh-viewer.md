@@ -67,8 +67,10 @@ The paws are at z = 0, matching the `z = 0` in `trace`, so nothing is lifted.
 | ring | cyan | the region the planner may use, centred on the sampled pose |
 | solid cells | red | cells the sensor actually returned as occupied |
 | translucent cells | amber | cells that are only solid because of the two-cell inflation (`inflate(2)`, 0.20 m) |
+| dot field | grey | cells the trunk band (`base+0.24…0.44 m`) never observed |
 
-Keeping these apart is the whole point: without it you cannot tell what is really there from what is only a safety margin.
+Keeping these apart is the whole point: without it you cannot tell what is really there from what is only a safety margin,
+nor from what was never looked at.
 The window is sampled every 0.5 s (`step % 25`), giving 40 / 61 / 57 / 82 / 302 frames across the five scenes.
 
 Two implementation notes worth keeping:
@@ -109,6 +111,19 @@ Two implementation notes worth keeping:
    a stair tread reads as empty.
 8. **The inflation layer belongs to the DWA grid.** In the simulator NeuPAN uses a point-set hard constraint
    (< 0.22 m) instead, so the amber ring is only a reference for it, not the criterion it actually applies.
+9. **The amber ring has gaps, from four causes**: the window is a disc, so nothing outside it is sampled; the
+   cloud is sparse, so the wall itself has holes and the ring follows them; inflation inside a stair core is
+   removed on purpose (a 0.30 m tread plus 0.20 m on both sides leaves no climbable cell, and `stair_gait`
+   needs it); and unobserved cells are the grey field, not empty ground. Cell-by-cell inside the disc, the
+   expected ring is covered 82.5% / 88.8% / 69.9% / 54.1% / 61.1% for office, corridor, narrow, stair, four.
+10. **The `skip_standing_surfaces` trade-off.** Skipping occupied cells whose ceiling reads free keeps floors
+    and tabletops from inflating themselves, but it also skips the top face of low obstacles. Turning that skip
+    off (`NAVSIM_SKIP_SURFACES` unset) lets the inflation eat a 1.2 m doorway, and NeuPAN then walks into an
+    oncoming pedestrian at 13.4 s (measured; DWA is unaffected). The skip therefore stays: a thinner ring beside
+    a low obstacle, rather than a dead scenario.
+11. **Inflation is rebuilt every 0.5 s with the map** (`deinflate` + `inflate`). It used to run once at build
+    time, and `scan()` writes its observation back into a cell the inflation had recoloured (it only skips cells
+    still marked `kFree`), so the ring beside a wall was erased one cell at a time.
 
 ## 7. Reproducing
 

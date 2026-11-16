@@ -214,8 +214,8 @@ function geometryFor(frame, origin){
 // occupied; amber cells are only solid because of the two-cell inflation the
 // planner applies. Promise: the disc follows the robot continuously, the cell
 // pattern refreshes at the 0.5 s mapping period it was recorded at.
-const WIN_COL = {occ: 0xff5c5c, infl: 0xffb03a};
-let winGroup = null, winMeshOcc = null, winMeshInfl = null, winRing = null, winFrameKey = -1;
+const WIN_COL = {occ: 0xff5c5c, infl: 0xffb03a, unk: 0x5f6f80};
+let winGroup = null, winMeshOcc = null, winMeshInfl = null, winMeshUnk = null, winRing = null, winFrameKey = -1;
 
 function makeWinGroup(sc){
   const g = new THREE.Group();
@@ -272,20 +272,23 @@ function updateWin(sc, prog){
     const f = sc.win.frames[k];
     const side = sc.win.side, res = sc.win.res, r = sc.win.r;
     const bm = bytesToInts(f.m);
-    const occ = [], infl = [];
+    const occ = [], infl = [], unk = [];
     for (let b = 0; b < side; ++b){
       for (let a = 0; a < side; ++a){
         const v = bm[b * side + a];
         if (v === 2) occ.push([a, b]);
         else if (v === 1) infl.push([a, b]);
+        else if (v === 3) unk.push([a, b]);
       }
     }
-    for (const m of [winMeshOcc, winMeshInfl]){
+    for (const m of [winMeshOcc, winMeshInfl, winMeshUnk]){
       if (m){ winGroup.remove(m); m.geometry.dispose(); }
     }
-    winMeshOcc = quadStrip(occ, side, res, r, WIN_COL.occ, 0.85);
-    winMeshInfl = quadStrip(infl, side, res, r, WIN_COL.infl, 0.38);
-    for (const m of [winMeshOcc, winMeshInfl]){
+    // unseen first, then the ring, then the raw returns on top
+    winMeshUnk  = quadStrip(unk,  side, res, r, WIN_COL.unk,  0.16);
+    winMeshInfl = quadStrip(infl, side, res, r, WIN_COL.infl, 0.40);
+    winMeshOcc  = quadStrip(occ,  side, res, r, WIN_COL.occ,  0.88);
+    for (const m of [winMeshUnk, winMeshInfl, winMeshOcc]){
       if (m){ m.renderOrder = 9; winGroup.add(m); }
     }
   }

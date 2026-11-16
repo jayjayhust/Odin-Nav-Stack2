@@ -640,6 +640,33 @@ void stampPoint(VoxelGrid& g, const Point& p) {
 // The mission map = what Odin1 already surveyed (prior) + what the live sweep
 // sees. Anchoring the global route on the prior is what lets a goal 12 m away
 // be planned at all: a 4 m sensor cannot see it from the start pose.
+// Re-derive the inflation layer from the current occupancy. Doing this once,
+// before the first sweep, made the layer a snapshot: scan() writes the real
+// observation back into a cell the inflation had recoloured (it only skips a
+// cell that is still kFree), so a wall's own ring was erased one cell at a time
+// and the local window showed free ground 0.1 m off the wall. Rebuilding it on
+// the same 0.5 s clock as the map keeps the two consistent.
+void rebuildInflation(VoxelGrid& g, const Scenario* sc) {
+  if (getenv("NAVSIM_NO_INFLATE")) return;
+  g.deinflate();
+  g.inflate(2, 0, /*skip_standing_surfaces=*/getenv("NAVSIM_SKIP_SURFACES") != nullptr);
+  // Inside a stair core the horizontal inflation has to go. A 0.30 m tread
+  // with a 0.20 m side expansion from the next riser leaves two thirds of the
+  // standing cell inflated, and the dog cannot climb a staircase the planner
+  // refuses to enter. Stair runs are executed by stair_gait anyway; the
+  // upstands and the walls are the real constraint there.
+  if (sc && !sc->stair.empty()) {
+    for (int iz = 0; iz < g.nz(); ++iz)
+      for (int iy = 0; iy < g.ny(); ++iy)
+        for (int ix = 0; ix < g.nx(); ++ix) {
+          if (g.at(ix, iy, iz) != VoxelGrid::kInflated) continue;
+          double wx, wy, wz;
+          g.indexToWorld(ix, iy, iz, wx, wy, wz);
+          if (inStair(*sc, wx, wy, wz)) g.set(ix, iy, iz, VoxelGrid::kFree);
+        }
+  }
+}
+
 void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
              const VoxelGrid* prior = nullptr, const Scenario* sc = nullptr) {
   g.clear();
@@ -702,28 +729,19 @@ void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
           g.set(ix, iy, iz, v);
         }
   }
-  // 0.20 m of inflation, plus the 0.20 m envelope sampled by blocked2D, is
+// 0.20 m of inflation, plus the 0.20 m envelope sampled by blocked2D, is
   // the conservative pair for a trunk half width of 0.17 m: 3 cells on both
   // sides closed a 1.6 m corridor completely once a bin was in it, which the
   // real dog walks through.
-  if (!getenv("NAVSIM_NO_INFLATE"))
-    g.inflate(2, 0, /*skip_standing_surfaces=*/true);
+  // Skip nothing. Treating every occupied cell whose ceiling read as free as a
+  // standing surface also skipped the top face of 0.5 m obstacles, and the
+  // cells two out from them stayed kFree - a 54-cell gap in the ring around
+  // narrow_gate's bin, which the local window drew as empty ground and which
+  // DWA would have driven through. Inflating them as well leaves the floor
+  // inflated one voxel below the trunk band, out of cellBlocked's 0.24..0.44
+  // reach, and all ten scenarios still reach without a collision.
+  rebuildInflation(g, sc);
 
-  // Inside a stair core the horizontal inflation has to go. A 0.30 m tread
-  // with a 0.20 m side expansion from the next riser leaves two thirds of the
-  // standing cell inflated, and the dog cannot climb a staircase the planner
-  // refuses to enter. Stair runs are executed by stair_gait anyway; the
-  // upstands and the walls are the real constraint there.
-  if (sc && !sc->stair.empty()) {
-    for (int iz = 0; iz < g.nz(); ++iz)
-      for (int iy = 0; iy < g.ny(); ++iy)
-        for (int ix = 0; ix < g.nx(); ++ix) {
-          if (g.at(ix, iy, iz) != VoxelGrid::kInflated) continue;
-          double wx, wy, wz;
-          g.indexToWorld(ix, iy, iz, wx, wy, wz);
-          if (inStair(*sc, wx, wy, wz)) g.set(ix, iy, iz, VoxelGrid::kFree);
-        }
-  }
 }
 
 // Survey stands: one sweep every 2.4 m, which is roughly what an operator gets
@@ -974,6 +992,7 @@ struct Run {
     std::vector<std::array<int, 2>> cells;     // dx, dy from the window corner
     std::vector<std::array<int, 2>> occ;       // raw occupancy, before inflation
     std::vector<std::array<int, 2>> infl;      // inflation ring only
+    std::vector<std::array<int, 2>> unk;       // never observed inside the band
   };
   std::vector<LocalWin> wins;
 };
@@ -1198,6 +1217,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
 
     // 0.5 s mapping refresh
     if (step % 25 == 0) {  // 0.5 s: mapping refresh, and one local window
+      rebuildInflation(grid, &sc);
       {
         // Only the box travels: the global grid is inflated once, but what the
         // local planner may use is the part of it inside 2 m of the robot. This
@@ -1218,16 +1238,22 @@ Run simulate(const Scenario& sc, unsigned seed) {
             // Split the two states the local planner distinguishes: a cell the
             // sensor actually returned as occupied, versus one that is only
             // solid because of the two-cell inflation around a real return.
-            bool has_occ = false, has_infl = false;
+            // Three states, not two. inflate(2) only recolours cells that are
+            // known free, so the shadow a wall casts into an unobserved cell
+            // stays kUnknown - and drawing that as empty reads as a broken
+            // inflation ring. Carry it explicitly instead.
+            bool has_occ = false, has_infl = false, has_unk = false;
             for (int dz = 0; dz <= 2; ++dz) {
               const int jz = iz + dz;
               if (jz >= grid.nz()) break;
               const uint8_t v = grid.at(ix, iy, jz);
               if (v == VoxelGrid::kOccupied) { has_occ = true; break; }
               if (v == VoxelGrid::kInflated) has_infl = true;
+              if (v == VoxelGrid::kUnknown) has_unk = true;
             }
             if (has_occ) lw.occ.push_back({a, b});
             else if (has_infl) lw.infl.push_back({a, b});
+            else if (has_unk) lw.unk.push_back({a, b});
             if (has_occ || has_infl) lw.cells.push_back({a, b});
           }
         }
@@ -1755,9 +1781,9 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
       if (i) o << ",";
       const auto& w = r.wins[i];
       o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy;
-      const std::vector<std::array<int, 2>>* lists[3] = {&w.cells, &w.occ, &w.infl};
-      const char* names[3] = {"cells", "occ", "infl"};
-      for (int li = 0; li < 3; ++li) {
+      const std::vector<std::array<int, 2>>* lists[4] = {&w.cells, &w.occ, &w.infl, &w.unk};
+      const char* names[4] = {"cells", "occ", "infl", "unk"};
+      for (int li = 0; li < 4; ++li) {
         o << ",\"" << names[li] << "\":[";
         const auto& vl = *lists[li];
         for (size_t j = 0; j < vl.size(); ++j) {

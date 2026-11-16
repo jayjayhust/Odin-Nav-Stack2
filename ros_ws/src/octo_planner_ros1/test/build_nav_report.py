@@ -260,6 +260,7 @@ PAGE = r"""<!DOCTYPE html>
         ctx.fillRect(mp.sx(wx) - 1.2, mp.sy(wy) - 1.2, 2.4, 2.4);
       }
     };
+    drawCells(lw.unk, 'rgba(120,140,160,0.30)');
     drawCells(lw.infl, 'rgba(242,178,74,0.42)');
     drawCells(lw.occ, 'rgba(255,92,92,0.85)');
     ctx.strokeStyle = 'rgba(90,175,255,0.85)';

@@ -102,9 +102,12 @@ def main():
                            "vd": "i16", "i": base64.b64encode(ia.tobytes()).decode(),
                            "id": "u16" if i16 else "u32"})
         # Local-planner window: a 2 m disc around the dog, recorded every 0.5 s.
-        # Two layers are kept apart - cells the sensor actually returned as
-        # occupied, and cells that are solid only because of the two-cell
-        # inflation - because that difference is the whole point of showing it.
+        # Three layers are kept apart - cells the sensor actually returned as
+        # occupied, cells that are solid only because of the two-cell
+        # inflation, and cells that band was never observed in at all. The
+        # third matters: inflate(2) only recolours known-free cells, so the
+        # shadow a wall casts stays unknown, and drawing that as empty ground
+        # reads as a broken inflation ring.
         win = None
         lc = sc.get("local_costmap") or {}
         if lc.get("frames"):
@@ -115,6 +118,8 @@ def main():
                 bm = np.zeros((side, side), np.uint8)
                 for a, b in f.get("infl", []):
                     if 0 <= a < side and 0 <= b < side: bm[a, b] = 1
+                for a, b in f.get("unk", []):
+                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 3
                 for a, b in f.get("occ", []):
                     if 0 <= a < side and 0 <= b < side: bm[a, b] = 2
                 boxes.append({"t": f["t"], "cx": f["cx"], "cy": f["cy"],
