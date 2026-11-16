@@ -359,8 +359,12 @@ def stair_landing(treads, zones):
 
 def _stamp(occ, lo, shape, x0, y0, x1, y1, z0, z1):
     nx, ny, nz = shape
-    a0 = np.floor(np.array([x0, y0, z0]) / VOX + 1e-9).astype(int) + 1
-    a1 = np.ceil(np.array([x1, y1, z1]) / VOX - 1e-9).astype(int) + 1
+    # World metres in, grid indices out. The origin has to come off first:
+    # these boxes carry world coordinates while the grid starts at `lo`, and
+    # without the subtraction the model lands metres away from the robot and
+    # from the floor it is supposed to sit on.
+    a0 = np.floor((np.array([x0, y0, z0]) - lo) / VOX + 1e-9).astype(int) + 1
+    a1 = np.ceil((np.array([x1, y1, z1]) - lo) / VOX - 1e-9).astype(int) + 1
     sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
     occ[sl] = True
 
@@ -450,8 +454,8 @@ def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None, cl
     # They are the one thing here that is already exact - a flat box at the
     # level its own balustrade panel reports - so nothing needs to touch them.
     for tx0, ty0, tx1, ty1, tz0, tz1 in (treads or []) + (boxes or []) + (landings or []):
-        a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
-        a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
+        a0 = np.floor((np.array([tx0, ty0, tz0]) - lo) / VOX + 1e-9).astype(int) + 1
+        a1 = np.ceil((np.array([tx1, ty1, tz1]) - lo) / VOX - 1e-9).astype(int) + 1
         sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
         occ[sl] = True
     return _surface(occ, lo, nx, ny, nz)

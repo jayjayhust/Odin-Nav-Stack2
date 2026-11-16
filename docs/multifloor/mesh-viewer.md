@@ -144,6 +144,8 @@ Two implementation notes worth keeping:
 26. **Semantic geometry.** The page now defaults to a surface built from the boxes the scenario declares - walls, floors, columns, door gaps - plus the parametric stair, and from no points at all. A floor is one plane, a wall is one elevation, a handrail is one plate, and nothing ragged can appear because nothing ragged is read. The sweep is still there, one chip away.
 27. **Multi storey drops its walls, single storey keeps them.** One storey of walls is a room and should stay; four storeys of walls is a closed glass block that hides every floor and flight. Single storey 16,170 vertices, four storey 26,710.
 28. **Storey cut.** The semantic surface is a closed shell, so 1F/2F/3F/4F slices it at the 3.42 m storey height, keeping the triangles whose centroid falls in that storey.
+29. **Boxes must lose the origin before they become cell numbers.** The scene states its boxes in world metres; the voxel grid starts at `lo`. Taking the metres straight as indices shifts the whole model by metres - 5.1 m / 3.0 m in the two storey scene, which put the stair beside the robot instead of under it.
+
 
 
 
