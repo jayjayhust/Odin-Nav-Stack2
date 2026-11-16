@@ -140,6 +140,8 @@ Two implementation notes worth keeping:
 22. **A step is a tread plate plus the riser under its leading edge, not a filled block.** Blocks stack into one sloping wall and the count disappears; the L-shaped skeleton keeps nine risers countable from any angle.
 23. **No balustrade.** It exists on the real stair, but drawn solid it hides the one thing this model is for - the risers you can count.
 24. **`stair_bbox`** ships alongside: the model's own extents, so a link can aim the camera at the stair. Clipping still uses the core box, because clipping to the exact box shaves off the cell the meshed stair grows by.
+25. **Clear the core plus a 0.40 m margin.** The sweep leaves a ragged band against the stair - 2,975 cells on the left side alone in the four storey scene - and that band sits outside the declared core, so the model was written with a halo of rubble around it that reads as stray mesh in the middle of the flight.
+
 
 
 ## 7. Reproducing

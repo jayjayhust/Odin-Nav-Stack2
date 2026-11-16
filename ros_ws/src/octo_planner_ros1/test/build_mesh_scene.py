@@ -397,7 +397,15 @@ def build(points, lo, hi, zones=None, treads=None, boxes=None, landings=None):
     # Only the flight's own volume is cleared, not the whole core box: the
     # core also holds the walls and columns the sweep did return, and deleting
     # those left a storey with nothing but stairs floating in a void.
-    for sl in zone_slices(lo, zones or [], occ.shape):
+    # Clear the core and a margin around it. The sweep leaves a ragged band
+    # right against the stair - 2,975 cells on its left side alone in the four
+    # storey scene - and since that band sits outside the declared core, the
+    # model was written next to a halo of rubble that reads as broken mesh in
+    # the middle of the flight.
+    pad = 0.40
+    widened = [(z[0] - pad, z[1] + pad, z[2] - pad, z[3] + pad, z[4], z[5])
+               for z in (zones or [])]
+    for sl in zone_slices(lo, widened, occ.shape):
         occ[sl] = False
     # The treads are added after the morphology, not before: the segments of a
     # flight are one cell thick and one cell apart in z, so any closing pass
