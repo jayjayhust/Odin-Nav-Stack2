@@ -136,6 +136,10 @@ Two implementation notes worth keeping:
 18. **Reset moves the dog, it does not rebuild the geometry.** With one full frame, rebuilding on reset only fell back to the band matching prog=0 - which reads as the map going partial again.
 19. **Three real bugs.** (a) `appear` is **-1** for a static box, and `if o.get("appear")` therefore discarded every balustrade, floor and landing; (b) the landing test used the core's far x instead of the treads' far x, so landings were always empty; (c) the per-run count was written as `n//2`, halving 18 steps to 9.
 20. **Fragment filter.** 26-connected components below 48 cells are dropped: closing joins adjacent cells, nothing joins a fragment that hangs on its own.
+21. **The two runs share one dividing line.** Outbound against the upper balustrade, return against the lower, each one clear width (1.2 m) deep, with the well between them. Treating both balustrade lines as outer edges gave the return run 0.12 m - a paper strip - and stacking those is what produced the rubble pile of flights.
+22. **A step is a tread plate plus the riser under its leading edge, not a filled block.** Blocks stack into one sloping wall and the count disappears; the L-shaped skeleton keeps nine risers countable from any angle.
+23. **No balustrade.** It exists on the real stair, but drawn solid it hides the one thing this model is for - the risers you can count.
+24. **`stair_bbox`** ships alongside: the model's own extents, so a link can aim the camera at the stair. Clipping still uses the core box, because clipping to the exact box shaves off the cell the meshed stair grows by.
 
 
 ## 7. Reproducing
