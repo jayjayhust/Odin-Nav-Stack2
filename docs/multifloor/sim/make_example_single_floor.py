@@ -51,10 +51,11 @@ for i in range(4):
 
 # --------------------------------------------------------- down-going pit --
 box(PX0, PX1, PY0, PY1, -PLAT - 0.10, -PLAT, "pit-floor")
-box(PX0, PX0 + 0.06, PY0, PY1, -PLAT, 0, "pit-wall")
+# No coping wall around the hole. It was 0.06 m of decoration, and its top
+# face sits exactly at floor level: the 3x3 stamp that makes a floor plate
+# solid then lays an occupied layer across the whole pit mouth, which caps the
+# descending flight at floor height and severs it from the pit floor.
 box(PX1 - 0.06, PX1, PY0, PY1, -PLAT, 0, "pit-wall")
-box(PX0, PX1, PY0, PY0 + 0.06, -PLAT, 0, "pit-wall")
-box(PX0, PX1, PY1 - 0.06, PY1, -PLAT, 0, "pit-wall")
 # four treads dropping west into the pit from the open edge at x 8.80
 for i in range(4):
     x0 = PX0 + i * 0.45

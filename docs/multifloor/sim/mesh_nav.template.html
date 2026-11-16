@@ -601,6 +601,9 @@ function probeRow(m, y, x0, x1, label){
     }
     out.push(i + ':walk[' + free.join(',') + ']raw[' + raw.join(' ') + ']');
   }
+  console.log('PROBE ' + label + ' lo=' + JSON.stringify(lo.map(v=>+v.toFixed(3))) +
+              ' res=' + res + ' nz=' + nz + ' j=' + j + ' y=' + (lo[1]+(j+0.5)*res).toFixed(3) +
+              ' z(k=8)=' + (lo[2]+8.5*res).toFixed(3));
   console.log('PROBE ' + label + ' ' + out.join(' '));
 }
 
