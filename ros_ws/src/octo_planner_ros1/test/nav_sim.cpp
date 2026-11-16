@@ -667,6 +667,22 @@ void rebuildInflation(VoxelGrid& g, const Scenario* sc) {
   }
 }
 
+static std::string base64(const unsigned char* d, size_t n) {
+  static const char* T =
+      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+  std::string out;
+  out.reserve((n + 2) / 3 * 4);
+  for (size_t i = 0; i < n; i += 3) {
+    unsigned v = (unsigned)d[i] << 16;
+    if (i + 1 < n) v |= (unsigned)d[i + 1] << 8;
+    if (i + 2 < n) v |= (unsigned)d[i + 2];
+    out += T[(v >> 18) & 63]; out += T[(v >> 12) & 63];
+    out += (i + 1 < n) ? T[(v >> 6) & 63] : '=';
+    out += (i + 2 < n) ? T[v & 63] : '=';
+  }
+  return out;
+}
+
 void rebuild(VoxelGrid& g, const std::vector<Point>& pts,
              const VoxelGrid* prior = nullptr, const Scenario* sc = nullptr) {
   g.clear();
@@ -1215,11 +1231,13 @@ Run simulate(const Scenario& sc, unsigned seed) {
       scan(obs, t, x, y, base_z, yaw, sm, rng, cloud, sc.ztol);
     }
 
-    // 0.5 s mapping refresh
-    if (step % 25 == 0) {  // 0.5 s: mapping refresh, and one local window
+    // 0.3 s mapping refresh. It used to be 0.5 s, and a 0.28 m/s pedestrian
+    // closes 0.14 m between two samples - more than a whole grid cell, so the
+    // ring around him was drawn half a stride behind where he actually stood.
+    if (step % 15 == 0) {  // 0.3 s: mapping refresh, and one local window
       rebuildInflation(grid, &sc);
       {
-        // Only the box travels: the global grid is inflated once, but what the
+        // Only the slice travels: the grid is inflated as a whole, but what the
         // local planner may use is the part of it inside 2 m of the robot. This
         // records exactly that slice, including which cells are solid (a tread
         // is solid, the space above it is not).
@@ -1776,23 +1794,16 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
   }
   o << "]";
   {
-    o << ",\"local_costmap\":{\"r\":2.0,\"res\":0.10,\"frames\":[";
+    o << ",\"local_costmap\":{\"r\":2.0,\"res\":0.10,\"side\":41,\"frames\":[";
     for (size_t i = 0; i < r.wins.size(); ++i) {
       if (i) o << ",";
       const auto& w = r.wins[i];
-      o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy;
-      const std::vector<std::array<int, 2>>* lists[4] = {&w.cells, &w.occ, &w.infl, &w.unk};
-      const char* names[4] = {"cells", "occ", "infl", "unk"};
-      for (int li = 0; li < 4; ++li) {
-        o << ",\"" << names[li] << "\":[";
-        const auto& vl = *lists[li];
-        for (size_t j = 0; j < vl.size(); ++j) {
-          if (j) o << ",";
-          o << "[" << vl[j][0] << "," << vl[j][1] << "]";
-        }
-        o << "]";
-      }
-      o << "}";
+      std::vector<unsigned char> bm(41 * 41, 0);
+      for (const auto& c : w.infl) if (c[0] >= 0 && c[0] < 41 && c[1] >= 0 && c[1] < 41) bm[c[1] * 41 + c[0]] = 1;
+      for (const auto& c : w.unk)  if (c[0] >= 0 && c[0] < 41 && c[1] >= 0 && c[1] < 41) bm[c[1] * 41 + c[0]] = 3;
+      for (const auto& c : w.occ)  if (c[0] >= 0 && c[0] < 41 && c[1] >= 0 && c[1] < 41) bm[c[1] * 41 + c[0]] = 2;
+      o << "{\"t\":" << w.t << ",\"cx\":" << w.cx << ",\"cy\":" << w.cy
+        << ",\"m\":\"" << base64(bm.data(), bm.size()) << "\"}";
     }
     o << "]}";
   }

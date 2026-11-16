@@ -115,13 +115,10 @@ def main():
             side = int(np.floor(2 * r / res)) + 1
             boxes = []
             for f in lc["frames"]:
-                bm = np.zeros((side, side), np.uint8)
-                for a, b in f.get("infl", []):
-                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 1
-                for a, b in f.get("unk", []):
-                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 3
-                for a, b in f.get("occ", []):
-                    if 0 <= a < side and 0 <= b < side: bm[a, b] = 2
+                # nav_sim ships each frame as a packed byte image already
+                # (0 empty / 1 inflation / 2 occupied / 3 unseen), so it is
+                # copied through rather than rebuilt from the cell lists.
+                bm = np.frombuffer(base64.b64decode(f["m"]), dtype=np.uint8)
                 boxes.append({"t": f["t"], "cx": f["cx"], "cy": f["cy"],
                               "m": base64.b64encode(bm.tobytes()).decode()})
             win = {"r": r, "res": res, "side": side, "frames": boxes}

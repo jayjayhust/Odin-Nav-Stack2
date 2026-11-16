@@ -295,11 +295,20 @@ function updateWin(sc, prog){
       if (m){ m.renderOrder = 9; winGroup.add(m); }
     }
   }
-  // Place the disc at the centre it was recorded at, not at the robot's live
-  // pose: the cells are offsets from that corner, so mixing the two would slide
-  // the pattern off the disc whenever the dog moves within a 0.5 s sample.
-  const f = sc.win.frames[k];
-  winGroup.position.set(f.cx, f.cy, robot.position.z + 0.006);
+  // Cells come from the nearest sample, but the disc's centre is interpolated
+  // between the two bracketing ones. A sample is 0.3 s apart and a walking dog
+  // covers 0.15 m in that time, so snapping the centre made the ring trail the
+  // robot by a full cell - visible as the pattern sliding against the floor.
+  const fr = sc.win.frames;
+  let kA = 0, kB = 0;
+  for (let i = 1; i < fr.length; ++i){
+    if (fr[i].t <= t) kA = i; else { kB = i; break; }
+  }
+  if (!kB) kB = kA;
+  const alp = kB > kA ? Math.min(1, Math.max(0, (t - fr[kA].t) / Math.max(1e-6, fr[kB].t - fr[kA].t))) : 0;
+  winGroup.position.set(fr[kA].cx + (fr[kB].cx - fr[kA].cx) * alp,
+                        fr[kA].cy + (fr[kB].cy - fr[kA].cy) * alp,
+                        robot.position.z + 0.006);
 }
 
 // --- scene build -----------------------------------------------------------

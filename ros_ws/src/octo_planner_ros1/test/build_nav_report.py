@@ -252,17 +252,28 @@ PAGE = r"""<!DOCTYPE html>
     const pxR = Math.abs(mp.sx(lw.cx + r) - cx);
     ctx.fillStyle = 'rgba(90,175,255,0.05)';
     ctx.beginPath(); ctx.arc(cx, cy, pxR, 0, Math.PI * 2); ctx.fill();
-    const drawCells = (list, style) => {
-      if (!list) return;
-      ctx.fillStyle = style;
-      for (const c of list){
-        const wx = lw.cx - r + c[0] * res, wy = lw.cy - r + c[1] * res;
-        ctx.fillRect(mp.sx(wx) - 1.2, mp.sy(wy) - 1.2, 2.4, 2.4);
+    // One 41x41 byte image per frame: 0 empty, 1 inflation, 2 occupied, 3 unseen.
+    // Drawn edge to edge on a 0.1 m pitch so a ring reads as a continuous band.
+    const side = lc.side || 41;
+    const cells = [], vals = [];
+    if (lw.m){
+      const raw = atob(lw.m);
+      for (let b = 0; b < side; ++b)
+        for (let a = 0; a < side; ++a){
+          const v = raw.charCodeAt(b * side + a);
+          if (v) { cells.push([a, b]); vals.push(v); }
+        }
+    }
+    const STYLE = {1: 'rgba(242,178,74,0.42)', 2: 'rgba(255,92,92,0.85)', 3: 'rgba(120,140,160,0.30)'};
+    const px = Math.max(1.6, Math.abs(mp.sx(lw.cx + res) - mp.sx(lw.cx)) + 0.2);
+    for (const v of [3, 1, 2]){
+      ctx.fillStyle = STYLE[v];
+      for (let i = 0; i < cells.length; ++i){
+        if (vals[i] !== v) continue;
+        const wx = lw.cx - r + cells[i][0] * res, wy = lw.cy - r + cells[i][1] * res;
+        ctx.fillRect(mp.sx(wx) - px / 2, mp.sy(wy) - px / 2, px, px);
       }
-    };
-    drawCells(lw.unk, 'rgba(120,140,160,0.30)');
-    drawCells(lw.infl, 'rgba(242,178,74,0.42)');
-    drawCells(lw.occ, 'rgba(255,92,92,0.85)');
+    }
     ctx.strokeStyle = 'rgba(90,175,255,0.85)';
     ctx.lineWidth = 1.3;
     ctx.setLineDash([5, 4]);
