@@ -59,9 +59,11 @@
 </div>
 
 <div class="legend">
-  <span><span class="sw" style="background:#ffcf3f"></span>可通行面</span>
+  <span><span class="sw" style="background:#8fa9c4"></span>可通行面</span>
   <span><span class="sw" style="background:#ff5a5a"></span>膨胀后的墙 / 不可走</span>
   <span><span class="sw" style="background:#4fc3ff"></span>全局路径</span>
+  <span><span class="sw" style="background:#ffcf3f"></span>局部规划（窗口内重规划）</span>
+  <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
   <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
   <span><span class="sw" style="background:#8fa3bb"></span>原始模型</span>
@@ -123,6 +125,8 @@ const state = {
 let root = new THREE.Group();
 scene.add(root);
 let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
+let localLine = null, winBox = null, dogMesh = null;
+let pathLen = 0, prog = 0, lastLocal = -1;
 let markStart = null, markGoal = null, rays = 0;
 
 // ---------- OBJ / STL ------------------------------------------------------
@@ -556,8 +560,184 @@ function flood(m, x, y, z){
           byStorey: hist, start: [si, sj, sk], seen};
 }
 
+// ---------- local planning inside a rolling window -------------------------
+// The repo's local layer is NeuPAN / DWA, neither of which can run in a page.
+// What is shown here is the compromise, and it is labelled as such in the
+// legend: the same 3D A* rules as the global plan, re-run every 0.4 m inside a
+// 2.5 m box around the dog. Yellow is the local leg, bright blue is global.
+const COL_LOCAL = 0xffcf3f, COL_WIN = 0x6fd3ff;
+const LOCAL_HALF = 2.5;
+
+function pathAt(pts, s){
+  let acc = 0;
+  for (let i = 1; i < pts.length; ++i){
+    const d = Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1], pts[i][2]-pts[i-1][2]);
+    if (acc + d >= s){
+      const t = d > 1e-9 ? (s - acc)/d : 0;
+      return [pts[i-1][0] + t*(pts[i][0]-pts[i-1][0]),
+              pts[i-1][1] + t*(pts[i][1]-pts[i-1][1]),
+              pts[i-1][2] + t*(pts[i][2]-pts[i-1][2])];
+    }
+    acc += d;
+  }
+  return pts[pts.length-1].slice();
+}
+
+// A* restricted to a box of cells around the dog, same edge rules as the
+// global search: 26 neighbours, no pure vertical step, support required.
+function planLocal(m, sx, sy, sz, gx, gy, gz){
+  const {res, lo, nx, ny, nz, data} = m;
+  const F = (i, j, k) => (k*ny + j)*nx + i;
+  const sup = m.supportOrUnknown;
+  const ok = (i, j, k) => i >= 0 && j >= 0 && k >= 0 && i < nx && j < ny && k < nz &&
+                          data[F(i, j, k)] === FREE;
+  const ci0 = Math.floor((sx-lo[0])/res), cj0 = Math.floor((sy-lo[1])/res),
+        ck0 = Math.floor((sz-lo[2])/res);
+  const half = Math.ceil(LOCAL_HALF/res);
+  const inside = (i, j, k) => Math.abs(i-ci0) <= half && Math.abs(j-cj0) <= half &&
+                              Math.abs(k-ck0) <= half;
+  const near = (x, y, z) => {
+    const i0 = Math.floor((x-lo[0])/res), j0 = Math.floor((y-lo[1])/res),
+          k0 = Math.floor((z-lo[2])/res);
+    let best = -1, bd = 1e30, bi = 0, bj = 0, bk = 0;
+    for (let dk = -4; dk <= 4; ++dk) for (let dj = -4; dj <= 4; ++dj) for (let di = -4; di <= 4; ++di){
+      const i = i0+di, j = j0+dj, k = k0+dk;
+      if (!ok(i, j, k) || !inside(i, j, k)) continue;
+      if (k < 1 || !sup(i, j, k)) continue;
+      const d2 = di*di + dj*dj + dk*dk;
+      if (d2 < bd){ bd = d2; best = F(i, j, k); bi = i; bj = j; bk = k; }
+    }
+    return best < 0 ? null : [bi, bj, bk];
+  };
+  const a = near(sx, sy, sz), b = near(gx, gy, gz);
+  if (!a || !b) return null;
+  const sId = F(a[0], a[1], a[2]), gId = F(b[0], b[1], b[2]);
+
+  const gS = new Float32Array(m.cells).fill(1e30);
+  const from = new Int32Array(m.cells).fill(-1);
+  const closed = new Uint8Array(m.cells);
+  const heap = [];
+  const hpush = (f, id) => {
+    heap.push([f, id]);
+    let i = heap.length-1;
+    while (i > 0){
+      const p = (i-1) >> 1;
+      if (heap[p][0] <= heap[i][0]) break;
+      const t = heap[p]; heap[p] = heap[i]; heap[i] = t; i = p;
+    }
+  };
+  const hpop = () => {
+    const top = heap[0], last = heap.pop();
+    if (heap.length){
+      heap[0] = last;
+      let i = 0;
+      for (;;){
+        const l = i*2+1, r = l+1; let s = i;
+        if (l < heap.length && heap[l][0] < heap[s][0]) s = l;
+        if (r < heap.length && heap[r][0] < heap[s][0]) s = r;
+        if (s === i) break;
+        const t = heap[s]; heap[s] = heap[i]; heap[i] = t; i = s;
+      }
+    }
+    return top;
+  };
+  const heur = (i, j, k) => res*Math.hypot(i-b[0], j-b[1], k-b[2]);
+  gS[sId] = 0;
+  hpush(heur(a[0], a[1], a[2]), sId);
+  let found = -1;
+  while (heap.length){
+    const [f, cur] = hpop();
+    if (closed[cur]) continue;
+    closed[cur] = 1;
+    const ci = cur % nx, cj = ((cur/nx)|0) % ny, ck = (cur/(nx*ny))|0;
+    if (Math.abs(ci-b[0]) <= 1 && Math.abs(cj-b[1]) <= 1 && Math.abs(ck-b[2]) <= 1){ found = cur; break; }
+    for (let dk = -MAX_STEP_Z; dk <= MAX_STEP_Z; ++dk){
+      const k = ck + dk;
+      if (k < 0 || k >= nz) continue;
+      for (let dj = -1; dj <= 1; ++dj){
+        const j = cj + dj;
+        if (j < 0 || j >= ny) continue;
+        for (let di = -1; di <= 1; ++di){
+          if (!di && !dj && !dk) continue;
+          if (dk !== 0 && !di && !dj) continue;
+          const i = ci + di;
+          if (i < 0 || i >= nx) continue;
+          if (!inside(i, j, k) || !ok(i, j, k)) continue;
+          const nf = F(i, j, k);
+          if (closed[nf]) continue;
+          if (k < 1 || !sup(i, j, k)) continue;
+          const tentative = gS[cur] + res*Math.hypot(di, dj, dk);
+          if (tentative >= gS[nf]) continue;
+          gS[nf] = tentative; from[nf] = cur;
+          hpush(tentative + heur(i, j, k), nf);
+        }
+      }
+    }
+  }
+  if (found < 0) return null;
+  const pts = [];
+  let c = found;
+  while (c >= 0){
+    const i = c % nx, j = ((c/nx)|0) % ny, k = (c/(nx*ny))|0;
+    pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res]);
+    if (c === sId) break;
+    c = from[c];
+  }
+  pts.reverse();
+  return pts;
+}
+
+function startLocalDemo(){
+  const at = location.hash.match(/at=([0-9.]+)/);
+  const pts = state.path;
+  if (!pts || pts.length < 2) return;
+  pathLen = 0;
+  for (let i = 1; i < pts.length; ++i)
+    pathLen += Math.hypot(pts[i][0]-pts[i-1][0], pts[i][1]-pts[i-1][1], pts[i][2]-pts[i-1][2]);
+  prog = at ? Math.min(pathLen, parseFloat(at[1])) : 0;
+  lastLocal = -1;
+  const p0 = pathAt(pts, prog);
+  dogMesh = makeDog(p0);
+  dogMesh.position.z += 0.02;
+  root.add(dogMesh);
+  winBox = makeWinBox(p0, LOCAL_HALF);
+  root.add(winBox);
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(new Float32Array(3*600), 3));
+  g.setDrawRange(0, 0);
+  localLine = new THREE.Line(g, new THREE.LineBasicMaterial({
+    color: COL_LOCAL, transparent: true, opacity: 0.98, depthTest: false, depthWrite: false}));
+  localLine.renderOrder = 11;
+  localLine.frustumCulled = false;
+  root.add(localLine);
+}
+
+function updateLocalLine(leg){
+  if (!localLine) return;
+  const arr = localLine.geometry.attributes.position.array;
+  if (!leg || leg.length < 2){ localLine.geometry.setDrawRange(0, 0); return; }
+  const n = Math.min(leg.length, arr.length/3);
+  for (let i = 0; i < n; ++i){
+    arr[i*3] = leg[i][0];
+    arr[i*3+1] = leg[i][1];
+    arr[i*3+2] = leg[i][2] + 0.09;
+  }
+  localLine.geometry.attributes.position.needsUpdate = true;
+  localLine.geometry.setDrawRange(0, n);
+}
+
+function makeWinBox(c, half){
+  const g = new THREE.BoxGeometry(half*2, half*2, 2.2);
+  const e = new THREE.EdgesGeometry(g);
+  const l = new THREE.LineSegments(e, new THREE.LineBasicMaterial({
+    color: COL_WIN, transparent: true, opacity: 0.5, depthTest: false, depthWrite: false}));
+  l.position.set(c[0], c[1], c[2]);
+  l.renderOrder = 8;
+  return l;
+}
+
 // ---------- drawing -------------------------------------------------------
-const COL_FLOOR = 0xffcf3f, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
+const COL_FLOOR = 0x8fa9c4, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
 const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
 
 function clearRoot(){
@@ -566,6 +746,8 @@ function clearRoot(){
     o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && c.material.dispose) c.material.dispose(); });
   }
   srcMesh = walkMesh = wallMesh = pathLine = null;
+  localLine = winBox = dogMesh = null;
+  pathLen = 0; prog = 0; lastLocal = -1;
   markStart = markGoal = null;
 }
 
@@ -791,6 +973,7 @@ document.getElementById('go').onclick = () => {
     color: COL_PATH, transparent: true, opacity: 0.98, depthTest: false, depthWrite: false}));
   pathLine.renderOrder = 10;
   root.add(pathLine);
+  startLocalDemo();
   say('路径 ' + r.pts.length + ' 点 · ' + r.len.toFixed(1) + ' m · A* ' +
       Math.round(ms) + ' ms · 展开 ' + r.expanded + ' 节点');
 };
@@ -838,10 +1021,26 @@ window.addEventListener('resize', () => {
 
 // ---------- tick ---------------------------------------------------------
 let spin = 0;
+let lastClock = 0;
 function tick(){
   requestAnimationFrame(tick);
-  spin += 0.0012;
-  if (!drag) { /* no idle motion: the scene is a map, not a turntable */ }
+  const now = performance.now();
+  const dt = lastClock ? Math.min(0.12, (now - lastClock)/1000) : 0;
+  lastClock = now;
+  if (state.path && pathLen > 0.5 && dogMesh){
+    prog += dt * 1.2;                 // a real Go2 trots about this fast
+    if (prog > pathLen) prog = 0;     // loop, so the page keeps demonstrating
+    const p = pathAt(state.path, prog);
+    dogMesh.position.set(p[0], p[1], p[2]);
+    winBox.position.set(p[0], p[1], p[2]);
+    // re-plan the local leg every 0.4 m rather than every frame: the window
+    // is small, but a search per frame is still waste
+    if (Math.abs(prog - lastLocal) > 0.4){
+      lastLocal = prog;
+      const tgt = pathAt(state.path, Math.min(pathLen, prog + 2.0));
+      updateLocalLine(planLocal(state.map, p[0], p[1], p[2], tgt[0], tgt[1], tgt[2]));
+    }
+  }
   renderer.render(scene, camera);
 }
 tick();

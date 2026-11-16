@@ -54,6 +54,18 @@ Fix: run `flood()` from the start first, then choose the goal only inside that r
 
 This probe is worth keeping: **when a plan fails, measure the two components before suspecting the algorithm**.
 
+## Global blue, local yellow
+
+- **Global** `0x4fc3ff`, `renderOrder 10`, `depthTest:false`: planned once, drawn end to end.
+- **Local** `0xffcf3f`, `renderOrder 11`. The dog advances along the global path at 1.2 m/s and every **0.4 m** re-runs 3D A* inside a **2.5 m** box (same rules as global: 26 neighbours, no pure vertical step, support required), drawing that leg in yellow.
+- **Window** `0x6fd3ff` wireframe, 2.5 m x 2.5 m x 2.2 m, follows the dog.
+
+One thing has to be said plainly: **the yellow line is not NeuPAN output**. NeuPAN is a network and cannot run in a page; the yellow line is "local re-planning under the same A* rules inside the local box", showing what the local layer does and in what frame. Real NeuPAN / DWA run in ROS, and their comparison lives in `3d-planner-and-stairs`.
+
+`#demo,at=<metres>` drops the dog at a given mileage on the global path (`at=12` is mid flight, `at=27` near 4F) for screenshots.
+
+The walkable faces also moved from yellow to a cool grey blue `0x8fa9c4` this round: the faces were yellow, so a yellow line drawn on them was invisible. Yellow now means local planning and nothing else.
+
 ## Limits worth knowing
 
 - 5,952 standable cells, of which the 0.30 m band costs 218 (3.7%) - a fraction of the plate, not the old version's striped floor.
