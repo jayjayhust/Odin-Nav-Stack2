@@ -13,6 +13,9 @@ import numpy as np
 from scipy.ndimage import binary_closing
 
 VOX = 0.12
+# Rise per step in the survey stairs; only used to give the recovered tread
+# the riser underneath it.
+STEP_RISE = 0.19
 SRC = "../../../../docs/multifloor/sim/nav_sim_data.json"
 DST = "../../../../docs/multifloor/sim/mesh_scene_data.json"
 STEPS = (0.25, 0.5, 0.75, 1.0)
@@ -179,7 +182,12 @@ def stair_treads(obstacles, zones):
                 wy0, wy1 = ay1, min(y1, ay1 + 1.15)
             else:
                 wy0, wy1 = max(y0, ay0 - 1.15), ay0
-            out.append((ax0, wy0, ax1, wy1, level - 0.12, level))
+            # A tread alone is a 12 cm plate on a 19 cm rise, so consecutive
+            # plates leave a 7 cm slot that reads as a ramp. Carry each step
+            # down to the one below it instead: the block is then the tread's
+            # top face plus its riser, which is exactly the surface a flight
+            # has - and the arris between two steps becomes visible.
+            out.append((ax0, wy0, ax1, wy1, level - STEP_RISE, level))
     return out
 
 def build(points, lo, hi, zones=None, treads=None):
@@ -199,25 +207,29 @@ def build(points, lo, hi, zones=None, treads=None):
         idx[:,1] = np.clip(idx[:,1], 0, ny-1)
         idx[:,2] = np.clip(idx[:,2], 0, nz-1)
         occ[idx[:,0], idx[:,1], idx[:,2]] = True
+    # Close holes per axis rather than with one 3x3x3 cube: the cube bridges
+    # cells that only touch at a corner, which turns a sparse surface into a
+    # rubble of blocks, and a cube costs 26 neighbours per cell against 4 here.
+    # Twice, because the sweeps leave two-cell gaps between scan rings as often
+    # as one, and a single pass leaves the wall looking like stacked shards.
+    occ = binary_closing(occ, np.ones((3,3,1), bool))
+    occ = binary_closing(occ, np.ones((1,1,3), bool))
+    occ = binary_closing(occ, np.ones((3,3,1), bool))
+    occ = binary_closing(occ, np.ones((1,1,3), bool))
+    occ = prune_floating(occ)
+    occ = fill_stair_columns(occ, lo, zones)
+    occ = bridge_stair_risers(occ, lo, zones)
+    # The treads are added after the morphology, not before: the segments of a
+    # flight are one cell thick and one cell apart in z, so any closing pass
+    # fuses them into a single smooth ramp and the steps stop reading as steps.
+    # They are the one thing here that is already exact - a flat box at the
+    # level its own balustrade panel reports - so nothing needs to touch them.
     if treads:
         for tx0, ty0, tx1, ty1, tz0, tz1 in treads:
             a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
             a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
             sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
             occ[sl] = True
-        # Close holes per axis rather than with one 3x3x3 cube: the cube
-        # bridges cells that only touch at a corner, which turns a sparse
-        # surface into a rubble of blocks, and a cube costs 26 neighbours per
-        # cell against 4 here.
-        occ = binary_closing(occ, np.ones((3,3,1), bool))
-        occ = binary_closing(occ, np.ones((1,1,3), bool))
-        # twice: the sweeps leave two-cell gaps between scan rings as often as
-        # one, and a single pass leaves the wall looking like stacked shards
-        occ = binary_closing(occ, np.ones((3,3,1), bool))
-        occ = binary_closing(occ, np.ones((1,1,3), bool))
-        occ = prune_floating(occ)
-        occ = fill_stair_columns(occ, lo, zones)
-        occ = bridge_stair_risers(occ, lo, zones)
     verts, vmap, tris = [], {}, []
     for i, j, k in zip(*np.nonzero(occ)):
         for d in NEIGH:
@@ -296,6 +308,7 @@ def main():
                "world": [round(float(lo[0]), 3), round(float(lo[1]), 3),
                          round(float(hi[0]), 3), round(float(hi[1]), 3)],
                "z_range": [round(float(lo[2]), 3), round(float(hi[2]), 3)],
+               "stair": [[round(float(v), 3) for v in z] for z in (sc.get("stair") or [])],
                "start": sc["start"], "goal": sc["goal"],
                "start_z": sc["start_z"], "goal_z": sc["goal_z"],
                "planners": [sc["name"].split(" · ")[-1] if " · " in sc["name"] else "single"],

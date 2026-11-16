@@ -52,6 +52,9 @@
   <div class="grp" id="winTog" style="margin-left:auto">
     <button class="chip on">局部窗口</button>
   </div>
+  <div class="grp" id="stairTog">
+    <button class="chip">只看楼梯</button>
+  </div>
   <div class="grp" id="followTog">
     <button class="chip">跟随狗</button>
   </div>
@@ -169,6 +172,12 @@ function i16At(bin, o){
   return (v << 16) >> 16;
 }
 
+// When set to a stair core box [x0,x1,y0,y1,z0,z1], only triangles whose
+// centroid falls inside it are drawn. The flights sit inside an envelope wall
+// on every side, so without this the treads are only visible by dropping the
+// whole model to 15% opacity and looking through three walls.
+let CLIP = null;
+
 function geometryFor(frame, origin){
   const bin = atob(frame.v);
   const nv = frame.nv, vox = DATA.vox;
@@ -189,9 +198,26 @@ function geometryFor(frame, origin){
           (binI.charCodeAt(o+2) << 16) | (binI.charCodeAt(o+3) << 24)) >>> 0)
       : (binI.charCodeAt(o) | (binI.charCodeAt(o+1) << 8));
   }
+  let use = idx;
+  if (CLIP){
+    const c = CLIP, keep = [];
+    for (let k = 0; k < ni; k += 3){
+      let cx = 0, cy = 0, cz = 0;
+      for (let m = 0; m < 3; ++m){
+        const vi = idx[k + m];
+        cx += pos[3 * vi]; cy += pos[3 * vi + 1]; cz += pos[3 * vi + 2];
+      }
+      cx /= 3; cy /= 3; cz /= 3;
+      if (cx >= c[0] - 0.06 && cx <= c[1] + 0.06 &&
+          cy >= c[2] - 0.06 && cy <= c[3] + 0.06 &&
+          cz >= c[4] - 0.06 && cz <= c[5] + 0.06)
+        keep.push(idx[k], idx[k + 1], idx[k + 2]);
+    }
+    use = keep;
+  }
   const geo = new THREE.BufferGeometry();
   geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
-  geo.setIndex(new THREE.BufferAttribute(idx, 1));
+  geo.setIndex(new THREE.BufferAttribute(use, 1));
   geo.computeVertexNormals();
   // One material, colour carried by the vertex: faces looking up are floor,
   // vertical faces are walls, faces looking down are ceiling/underside.
@@ -322,6 +348,7 @@ function frameIndex(sc, prog){
 function buildScene(idx){
   const sc = DATA.scenes[idx];
   state.scene = idx;
+  if (!(sc.stair && sc.stair.length)) CLIP = null;
   clearGroup(meshGroup);
   meshGroup = new THREE.Group();
 
@@ -513,6 +540,26 @@ function setAlpha(a){
 }
 document.getElementById('alpha').oninput = e => setAlpha(Number(e.target.value));
 document.querySelectorAll('#presets .chip').forEach(c => c.onclick = () => setAlpha(Number(c.dataset.a)));
+document.querySelector('#stairTog .chip').onclick = e => {
+  const chip = e.currentTarget;
+  const on = !chip.classList.contains('on');
+  const sc = DATA.scenes[state.scene];
+  const core = sc.stair && sc.stair.length ? sc.stair[0] : null;
+  CLIP = on && core ? core : null;
+  chip.classList.toggle('on', !!CLIP);
+  const old = meshGroup.children[0];
+  if (old){
+    old.geometry.dispose();
+    old.geometry = geometryFor(sc.frames[frameIndex(sc, state.prog)],
+                               new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]));
+  }
+  if (CLIP){
+    const c = CLIP;
+    cam.target.set((c[0] + c[1]) / 2, (c[2] + c[3]) / 2, (c[4] + c[5]) / 2);
+    cam.dist = 5.5; cam.yaw = -2.4; cam.pitch = 0.5;
+    applyCam();
+  }
+};
 
 document.getElementById('prog').oninput = e => {
   state.prog = Number(e.target.value) / 100;
@@ -639,6 +686,20 @@ if (hp[5]){
   cam.yaw = Number(hp[5]);
   if (hp[6]) cam.pitch = Math.max(-0.2, Math.min(1.45, Number(hp[6])));
   applyCam();
+}
+// #scene,alpha,prog,dist,follow,yaw,pitch[,stair] - the eighth field clips to
+// the stair core, i.e. the same thing the 只看楼梯 chip does.
+if (hp[7] === '1' && DATA.scenes[initScene].stair && DATA.scenes[initScene].stair.length){
+  CLIP = DATA.scenes[initScene].stair[0];
+  document.querySelector('#stairTog .chip').classList.add('on');
+  const g0 = meshGroup.children[0];
+  if (g0){
+    g0.geometry.dispose();
+    g0.geometry = geometryFor(DATA.scenes[initScene].frames[frameIndex(DATA.scenes[initScene], state.prog)],
+                              new THREE.Vector3(DATA.scenes[initScene].org[0],
+                                                DATA.scenes[initScene].org[1],
+                                                DATA.scenes[initScene].org[2]));
+  }
 }
 if (hp[4] === '1'){
   state.follow = true;
