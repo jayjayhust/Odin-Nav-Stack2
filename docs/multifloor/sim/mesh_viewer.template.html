@@ -633,6 +633,13 @@ if (hp[3]){
   cam.dist = Math.max(1.2, Math.min(160, Number(hp[3])));
   applyCam();
 }
+// #scene,alpha,prog,dist,follow[,yaw,pitch] - the extra pair lets a link open
+// straight onto a stair core instead of the outside of its envelope wall.
+if (hp[5]){
+  cam.yaw = Number(hp[5]);
+  if (hp[6]) cam.pitch = Math.max(-0.2, Math.min(1.45, Number(hp[6])));
+  applyCam();
+}
 if (hp[4] === '1'){
   state.follow = true;
   document.querySelector('#followTog .chip').classList.add('on');

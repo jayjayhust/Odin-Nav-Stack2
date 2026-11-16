@@ -124,6 +124,9 @@ Two implementation notes worth keeping:
 11. **Inflation is rebuilt every 0.3 s with the map** (`deinflate` + `inflate`). It used to run once at build
     time, and `scan()` writes its observation back into a cell the inflation had recoloured (it only skips cells
     still marked `kFree`), so the ring beside a wall was erased one cell at a time.
+12. **How the triangles are made, and why the stair is geometry.** The cloud is voxelised at 0.12 m, closed anisotropically - (3,3,1) and (1,1,3), two passes each - to bridge the gaps between scan rings, then pruned column by column: a run of one or two cells floating more than a cell above the one below it is a return that grazed a balustrade and landed over a tread. The tread surfaces themselves are **not** scanned: standing on one puts it under the sensor's field of view, and the riser between two treads faces away. The simulator models one balustrade panel per step at the step's own height, so the tread's level and x span come from it and only the width is assumed. That is what `seed_stair_prior` does on the robot - a model prior, not an invention.
+13. **The camera can be set from the link.** `#scene,alpha,prog,dist,follow,yaw,pitch`, e.g. `#3,45,100,7,0,-2.4,0.75` opens inside the two-storey stair well instead of looking at the outside of the envelope wall.
+
 
 ## 7. Reproducing
 

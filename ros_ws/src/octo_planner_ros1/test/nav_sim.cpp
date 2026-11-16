@@ -1724,6 +1724,20 @@ std::string jsonScenario(const Scenario& sc, const Run& r) {
   o << "\"goal\":[" << sc.gx << "," << sc.gy << "],";
   o << "\"start_z\":" << sc.sz << ",\"goal_z\":" << sc.gz << ",";
   o << "\"z_range\":[" << sc.zmin << "," << sc.zmax << "],";
+  // The stair cores, as boxes in world metres. The cloud alone cannot carry
+  // them: standing on a tread the next one is above the sensor's +0.30 m
+  // window, so the flights come back as balustrades and rubble. The mesh
+  // builder fills columns in these boxes from the lowest return.
+  o << "\"stair\":[";
+  for (size_t i = 0; i < sc.stair.size(); ++i) {
+    if (i) o << ",";
+    char bz[128];
+    std::snprintf(bz, sizeof(bz), "[%.2f,%.2f,%.2f,%.2f,%.2f,%.2f]",
+                  sc.stair[i].x0, sc.stair[i].x1, sc.stair[i].y0,
+                  sc.stair[i].y1, sc.stair[i].z0, sc.stair[i].z1);
+    o << bz;
+  }
+  o << "],";
 
   // static silhouette for the backplate: emitted once, obstacles that only
   // appear later are still drawn (they are part of the world, the timeline

@@ -34,7 +34,155 @@ def base_name(n):
             return n[:-len(suf)]
     return n
 
-def build(points, lo, hi):
+
+def prune_floating(occ):
+    """Drop short runs that float clear of the run below them in the same column.
+
+    A sweep that grazes a balustrade returns a few cells above the tread it is
+    standing on; voxelised, each becomes a fragment hanging in the air. A tread
+    itself is a one- or two-cell run directly above whatever holds it up, so the
+    discriminator is the gap, not the length.
+    """
+    nx, ny, nz = occ.shape
+    for i in range(nx):
+        for j in range(ny):
+            col = occ[i, j]
+            idx = np.flatnonzero(col)
+            if idx.size < 2:
+                continue
+            runs = []
+            a = p = int(idx[0])
+            for v in idx[1:]:
+                v = int(v)
+                if v == p + 1:
+                    p = v
+                    continue
+                runs.append((a, p))
+                a = p = v
+            runs.append((a, p))
+            for n in range(1, len(runs)):
+                lo, hi = runs[n]
+                if hi - lo + 1 <= 2 and lo - runs[n - 1][1] >= 2:
+                    col[lo:hi + 1] = False
+    return occ
+
+
+def fill_stair_columns(occ, lo, zones):
+    """Fill empty columns inside a stair core from their neighbours.
+
+    Standing on a tread, the next one sits above the sensor's +0.30 m window,
+    so the return comes back as balustrade plus rubble and whole columns of the
+    tread are missing. The lowest cell of a column is the tread the dog would
+    stand on, so a hole is filled with the median of the eight neighbours that
+    do have one - that keeps the flight's rake instead of flattening it.
+    """
+    if not zones:
+        return occ
+    nx, ny, nz = occ.shape
+    for x0, x1, y0, y1, z0, z1 in zones:
+        ix0 = max(0, int(np.floor((x0 - lo[0]) / VOX))); ix1 = min(nx, int(np.ceil((x1 - lo[0]) / VOX)) + 1)
+        iy0 = max(0, int(np.floor((y0 - lo[1]) / VOX))); iy1 = min(ny, int(np.ceil((y1 - lo[1]) / VOX)) + 1)
+        iz0 = max(0, int(np.floor((z0 - lo[2]) / VOX))); iz1 = min(nz, int(np.ceil((z1 - lo[2]) / VOX)) + 1)
+        for i in range(ix0, ix1):
+            for j in range(iy0, iy1):
+                if occ[i, j, iz0:iz1].any():
+                    continue
+                lows = []
+                for di in (-1, 0, 1):
+                    for dj in (-1, 0, 1):
+                        if di == 0 and dj == 0:
+                            continue
+                        ni, nj = i + di, j + dj
+                        if not (0 <= ni < nx and 0 <= nj < ny):
+                            continue
+                        nb = occ[ni, nj, iz0:iz1]
+                        if nb.any():
+                            lows.append(int(np.flatnonzero(nb)[0]))
+                if lows:
+                    occ[i, j, iz0 + int(np.median(lows))] = True
+    return occ
+
+
+def bridge_stair_risers(occ, lo, zones):
+    """Build the risers the sensor cannot see.
+
+    A tread is a horizontal surface; the face between two treads looks straight
+    down and away from the sensor standing on it, so no return ever lands there
+    and the flight arrives as a staircase of detached treads. The rise is
+    recoverable, though: where one column's standing cell is one to four cells
+    above its neighbour's, the cells between them are the riser. Filling that
+    span is not a guess - it is the only surface that can join the two treads.
+    """
+    if not zones:
+        return occ
+    nx, ny, nz = occ.shape
+    for x0, x1, y0, y1, z0, z1 in zones:
+        ix0 = max(0, int(np.floor((x0 - lo[0]) / VOX))); ix1 = min(nx, int(np.ceil((x1 - lo[0]) / VOX)) + 1)
+        iy0 = max(0, int(np.floor((y0 - lo[1]) / VOX))); iy1 = min(ny, int(np.ceil((y1 - lo[1]) / VOX)) + 1)
+        iz0 = max(0, int(np.floor((z0 - lo[2]) / VOX))); iz1 = min(nz, int(np.ceil((z1 - lo[2]) / VOX)) + 1)
+        low = np.full((nx, ny), -1, np.int16)
+        for i in range(ix0, ix1):
+            for j in range(iy0, iy1):
+                col = occ[i, j, iz0:iz1]
+                if col.any():
+                    low[i, j] = iz0 + int(np.flatnonzero(col)[0])
+        added = 0
+        for i in range(ix0, ix1):
+            for j in range(iy0, iy1):
+                a = low[i, j]
+                if a < 0:
+                    continue
+                for di, dj in ((1, 0), (0, 1), (-1, 0), (0, -1)):
+                    ni, nj = i + di, j + dj
+                    if not (ix0 <= ni < ix1 and iy0 <= nj < iy1):
+                        continue
+                    b = low[ni, nj]
+                    if b <= a or b - a > 4:
+                        continue
+                    occ[i, j, a:b] = True
+                    added += b - a
+        if added:
+            pass
+    return occ
+
+
+def stair_treads(obstacles, zones):
+    """Recover the treads from the balustrade panels.
+
+    Standing on a tread, the sensor cannot see the tread itself: it is under
+    its own feet, and the face between two treads looks away. What it does see
+    is the balustrade, and the simulator models one panel per step at the step's
+    own height - so each panel carries the tread's x span and its level, and
+    only the width has to be assumed. This is the same prior the live stack
+    seeds (seed_stair_prior); it is geometry, not a return.
+    """
+    if not zones:
+        return []
+    out = []
+    for x0, x1, y0, y1, z0, z1 in zones:
+        cy = 0.5 * (y0 + y1)
+        for o in obstacles:
+            if o.get("k") != 0:
+                continue
+            ax0, ay0, ax1, ay1 = o["a"]
+            bz0, bz1 = o["z"]
+            # a step panel: narrow in x and y, tall in z, standing above the slab
+            if ax1 - ax0 > 0.45 or ay1 - ay0 > 0.20 or bz0 < 0.06 or bz1 - bz0 < 0.70:
+                continue
+            if not (x0 - 0.2 <= ax0 <= x1 + 0.2 and y0 - 0.2 <= ay0 <= y1 + 0.2):
+                continue
+            level = bz0 + 0.04
+            if not (z0 <= level <= z1 + 0.05):
+                continue
+            # widen into the well of the flight, away from the panel
+            if 0.5 * (ay0 + ay1) < cy:
+                wy0, wy1 = ay1, min(y1, ay1 + 1.15)
+            else:
+                wy0, wy1 = max(y0, ay0 - 1.15), ay0
+            out.append((ax0, wy0, ax1, wy1, level - 0.12, level))
+    return out
+
+def build(points, lo, hi, zones=None, treads=None):
     """lo/hi is the voxel-grid origin and its far corner, in world metres.
 
     The grid must cover every point in the scene, so the caller derives it from
@@ -51,7 +199,25 @@ def build(points, lo, hi):
         idx[:,1] = np.clip(idx[:,1], 0, ny-1)
         idx[:,2] = np.clip(idx[:,2], 0, nz-1)
         occ[idx[:,0], idx[:,1], idx[:,2]] = True
-        occ = binary_closing(occ, np.ones((3,3,3), bool))
+    if treads:
+        for tx0, ty0, tx1, ty1, tz0, tz1 in treads:
+            a0 = np.floor(np.array([tx0, ty0, tz0]) / VOX + 1e-9).astype(int) + 1
+            a1 = np.ceil(np.array([tx1, ty1, tz1]) / VOX - 1e-9).astype(int) + 1
+            sl = tuple(slice(max(0, a0[d]), min([nx, ny, nz][d] - 1, a1[d]) + 1) for d in range(3))
+            occ[sl] = True
+        # Close holes per axis rather than with one 3x3x3 cube: the cube
+        # bridges cells that only touch at a corner, which turns a sparse
+        # surface into a rubble of blocks, and a cube costs 26 neighbours per
+        # cell against 4 here.
+        occ = binary_closing(occ, np.ones((3,3,1), bool))
+        occ = binary_closing(occ, np.ones((1,1,3), bool))
+        # twice: the sweeps leave two-cell gaps between scan rings as often as
+        # one, and a single pass leaves the wall looking like stacked shards
+        occ = binary_closing(occ, np.ones((3,3,1), bool))
+        occ = binary_closing(occ, np.ones((1,1,3), bool))
+        occ = prune_floating(occ)
+        occ = fill_stair_columns(occ, lo, zones)
+        occ = bridge_stair_risers(occ, lo, zones)
     verts, vmap, tris = [], {}, []
     for i, j, k in zip(*np.nonzero(occ)):
         for d in NEIGH:
@@ -91,7 +257,9 @@ def main():
         frames, cum_pts = [], 0
         for frac in STEPS:
             k = max(1, int(round(frac * n)))
-            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi)
+            v, t_ = build(np.vstack(pts[:k]) if k else np.zeros((0,3)), lo, hi,
+                          sc.get("stair") or [],
+                          stair_treads(sc.get("obstacles") or [], sc.get("stair") or []))
             cum_pts = int(sum(len(p) for p in pts[:k]))
             va = np.array(v, dtype=np.int16).reshape(-1)
             i16 = len(v) < 65535
