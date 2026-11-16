@@ -145,6 +145,8 @@ Two implementation notes worth keeping:
 27. **Multi storey drops its walls, single storey keeps them.** One storey of walls is a room and should stay; four storeys of walls is a closed glass block that hides every floor and flight. Single storey 16,170 vertices, four storey 26,710.
 28. **Storey cut.** The semantic surface is a closed shell, so 1F/2F/3F/4F slices it at the 3.42 m storey height, keeping the triangles whose centroid falls in that storey.
 29. **Boxes must lose the origin before they become cell numbers.** The scene states its boxes in world metres; the voxel grid starts at `lo`. Taking the metres straight as indices shifts the whole model by metres - 5.1 m / 3.0 m in the two storey scene, which put the stair beside the robot instead of under it.
+30. **Two routes, two colours.** The global plan is bright blue; the route the local planner actually drove is yellow and grows with the playhead - built once at full length and revealed by draw range, so playing costs one integer a frame. They coincide for most of the run, so the blue line sits 5 cm higher or the yellow covers it outright.
+
 
 
 

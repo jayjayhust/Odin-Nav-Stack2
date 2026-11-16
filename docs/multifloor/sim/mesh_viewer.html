@@ -91,7 +91,8 @@
   <span><span class="sw" style="background:#7f8ea6"></span>地面</span>
   <span><span class="sw" style="background:#c6d4e6"></span>墙面 / 障碍</span>
   <span><span class="sw" style="background:#5ce0a3"></span>机器人</span>
-  <span><span class="sw" style="background:#5aa9e6"></span>全局路径</span>
+  <span><span class="sw" style="background:#4fc3ff"></span>全局规划路线</span>
+  <span><span class="sw" style="background:#ffcf3f"></span>实时规划路线</span>
 </div>
 <footer>网格由 <code>test/build_mesh_scene.py</code> 从 <code>nav_sim_data.json</code> 的累积点云生成：
 每档先把点按 0.12 m 体素占据，闭运算补一格缝，再剔除被邻居挡住的六个面，只留外表面。
@@ -197,7 +198,7 @@ function i16At(bin, o){
 // centroid falls inside it are drawn. The flights sit inside an envelope wall
 // on every side, so without this the treads are only visible by dropping the
 // whole model to 15% opacity and looking through three walls.
-let CLIP = null;
+let CLIP = null, liveTrail = null;
 
 // The scene ships two surfaces: the meshed sweep and, if the scenario declares
 // its own boxes, a semantic version built from those - flat floor, vertical
@@ -418,6 +419,8 @@ function buildScene(idx){
   if (!(sc.stair && sc.stair.length)) CLIP = null;
   clearGroup(meshGroup);
   meshGroup = new THREE.Group();
+  trailPath = null;
+  liveTrail = null;
 
   const origin = new THREE.Vector3(sc.org[0], sc.org[1], sc.org[2]);
   const k = frameIndex(sc, state.prog);
@@ -444,15 +447,35 @@ function buildScene(idx){
   if (path.length > 1){
     const pp = new Float32Array(path.length * 3);
     for (let i = 0; i < path.length; ++i){
-      pp[3*i] = path[i][0]; pp[3*i+1] = path[i][1]; pp[3*i+2] = path[i][2];
+      // Lift the global line 5 cm above the live one: they coincide for most
+      // of the run, and at the same height the yellow simply covers it.
+      pp[3*i] = path[i][0]; pp[3*i+1] = path[i][1]; pp[3*i+2] = path[i][2] + 0.05;
     }
     const pg = new THREE.BufferGeometry();
     pg.setAttribute('position', new THREE.BufferAttribute(pp, 3));
     trailPath = new THREE.Line(pg, new THREE.LineBasicMaterial({
-      color: 0x9fe6ff, transparent: true, opacity: 0.9,
+      color: 0x4fc3ff, transparent: true, opacity: 0.95,
       depthTest: false, depthWrite: false}));
     trailPath.renderOrder = 7;
     meshGroup.add(trailPath);
+  }
+
+  // live trail: what the local planner actually drove, in yellow, grown with
+  // the playhead. Built once at full length and revealed by draw range, so
+  // playing costs one integer per frame instead of a geometry rebuild.
+  const trp = sc.trace || [];
+  if (trp.length > 1){
+    const lp = new Float32Array(trp.length * 3);
+    for (let i = 0; i < trp.length; ++i){
+      lp[3*i] = trp[i][0]; lp[3*i+1] = trp[i][1]; lp[3*i+2] = trp[i][2];
+    }
+    const lg = new THREE.BufferGeometry();
+    lg.setAttribute('position', new THREE.BufferAttribute(lp, 3));
+    liveTrail = new THREE.Line(lg, new THREE.LineBasicMaterial({
+      color: 0xffcf3f, transparent: true, opacity: 0.95,
+      depthTest: false, depthWrite: false}));
+    liveTrail.renderOrder = 8;
+    meshGroup.add(liveTrail);
   }
 
   // Go2 stand-in, built from primitives at the URDF's proportions: 0.70 x 0.31
@@ -553,6 +576,9 @@ function robotAt(idx, prog){
   const yaw = a[3] + (((b[3] - a[3] + Math.PI * 3) % (Math.PI * 2)) - Math.PI) * w;
   robot.position.set(x, y, z);
   robot.rotation.set(0, 0, yaw);
+  if (liveTrail){
+    liveTrail.geometry.setDrawRange(0, Math.max(2, Math.floor(f * tEnd) + 1));
+  }
 }
 
 function updateHud(sc){
