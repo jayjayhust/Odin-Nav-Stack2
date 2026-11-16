@@ -330,3 +330,4 @@ rosservice call /floor_manager/arrived_at_floor "floor: '3F'"
 | [设计说明](design.zh-CN.md) | 楼层地图服务、切层状态机、任务层调度 |
 | [步态控制台](gait_console.html) | 楼梯步态参数调试页 |
 | [**4G 远程调试**](remote-debug.zh-CN.md) | 车身交换机 + 4G 路由的拓扑、IP 规划、隧道、带宽与供电 |
+| [**局域网调试**](lan-debug.zh-CN.md) | 网线接交换机 / 路由本地 WiFi 两条路，静态 IP、ROS_IP 切换与丢包排查 |

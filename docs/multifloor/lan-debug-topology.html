@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<title>Go2 EDU 局域网调试接入方式</title>
+<head>
+<style>
+  html,body{margin:0;padding:0;background:#f4f6fa;font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
+  #wrap{width:1500px;height:920px;position:relative}
+  svg{display:block}
+</style>
+</head>
+<body>
+<div id="wrap">
+<svg width="1500" height="920" viewBox="0 0 1500 920" xmlns="http://www.w3.org/2000/svg">
+  <rect x="0" y="0" width="1500" height="920" fill="#f4f6fa"/>
+  <text x="60" y="66" font-size="30" font-weight="700" fill="#16202e">Go2 EDU 局域网调试：两条接入路径</text>
+  <text x="60" y="100" font-size="17" fill="#5b6b80">同处 192.168.123.0/24 · 不走公网 · 不消耗 4G 流量 · 可直接跑 RViz 全量点云</text>
+  <g>
+    <rect x="56" y="286" width="308" height="208" rx="12" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="76" y="316" font-size="15" font-weight="600" fill="#2a3a4f">调试笔记本</text>
+    <text x="76" y="342" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">静态 192.168.123.50</text>
+    <text x="76" y="366" font-size="12.5" fill="#5b6b80">有线和 WiFi 任选其一，不要同时用</text>
+    <text x="76" y="390" font-size="12.5" fill="#5b6b80">不要留两个网段的默认路由</text>
+    <rect x="76" y="404" width="150" height="20" rx="4" fill="#e8eefb"/>
+    <text x="84" y="418" font-size="11" fill="#1d4ed8">本机 DHCP 客户端关闭</text>
+    <text x="76" y="450" font-size="12.5" fill="#0f766e">ROS_IP = 192.168.123.50</text>
+    <text x="76" y="474" font-size="12.5" fill="#0f766e">MASTER = http://192.168.123.18:11311</text>
+  </g>
+  <path d="M364 344 H 700" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="404" y="330" font-size="13" font-weight="600" fill="#1d4ed8">① 网线直插交换机空闲口</text>
+  <text x="404" y="362" font-size="12" fill="#5b6b80">即插即用，交换机不需配置</text>
+  <path d="M364 462 H 600 V 300 H 700" stroke="#0f766e" stroke-width="2.4" stroke-dasharray="8 5" fill="none"/>
+  <text x="404" y="484" font-size="13" font-weight="600" fill="#0f766e">② 连 4G 路由的本地 WiFi</text>
+  <text x="404" y="508" font-size="12" fill="#5b6b80">AP 与 4G 上行互不干扰</text>
+  <rect x="700" y="150" width="700" height="440" rx="16" fill="#fbfcfe" stroke="#93a4bb" stroke-width="2" stroke-dasharray="12 6"/>
+  <text x="722" y="182" font-size="15" font-weight="600" fill="#2a3a4f">Go2 EDU 背部搭载</text>
+  <text x="722" y="206" font-size="12.5" fill="#7b8aa0">交换机 + 4G 路由</text>
+  <g>
+    <rect x="740" y="232" width="240" height="118" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="758" y="258" font-size="14.5" font-weight="600" fill="#2a3a4f">4G 路由</text>
+    <text x="758" y="282" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">LAN 192.168.123.1/24</text>
+    <text x="758" y="304" font-size="12.5" fill="#5b6b80">本地 AP：SSID + WPA2 口令</text>
+    <text x="758" y="326" font-size="12.5" fill="#5b6b80">DHCP 关，或池从 .100 起</text>
+    <text x="758" y="344" font-size="12" fill="#b45309">5 GHz 优先，远离 Odin1 USB3</text>
+  </g>
+  <path d="M860 350 V 396" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="870" y="380" font-size="12" fill="#1d4ed8">以太网</text>
+  <g>
+    <rect x="740" y="396" width="240" height="86" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <text x="758" y="422" font-size="14.5" font-weight="600" fill="#2a3a4f">5 口非管理交换机</text>
+    <text x="758" y="446" font-size="12.5" fill="#5b6b80">空口留给笔记本</text>
+    <text x="758" y="466" font-size="12" fill="#5b6b80">无 DHCP 服务器</text>
+  </g>
+  <path d="M980 424 H 1016 V 320 H 1052" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="1018" y="312" font-size="12" fill="#1d4ed8">以太网</text>
+  <path d="M980 460 H 1016 V 540 H 1052" stroke="#1d4ed8" stroke-width="2.6" fill="none"/>
+  <text x="1018" y="534" font-size="12" fill="#1d4ed8">以太网</text>
+  <g>
+    <rect x="1052" y="272" width="306" height="96" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <rect x="1052" y="272" width="6" height="96" rx="3" fill="#94a3b8"/>
+    <text x="1074" y="298" font-size="14.5" font-weight="600" fill="#2a3a4f">底层运控板</text>
+    <text x="1074" y="322" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">192.168.123.161</text>
+    <text x="1074" y="344" font-size="12.5" fill="#5b6b80">不改 · 只通过 Jetson 跳板登录</text>
+  </g>
+  <g>
+    <rect x="1052" y="492" width="306" height="112" rx="10" fill="#ffffff" stroke="#c8d3e0" stroke-width="1.5"/>
+    <rect x="1052" y="492" width="6" height="112" rx="3" fill="#0f766e"/>
+    <text x="1074" y="518" font-size="14.5" font-weight="600" fill="#2a3a4f">算力拓展坞（Jetson）</text>
+    <text x="1074" y="542" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">192.168.123.18 · unitree</text>
+    <text x="1074" y="564" font-size="12.5" fill="#5b6b80">ROS 1 主节点 · ROS_IP 报 123.18</text>
+    <text x="1074" y="586" font-size="12" fill="#b45309">当地局域网，不需要隧道地址</text>
+  </g>
+  <g>
+    <rect x="56" y="620" width="620" height="240" rx="12" fill="#ffffff" stroke="#d8e0ea" stroke-width="1.2"/>
+    <text x="78" y="650" font-size="15" font-weight="600" fill="#2a3a4f">两条路都一样的地方</text>
+    <text x="78" y="680" font-size="12.5" fill="#5b6b80">· 笔记本必须静态在 192.168.123.0/24 内，不要靠 DHCP 碰运气</text>
+    <text x="78" y="704" font-size="12.5" fill="#5b6b80">· 地址选 .50 这类空闲位，避开 .1 / .18 / .161</text>
+    <text x="78" y="728" font-size="12.5" fill="#5b6b80">· ROS_IP 填笔记本自己的 123 地址，MASTER 指向 Jetson</text>
+    <text x="78" y="752" font-size="12.5" fill="#5b6b80">· 带宽 100 M–1 G，RViz 全量点云可以直接开</text>
+    <text x="78" y="776" font-size="12.5" fill="#5b6b80">· 全程不出机身，不消耗 4G 流量</text>
+    <text x="78" y="806" font-size="12" fill="#b45309">· 同时连着办公网时，删掉另一个网段的默认路由，否则会串</text>
+    <text x="78" y="832" font-size="12" fill="#b45309">· WiFi 优先 5 GHz：2.4 GHz 与 Odin1 的 USB3 抢频段</text>
+  </g>
+  <g>
+    <rect x="700" y="620" width="700" height="240" rx="12" fill="#ffffff" stroke="#d8e0ea" stroke-width="1.2"/>
+    <text x="722" y="650" font-size="15" font-weight="600" fill="#2a3a4f">先确认再动手</text>
+    <text x="722" y="682" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">ipconfig / ifconfig   看本机是否拿到 192.168.123.x</text>
+    <text x="722" y="708" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">ping 192.168.123.18    三步之内必须通</text>
+    <text x="722" y="734" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">ping 192.168.123.161   再测运控板</text>
+    <text x="722" y="760" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">ssh unitree@192.168.123.18</text>
+    <text x="722" y="786" font-size="13" font-family="ui-monospace,Menlo,monospace" fill="#1d4ed8">rostopic hz /odin1/odometry</text>
+    <text x="722" y="820" font-size="12" fill="#b45309">ping 通但 rostopic 空 → 检查 ROS_IP，不是网络问题</text>
+  </g>
+</svg>
+</div>
+</body>
+</html>
