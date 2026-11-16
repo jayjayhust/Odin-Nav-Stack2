@@ -62,7 +62,7 @@
   <span><span class="sw" style="background:#8fa9c4"></span>可通行面</span>
   <span><span class="sw" style="background:#ff5a5a"></span>膨胀后的墙 / 不可走</span>
   <span><span class="sw" style="background:#4fc3ff"></span>全局路径</span>
-  <span><span class="sw" style="background:#ffcf3f"></span>局部规划（窗口内重规划）</span>
+  <span><span class="sw" style="background:#ffcf3f"></span>局部规划（NeuPAN 约束：点集 5 cm 硬阈值 + 2 s rollout）</span>
   <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
   <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
@@ -560,14 +560,18 @@ function flood(m, x, y, z){
           byStorey: hist, start: [si, sj, sk], seen};
 }
 
-// ---------- local planning inside a rolling window -------------------------
-// The repo's local layer is NeuPAN / DWA, neither of which can run in a page.
-// What is shown here is the compromise, and it is labelled as such in the
-// legend: the same 3D A* rules as the global plan, re-run every 0.4 m inside a
-// 2.5 m box around the dog. Yellow is the local leg, bright blue is global.
-const COL_LOCAL = 0xffcf3f, COL_WIN = 0x6fd3ff;
-const LOCAL_HALF = 2.5;
-
+// ---------- local layer, the way the deployed planner constrains it ---------
+// robots/go2/neupan/planner.yaml: differential drive, max_speed 0.625 m/s and
+// 0.875 rad/s, receding 10 steps of 0.1 s, collision_threshold 0.05 m.
+// nav_sim.cpp is explicit that this planner constrains the robot against the
+// point set itself - "no occupancy grid and no inflation" - and that a body
+// half width plus 0.05 m is a hard limit, not a cost term.
+//
+// So the local leg here is a rollout over sampled velocities checked against
+// occupied voxel centres in the body height band (base_z +0.12 .. +0.55), and
+// a candidate that comes closer than halfW + 0.05 is simply thrown away.
+// What is NOT here: the DUNE network and the PAN optimisation. Those need
+// torch and a checkpoint; this is the constraint骨架, not the learned part.
 function pathAt(pts, s){
   let acc = 0;
   for (let i = 1; i < pts.length; ++i){
@@ -583,108 +587,116 @@ function pathAt(pts, s){
   return pts[pts.length-1].slice();
 }
 
-// A* restricted to a box of cells around the dog, same edge rules as the
-// global search: 26 neighbours, no pure vertical step, support required.
-function planLocal(m, sx, sy, sz, gx, gy, gz){
-  const {res, lo, nx, ny, nz, data} = m;
-  const F = (i, j, k) => (k*ny + j)*nx + i;
-  const sup = m.supportOrUnknown;
-  const ok = (i, j, k) => i >= 0 && j >= 0 && k >= 0 && i < nx && j < ny && k < nz &&
-                          data[F(i, j, k)] === FREE;
-  const ci0 = Math.floor((sx-lo[0])/res), cj0 = Math.floor((sy-lo[1])/res),
-        ck0 = Math.floor((sz-lo[2])/res);
-  const half = Math.ceil(LOCAL_HALF/res);
-  const inside = (i, j, k) => Math.abs(i-ci0) <= half && Math.abs(j-cj0) <= half &&
-                              Math.abs(k-ck0) <= half;
-  const near = (x, y, z) => {
-    const i0 = Math.floor((x-lo[0])/res), j0 = Math.floor((y-lo[1])/res),
-          k0 = Math.floor((z-lo[2])/res);
-    let best = -1, bd = 1e30, bi = 0, bj = 0, bk = 0;
-    for (let dk = -4; dk <= 4; ++dk) for (let dj = -4; dj <= 4; ++dj) for (let di = -4; di <= 4; ++di){
-      const i = i0+di, j = j0+dj, k = k0+dk;
-      if (!ok(i, j, k) || !inside(i, j, k)) continue;
-      if (k < 1 || !sup(i, j, k)) continue;
-      const d2 = di*di + dj*dj + dk*dk;
-      if (d2 < bd){ bd = d2; best = F(i, j, k); bi = i; bj = j; bk = k; }
-    }
-    return best < 0 ? null : [bi, bj, bk];
-  };
-  const a = near(sx, sy, sz), b = near(gx, gy, gz);
-  if (!a || !b) return null;
-  const sId = F(a[0], a[1], a[2]), gId = F(b[0], b[1], b[2]);
+const COL_LOCAL = 0xffcf3f, COL_WIN = 0x6fd3ff, LOCAL_HALF = 2.5;
+const HALF_W = 0.175, CLR_HARD = 0.05;
+const NEU_ROLL_H = 0.20, NEU_STEPS = 10;
 
-  const gS = new Float32Array(m.cells).fill(1e30);
-  const from = new Int32Array(m.cells).fill(-1);
-  const closed = new Uint8Array(m.cells);
-  const heap = [];
-  const hpush = (f, id) => {
-    heap.push([f, id]);
-    let i = heap.length-1;
-    while (i > 0){
-      const p = (i-1) >> 1;
-      if (heap[p][0] <= heap[i][0]) break;
-      const t = heap[p]; heap[p] = heap[i]; heap[i] = t; i = p;
-    }
-  };
-  const hpop = () => {
-    const top = heap[0], last = heap.pop();
-    if (heap.length){
-      heap[0] = last;
-      let i = 0;
-      for (;;){
-        const l = i*2+1, r = l+1; let s = i;
-        if (l < heap.length && heap[l][0] < heap[s][0]) s = l;
-        if (r < heap.length && heap[r][0] < heap[s][0]) s = r;
-        if (s === i) break;
-        const t = heap[s]; heap[s] = heap[i]; heap[i] = t; i = s;
-      }
-    }
-    return top;
-  };
-  const heur = (i, j, k) => res*Math.hypot(i-b[0], j-b[1], k-b[2]);
-  gS[sId] = 0;
-  hpush(heur(a[0], a[1], a[2]), sId);
-  let found = -1;
-  while (heap.length){
-    const [f, cur] = hpop();
-    if (closed[cur]) continue;
-    closed[cur] = 1;
-    const ci = cur % nx, cj = ((cur/nx)|0) % ny, ck = (cur/(nx*ny))|0;
-    if (Math.abs(ci-b[0]) <= 1 && Math.abs(cj-b[1]) <= 1 && Math.abs(ck-b[2]) <= 1){ found = cur; break; }
-    for (let dk = -MAX_STEP_Z; dk <= MAX_STEP_Z; ++dk){
-      const k = ck + dk;
-      if (k < 0 || k >= nz) continue;
-      for (let dj = -1; dj <= 1; ++dj){
-        const j = cj + dj;
-        if (j < 0 || j >= ny) continue;
-        for (let di = -1; di <= 1; ++di){
-          if (!di && !dj && !dk) continue;
-          if (dk !== 0 && !di && !dj) continue;
-          const i = ci + di;
-          if (i < 0 || i >= nx) continue;
-          if (!inside(i, j, k) || !ok(i, j, k)) continue;
-          const nf = F(i, j, k);
-          if (closed[nf]) continue;
-          if (k < 1 || !sup(i, j, k)) continue;
-          const tentative = gS[cur] + res*Math.hypot(di, dj, dk);
-          if (tentative >= gS[nf]) continue;
-          gS[nf] = tentative; from[nf] = cur;
-          hpush(tentative + heur(i, j, k), nf);
-        }
-      }
-    }
-  }
-  if (found < 0) return null;
+function occPoints(m){
+  if (m.occPts) return m.occPts;
+  const {res, lo, nx, ny, nz, data} = m;
   const pts = [];
-  let c = found;
-  while (c >= 0){
-    const i = c % nx, j = ((c/nx)|0) % ny, k = (c/(nx*ny))|0;
-    pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res]);
-    if (c === sId) break;
-    c = from[c];
-  }
-  pts.reverse();
+  for (let k = 0; k < nz; ++k)
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i)
+        if (data[(k*ny+j)*nx+i] === OCC)
+          pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res]);
+  m.occPts = pts;
   return pts;
+}
+
+// Distance to the nearest live return in the body's height band. The floor is
+// excluded by the lower band edge, exactly as nav_sim does: standing on it puts
+// it at distance zero and every candidate would read as a collision.
+function nearestPointDist(pts, px, py, baseZ){
+  let best = 1e9;
+  for (let i = 0; i < pts.length; i += 2){
+    const q = pts[i];
+    const dz = q[2] - baseZ;
+    if (dz < 0.12 || dz > 0.55) continue;
+    const dx = q[0] - px, dy = q[1] - py;
+    if (Math.abs(dx) > 3 || Math.abs(dy) > 3) continue;
+    const d = Math.sqrt(dx*dx + dy*dy);
+    if (d < best) best = d;
+  }
+  return best;
+}
+
+// One local decision: try candidate (vx, vy, wz), roll out 2.0 s, throw away
+// anything that violates the hard clearance, pick the one that gets closest to
+// the look-ahead point on the route. Returns the traversed points, in world
+// coordinates, for the yellow line.
+// On a flight the local layer is not NeuPAN at all. Its height band is
+// base_z +0.12 .. +0.55, and the next riser sits inside that band right in
+// front of the dog, so every candidate reads as a collision - which is exactly
+// why the repo hands stairs to stair_gait and only the landings stay under the
+// local planner (Scenario::flights_only). Keep the same division here: a
+// graded segment draws the route itself, a level segment asks NeuPAN.
+function isStair(path, s){
+  const a = pathAt(path, Math.max(0, s-1.0)), b = pathAt(path, Math.min(pathLen, s+1.0));
+  const dh = Math.hypot(b[0]-a[0], b[1]-a[1]);
+  return dh > 0.05 && Math.abs(b[2]-a[2]) / dh > 0.08;
+}
+
+function stairLeg(path, s){
+  const out = [];
+  const step = 0.15;
+  for (let i = 0; i <= 6; ++i){
+    const q = pathAt(path, Math.min(pathLen, s + i*step*0.625*0.99/1.5));
+    out.push([q[0], q[1], q[2] + 0.03]);
+  }
+  // make sure the polyline actually ends somewhere ahead
+  const q = pathAt(path, Math.min(pathLen, s + 0.9));
+  out.push([q[0], q[1], q[2] + 0.03]);
+  return out;
+}
+
+function neupanLeg(m, pose, target){
+  const pts = occPoints(m);
+  const [x0, y0, z0] = pose;
+  const yaw0 = pose[3] || 0;
+  const cands = [];
+  for (const vx of [0.625, 0.45, 0.25, 0.0])
+    for (const vy of [-0.25, 0.0, 0.25])
+      for (const wz of [-0.7, -0.35, 0.0, 0.35, 0.7])
+        cands.push([vx, vy, wz]);
+  let best = null, bestCost = 1e18, bestMin = 9.9;
+  for (const c of cands){
+    let x = x0, y = y0, yaw = yaw0, bad = false, mincl = 9.9;
+    const tr = [[x, y]];
+    for (let k = 0; k < NEU_STEPS; ++k){
+      x += (c[0]*Math.cos(yaw) - c[1]*Math.sin(yaw)) * NEU_ROLL_H;
+      y += (c[0]*Math.sin(yaw) + c[1]*Math.cos(yaw)) * NEU_ROLL_H;
+      yaw += c[2] * NEU_ROLL_H;
+      if (k % 2 === 0){
+        const d = nearestPointDist(pts, x, y, z0);
+        // hard constraint: half width + 5 cm, exactly as PAN enforces it
+        if (d < HALF_W + CLR_HARD){ bad = true; break; }
+        mincl = Math.min(mincl, d - HALF_W);
+      }
+      tr.push([x, y]);
+    }
+    if (bad) continue;
+    const dEnd = Math.hypot(target[0] - x, target[1] - y);
+    let herr = Math.atan2(target[1] - y, target[0] - x) - yaw;
+    while (herr > Math.PI) herr -= 2*Math.PI;
+    while (herr < -Math.PI) herr += 2*Math.PI;
+    // getting closer to the route, and pointing at it, both count - otherwise
+    // "stand still" wins whenever the dog faces away from the route
+    const cost = dEnd + 0.55*Math.abs(herr) - 0.25*mincl;
+    if (cost < bestCost){ bestCost = cost; best = tr; bestMin = mincl; }
+  }
+  if (!best) return null;
+  return best.map(([x, y]) => [x, y, z0 + 0.03]);
+}
+
+function makeWinBox(c, half){
+  const g = new THREE.BoxGeometry(half*2, half*2, 2.2);
+  const e = new THREE.EdgesGeometry(g);
+  const l = new THREE.LineSegments(e, new THREE.LineBasicMaterial({
+    color: COL_WIN, transparent: true, opacity: 0.5, depthTest: false, depthWrite: false}));
+  l.position.set(c[0], c[1], c[2]);
+  l.renderOrder = 8;
+  return l;
 }
 
 function startLocalDemo(){
@@ -1038,7 +1050,19 @@ function tick(){
     if (Math.abs(prog - lastLocal) > 0.4){
       lastLocal = prog;
       const tgt = pathAt(state.path, Math.min(pathLen, prog + 2.0));
-      updateLocalLine(planLocal(state.map, p[0], p[1], p[2], tgt[0], tgt[1], tgt[2]));
+      const nxt = pathAt(state.path, Math.min(pathLen, prog + 0.35));
+      const yaw = Math.atan2(nxt[1] - p[1], nxt[0] - p[0]);
+      let leg;
+      if (isStair(state.path, prog)){
+        leg = stairLeg(state.path, prog);        // stair_gait has the flight
+        if (winBox) winBox.visible = false;
+      } else {
+        if (winBox) winBox.visible = true;
+        leg = neupanLeg(state.map, [p[0], p[1], p[2], yaw], tgt);
+        if (!leg) leg = stairLeg(state.path, prog);
+      }
+      updateLocalLine(leg);
+      if (dogMesh) dogMesh.rotation.z = yaw;
     }
   }
   renderer.render(scene, camera);

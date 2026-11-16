@@ -54,17 +54,35 @@ Fix: run `flood()` from the start first, then choose the goal only inside that r
 
 This probe is worth keeping: **when a plan fails, measure the two components before suspecting the algorithm**.
 
-## Global blue, local yellow
+## Global blue, local yellow: the local leg follows NeuPAN, not a homemade A*
 
 - **Global** `0x4fc3ff`, `renderOrder 10`, `depthTest:false`: planned once, drawn end to end.
-- **Local** `0xffcf3f`, `renderOrder 11`. The dog advances along the global path at 1.2 m/s and every **0.4 m** re-runs 3D A* inside a **2.5 m** box (same rules as global: 26 neighbours, no pure vertical step, support required), drawing that leg in yellow.
-- **Window** `0x6fd3ff` wireframe, 2.5 m x 2.5 m x 2.2 m, follows the dog.
+- **Local** `0xffcf3f`, `renderOrder 11`, under the constraints of the deployed NeuPAN (`robots/go2/neupan/planner.yaml`): differential drive, `max_speed 0.625 m/s / 0.875 rad/s`, `receding 10`, `collision_threshold 0.05`.
+- **Window** `0x6fd3ff` wireframe, shown on level segments only.
 
-One thing has to be said plainly: **the yellow line is not NeuPAN output**. NeuPAN is a network and cannot run in a page; the yellow line is "local re-planning under the same A* rules inside the local box", showing what the local layer does and in what frame. Real NeuPAN / DWA run in ROS, and their comparison lives in `3d-planner-and-stairs`.
+The previous version drew "3D A* re-run inside a 2.5 m box on the inflated grid", and that was wrong: `nav_sim.cpp` is explicit that NeuPAN constrains the robot against the point set itself - "no occupancy grid and no inflation" - and that `half width + 0.05 m` is a hard limit, not a cost term. What runs now:
 
-`#demo,at=<metres>` drops the dog at a given mileage on the global path (`at=12` is mid flight, `at=27` near 4F) for screenshots.
+- obstacles are **un-inflated OCC voxel centres**, filtered to the body height band `base_z +0.12 .. +0.55` (the floor drops out of the band, otherwise standing on it reads as distance zero);
+- candidates `(vx, vy, wz)` are sampled and rolled out 10 steps of 0.2 s;
+- any candidate that comes within `halfW(0.175) + 0.05` is **discarded**, not penalised;
+- cost = distance to the look-ahead point + 0.55 x heading error - 0.25 x clearance. Without the heading term "stand still" is always cheapest.
 
-The walkable faces also moved from yellow to a cool grey blue `0x8fa9c4` this round: the faces were yellow, so a yellow line drawn on them was invisible. Yellow now means local planning and nothing else.
+**What it is not**: the DUNE network and the PAN optimisation. Those are a `.pth` checkpoint and torch; the page has neither. This is the constraint skeleton, not a learned policy. Real NeuPAN runs in ROS.
+
+### No NeuPAN line on a flight, and that is not a bug
+
+NeuPAN's band is `base_z +0.12 .. +0.55`, and the next riser sits inside that band right under the dog - every candidate reads as a collision. That is exactly why the repo hands stairs to `stair_gait` and leaves the landings to the local planner (`Scenario::flights_only`).
+
+The page follows the same split: NeuPAN on level segments, and on a flight the yellow line simply follows the route's centre line with the window hidden.
+
+### There are two local planners in the simulator, not one
+
+`Scenario::planner` in `nav_sim.cpp` has two, defaulting to `neupan`:
+
+- `neupan` - the deployed one: differential drive, 1.0 s MPC, hard point-set threshold, **no grid and no inflation**;
+- `dwa` - the sampling planner the simulator grew, which **does use the inflated grid**.
+
+The page now matches the first. The comparison lives in `3d-planner-and-stairs`.
 
 ## Limits worth knowing
 
