@@ -84,6 +84,7 @@
   <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
   <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
+  <span style="margin-left:auto;color:var(--dim)">WASD 飞行 · Q/E 升降 · Shift 加速 · 右键拖拽转视角 · 滚轮推拉</span>
   <span><span class="sw" style="background:#8fa3bb"></span>原始模型</span>
 </div>
 
@@ -1827,7 +1828,8 @@ document.getElementById('clear').onclick = () => {
 // ---------- orbit --------------------------------------------------------
 let drag = null;
 host.addEventListener('pointerdown', e => {
-  if (e.button === 2) drag = {pan: true, x: e.clientX, y: e.clientY, tx: cam.target.x, ty: cam.target.y};
+  if (e.button === 2) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
+  else if (e.button === 1) drag = {pan: true, x: e.clientX, y: e.clientY, tx: cam.target.x, ty: cam.target.y};
   else if (e.button === 0 && !state.mode) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
 });
 window.addEventListener('pointermove', e => {
@@ -1844,6 +1846,40 @@ window.addEventListener('pointermove', e => {
   applyCam();
 });
 window.addEventListener('pointerup', () => drag = null);
+
+// UE-style fly camera: W/S along the view direction, A/D strafe, Q/E down and
+// up, Shift for a fast pass. The rig is camera = target + orbit offset, so
+// translating the target moves the camera rigidly and the view direction is
+// preserved - that is the "fly with WASD, look with the mouse" feel of the
+// Unreal viewport, instead of a dolly that has to re-aim every time.
+const keys = Object.create(null);
+const FLY_CODES = {KeyW:1, KeyS:1, KeyA:1, KeyD:1, KeyQ:1, KeyE:1, ShiftLeft:1, ShiftRight:1};
+window.addEventListener('keydown', e => {
+  if (e.target && /input|select|textarea/i.test(e.target.tagName)) return;
+  if (!FLY_CODES[e.code]) return;
+  keys[e.code] = 1;
+  if (e.code === 'KeyW' || e.code === 'KeyS' || e.code === 'KeyA' || e.code === 'KeyD') e.preventDefault();
+});
+window.addEventListener('keyup', e => { if (FLY_CODES[e.code]) keys[e.code] = 0; });
+window.addEventListener('blur', () => { for (const k in keys) keys[k] = 0; });
+
+function flyStep(dt){
+  const nz = (keys.KeyW ? 1 : 0) - (keys.KeyS ? 1 : 0);
+  const rx = (keys.KeyD ? 1 : 0) - (keys.KeyA ? 1 : 0);
+  const uz = (keys.KeyE ? 1 : 0) - (keys.KeyQ ? 1 : 0);
+  if (!nz && !rx && !uz) return;
+  const sp = Math.max(2.5, cam.dist * 0.55) * (keys.ShiftLeft || keys.ShiftRight ? 3 : 1) * dt;
+  const cp = Math.cos(cam.pitch), sp2 = Math.sin(cam.pitch);
+  // forward is the horizontal view direction; vertical is a separate axis so
+  // W never climbs into the ceiling unless you look up
+  const fx = Math.cos(cam.yaw) * cp, fy = Math.sin(cam.yaw) * cp;
+  const sx = -Math.sin(cam.yaw), sy = Math.cos(cam.yaw);
+  cam.target.x += (fx * nz + sx * rx) * sp;
+  cam.target.y += (fy * nz + sy * rx) * sp;
+  cam.target.z += (uz * sp + sp2 * nz * sp);
+  applyCam();
+}
+
 host.addEventListener('wheel', e => {
   e.preventDefault();
   cam.dist = Math.max(2, Math.min(300, cam.dist * (1 + Math.sign(e.deltaY) * 0.08)));
@@ -1865,6 +1901,7 @@ function tick(){
   const now = performance.now();
   const dt = lastClock ? Math.min(0.12, (now - lastClock)/1000) : 0;
   lastClock = now;
+  flyStep(dt);
   if (state.map) stepObstacles(dt, state.map);
   if (state.path && pathLen > 0.5 && dogMesh){
     // Frame grabber hook: #record drives prog from outside so every frame sits
