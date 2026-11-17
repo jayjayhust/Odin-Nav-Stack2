@@ -655,6 +655,43 @@ function buildMap(pos, idx, res, infR){
       for (let k = 0; k < nz; ++k) if (topFace[F(i, j, k)]) ++tops;
       if (tops >= 2) stairProfile[i + j*nx] = 1;
     }
+  // A flight is a run of treads, and "the column carries two walk surfaces"
+  // does not identify one: a multi storey wall or a slab edge carries a walk
+  // surface at every floor, so that test produced blobs 11 m by 15 m spanning
+  // two floors instead of a flight. What a flight actually is, is a place
+  // where the surface height rises between neighbouring columns: one step
+  // below on one side, one step above on the other, within a single riser.
+  // Detect that from the top surface height per column.
+  // The tread is the surface the dog stands on, not the highest upward facing
+  // triangle in the column: a flight passes under a handrail, so the top
+  // surface there belongs to the rail and is flat along its length. Take the
+  // highest standable cell instead, and only in columns that could be a stair
+  // at all, so the walkable test runs a few thousand times, not a few million.
+  const treadTop = new Int32Array(nx*ny).fill(-1);
+  for (let j = 0; j < ny; ++j)
+    for (let i = 0; i < nx; ++i){
+      const f = i + j*nx;
+      if (!stairProfile[f]) continue;
+      for (let k = nz - 1; k >= 1; --k)
+        if (walkable(i, j, k)){ treadTop[f] = k; break; }
+    }
+  const riseMask = new Uint8Array(nx*ny);
+  {
+    const lo = 1, hi = MAX_STEP_Z + 1;
+    const stepUp = (k, kn) => kn >= 0 && (kn - k) >= lo && (kn - k) <= hi;
+    const stepDn = (k, kn) => kn >= 0 && (k - kn) >= lo && (k - kn) <= hi;
+    for (let j = 1; j < ny - 1; ++j)
+      for (let i = 1; i < nx - 1; ++i){
+        const f = i + j*nx, k = treadTop[f];
+        if (k < 0) continue;
+        const ax = stepDn(k, treadTop[f-1]) && stepUp(k, treadTop[f+1]);
+        const ay = stepDn(k, treadTop[f-nx]) && stepUp(k, treadTop[f+nx]);
+        const bx = stepDn(k, treadTop[f+1]) && stepUp(k, treadTop[f-1]);
+        const by = stepDn(k, treadTop[f+nx]) && stepUp(k, treadTop[f-nx]);
+        if (ax || ay || bx || by) riseMask[f] = 1;
+      }
+  }
+
   // ---- stair corridors, for the lateral cost ------------------------------
   // astar3d charges weight * |offset from the centre line| on entry, so the
   // route prefers the middle of a flight instead of grazing a handrail. The
@@ -663,28 +700,36 @@ function buildMap(pos, idx, res, infR){
   // connected stair columns, their bounds, and the axis they run along.
   const stairCorr = [];
   {
-    // The stair profile mask (a column with two or more walk surfaces, which a
-    // wall never has) is one cell wide in places, because sampling leaves gaps,
-    // so grouping it directly produced 132 slivers instead of one box per
-    // flight. Dilate by one cell first. Dilating the stair column mask instead
-    // also matched every wall and merged the whole perimeter into strips.
-    const stairDil = new Uint8Array(nx*ny);
+    // A flight is a run of treads, and the mask of stair columns is one cell
+    // wide per sampled row with gaps between the rows, because sampling is a
+    // lattice and a column only counts when two of its surfaces are stamped.
+    // Grouping it as it stands gave 132 strips of one row; plain dilation gave
+    // strips too, because it also swallowed the perimeter. A one cell closing
+    // (dilate then erode with the four neighbours) fills those one cell gaps
+    // and puts nothing back that was not a stair: walls never enter this mask.
+    const dm = new Uint8Array(nx*ny), cm = new Uint8Array(nx*ny);
     for (let j = 0; j < ny; ++j)
       for (let i = 0; i < nx; ++i){
-        if (!stairProfile[i + j*nx]) continue;
+        if (!riseMask[i + j*nx]) continue;
         for (let dj = -1; dj <= 1; ++dj)
           for (let di = -1; di <= 1; ++di){
             const i2 = i + di, j2 = j + dj;
             if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
-            stairDil[i2 + j2*nx] = 1;
+            dm[i2 + j2*nx] = 1;
           }
+      }
+    for (let j = 1; j < ny-1; ++j)
+      for (let i = 1; i < nx-1; ++i){
+        const f = i + j*nx;
+        if (!dm[f]) continue;
+        if (dm[f-1] && dm[f+1] && dm[f-nx] && dm[f+nx]) cm[f] = 1;
       }
     const seen = new Uint8Array(nx*ny), stack = [];
     const nb4 = [-1, 1, -nx, nx];
     for (let j0 = 0; j0 < ny; ++j0)
       for (let i0 = 0; i0 < nx; ++i0){
         const id0 = i0 + j0*nx;
-        if (!stairDil[id0] || seen[id0]) continue;
+        if (!cm[id0] || seen[id0]) continue;
         stack.length = 0; stack.push(id0); seen[id0] = 1;
         let imin = i0, imax = i0, jmin = j0, jmax = j0, cnt = 0, kmin = 1e9, kmax = -1;
         while (stack.length){
@@ -708,7 +753,7 @@ function buildMap(pos, idx, res, infR){
               const nj = qj + nb4[d];
               if (nj < 0 || nj >= ny) continue;
             }
-            if (!stairDil[nq] || seen[nq]) continue;
+            if (!cm[nq] || seen[nq]) continue;
             seen[nq] = 1; stack.push(nq);
           }
         }
@@ -819,7 +864,7 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          capWide, stairCol, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, stairProfile, riseMask, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -827,7 +872,7 @@ function buildMap(pos, idx, res, infR){
 // ---------- 3D A*, same rules as astar3d.cpp -------------------------------
 const fmt3 = v => '[' + v.map(x => (+x).toFixed(2)).join(',') + ']';
 function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
-  const {res, lo, nx, ny, nz, data} = m;
+  const {res, lo, nx, ny, nz, data, stairCol} = m;
   const walkable = m.walkable;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   const cells = m.cells;
@@ -986,7 +1031,28 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
               }
             }
           }
-          const tentative = gScore[cur] + step + lateral;
+          // Keep off the handrail. A corridor box was never reliable on an
+          // imported model (a wall carries a walk surface at every floor, so
+          // "two surfaces in a column" selects the whole storey), but the
+          // reason to want the middle is local: a rail is two cells away and
+          // the flight is a metre wide. Charge a stair cell for every occupied
+          // cell next to it, so the search slides to the middle without any
+          // box having to be detected. Same intent as the lateral term above.
+          let rail = 0;
+          if (stairCol && stairCol[i + j*nx]){
+            const occNear = (di2, dj2) => {
+              const i2 = i + di2, j2 = j + dj2;
+              if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) return 0;
+              for (let dk2 = -1; dk2 <= 1; ++dk2){
+                const k2 = k + dk2;
+                if (k2 < 1 || k2 >= nz) continue;
+                if (data[F(i2, j2, k2)] === 0) return 1;
+              }
+              return 0;
+            };
+            rail = 0.30 * res * (occNear(1,0) + occNear(-1,0) + occNear(0,1) + occNear(0,-1));
+          }
+          const tentative = gScore[cur] + step + lateral + rail;
           if (tentative >= gScore[nf]) continue;
           gScore[nf] = tentative;
           from[nf] = cur;
