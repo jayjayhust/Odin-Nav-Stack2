@@ -361,6 +361,26 @@ function buildMap(pos, idx, res, infR){
     return c >= 7;
   }
 
+  // How far the cap runs through this cell, along one axis, out of five taps.
+  // A railing bar is one cell thick, so the 3x3 dilation that plugs holes in
+  // the shell makes it exactly three wide: a 0.45 m square patch that passes
+  // the 3x3 test and draws as a small sheet above the stair. A real surface -
+  // plate, landing, platform - runs at least five cells one way, four of five
+  // taps. Treads are two cells deep, but they arrive through the stair branch.
+  function capRun(ix, iy, k, dx, dy){
+    let n = 0;
+    for (let t = -2; t <= 2; ++t){
+      const i2 = ix + dx*t, j2 = iy + dy*t;
+      if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+      const f = F(i2, j2, k);
+      if (data[f] === OCC && topFace[f]) ++n;
+    }
+    return n;
+  }
+  function capSolid(ix, iy, k){
+    return capRun(ix, iy, k, 1, 0) >= 4 && capRun(ix, iy, k, 0, 1) >= 4;
+  }
+
   // hasGroundSupport, transposed from voxel_grid.cpp with xy radius 0: the
   // cell below must be occupied, and a one cell thick sheet is only accepted
   // when it is a real horizontal face rather than a wall hit on one layer.
@@ -372,7 +392,7 @@ function buildMap(pos, idx, res, infR){
     // a cell that came from an upward facing sample is a floor by definition,
     // unless that face is a narrow cap such as a railing top
     if (topFace[fb]){
-      if (!wideCap(ix, iy, zl)) return false;
+      if (!wideCap(ix, iy, zl) || !capSolid(ix, iy, zl)) return false;
       // A wide cap on top of a tall solid is the top of a wall, a pillar or a
       // railing post, not a floor: a slab is one or two cells thick and then
       // open air, a wall keeps going down. Standing on a 0.45 m wide post cap
@@ -1497,6 +1517,7 @@ function makePlanes(m){
   // under them. Inflated cells are drawn red, which is the whole point -
   // it shows exactly which standable surface the 0.2 m band costs you.
   const ids = [], inf = [];
+  const stand = new Uint8Array(nx*ny*nz);
   for (let k = 0; k < nz; ++k)
     for (let j = 0; j < ny; ++j)
       for (let i = 0; i < nx; ++i){
@@ -1521,8 +1542,46 @@ function makePlanes(m){
             if (nb > 2) break;
           }
         if (nb <= 2) continue;
-        (v === INFL ? inf : ids).push(F(i, j, k));
+        stand[F(i, j, k)] = 1;
       }
+
+  // Keep only cells that belong to a patch a dog could actually be on. The
+  // cap of a railing post is nine cells of top face, isolated in the air above
+  // the stair, so it passes every local test and still paints as a small sheet
+  // beside the handrail. Grouping the standable cells into patches and dropping
+  // patches under 40 cells (0.9 m2) removes those caps without touching a
+  // floor, a landing or a flight, which all connect down to the big patch.
+  const lab = new Int32Array(nx*ny*nz);
+  const sizes = [];
+  const stack = [];
+  for (let s0 = 0; s0 < stand.length; ++s0){
+    if (!stand[s0] || lab[s0]) continue;
+    const id = sizes.length + 1;
+    stack.length = 0; stack.push(s0); lab[s0] = id; let sz = 0;
+    while (stack.length){
+      const q = stack.pop(); ++sz;
+      const k = Math.floor(q / (nx*ny)), r = q - k*nx*ny, j = Math.floor(r / nx), i = r - j*nx;
+      for (let dk = -1; dk <= 1; ++dk)
+        for (let dj = -1; dj <= 1; ++dj)
+          for (let di = -1; di <= 1; ++di){
+            if (!di && !dj && !dk) continue;
+            if (dk !== 0 && (di || dj)) continue;   // a gait moves one riser at a time
+            const i2 = i + di, j2 = j + dj, k2 = k + dk;
+            if (i2 < 0 || j2 < 0 || k2 < 1 || i2 >= nx || j2 >= ny || k2 >= nz) continue;
+            const q2 = F(i2, j2, k2);
+            if (!stand[q2] || lab[q2]) continue;
+            lab[q2] = id; stack.push(q2);
+          }
+    }
+    sizes.push(sz);
+  }
+  const keep = new Uint8Array(sizes.length + 1);
+  for (let c = 0; c < sizes.length; ++c) if (sizes[c] >= 40) keep[c + 1] = 1;
+  for (let s0 = 0; s0 < stand.length; ++s0){
+    if (!stand[s0] || !keep[lab[s0]]) continue;
+    const v = data[s0];
+    (v === INFL ? inf : ids).push(s0);
+  }
   const quad = new THREE.PlaneGeometry(res*0.92, res*0.92);
   const tot = ids.length + inf.length;
   const walk = new THREE.InstancedMesh(quad, new THREE.MeshBasicMaterial({
