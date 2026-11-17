@@ -1027,9 +1027,11 @@ function makeSrcMesh(pos, idx){
   g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setIndex(new THREE.BufferAttribute(idx, 1));
   g.computeVertexNormals();
+  const solid = location.hash.indexOf('solid') >= 0;
   const m = new THREE.MeshStandardMaterial({
-    color: 0x8fa3bb, transparent: true, opacity: 0.42, roughness: 0.9,
-    metalness: 0.05, side: THREE.DoubleSide, depthWrite: false});
+    color: 0x8fa3bb, transparent: !solid, opacity: solid ? 0.96 : 0.42,
+    roughness: 0.9, metalness: 0.05, side: THREE.DoubleSide,
+    depthWrite: !!solid});
   const mesh = new THREE.Mesh(g, m);
   mesh.renderOrder = 2;
   return mesh;
@@ -1358,14 +1360,27 @@ function tick(){
   lastClock = now;
   if (state.map) stepObstacles(dt, state.map);
   if (state.path && pathLen > 0.5 && dogMesh){
+    // Frame grabber hook: #record drives prog from outside so every frame sits
+    // at an exact point on the route, instead of racing the wall clock. Used
+    // by the CDP capture script; harmless when nobody sets it.
+    if (window.recHold) prog = Math.min(pathLen, window.recProg || 0);
     // The local layer's verdict is stop-or-go here, not a steering command: the
     // dog still follows the route, but a blocked window parks it the way
     // NeuPAN would keep receding without a legal move.
-    if (!state.blocked) prog += dt * 1.2;
+    if (!window.recHold && !state.blocked) prog += dt * 1.2;
     if (prog > pathLen) prog = 0;     // loop, so the page keeps demonstrating
     const p = pathAt(state.path, prog);
     dogMesh.position.set(p[0], p[1], p[2]);
     winBox.position.set(p[0], p[1], p[2]);
+    // #...,follow rides the camera behind the dog, which is how a recording
+    // reads: the treads pass under the feet instead of a whole room at once.
+    if (location.hash.indexOf('follow') >= 0){
+      // South of the dog and above the partition: the treads pass under the
+      // feet and the room's furniture never cuts the shot.
+      cam.yaw = -1.57;
+      cam.target.set(p[0], p[1], p[2] + 0.25);
+      applyCam();
+    }
     // re-plan the local leg every 0.4 m rather than every frame: the window
     // is small, but a search per frame is still waste
     if (Math.abs(prog - lastLocal) > 0.4){
@@ -1471,9 +1486,23 @@ if (location.hash.indexOf('single') >= 0){
         if (kind === 'ridge' || kind === 'ridgedn'){
           // whole crossing end to end: flights on both sides, landing between
           cam.target.set(X0 + (is25 ? 6.99 : 8.35), Y0 + 7.90, Z0 + 0.45);
-          cam.dist = 10.6;
-          cam.pitch = 0.52;
-          cam.yaw = -1.45;     // from the south, so the crossing runs left-right
+          cam.dist = 8.6;
+          cam.pitch = 0.44;
+          cam.yaw = -1.52;     // from the south, so the crossing runs left-right
+          if (location.hash.indexOf('follow') >= 0){ cam.dist = 5.2; cam.pitch = 0.80; }
+          if (location.hash.indexOf('stairs') >= 0){
+            if (kind === 'ridgedn'){
+              // stands at the bottom of the down flight looking back west, so
+              // the dog descends toward the camera
+              cam.target.set(X0 + (is25 ? 8.6 : 10.6), Y0 + 7.90, Z0 + 0.45);
+              cam.dist = 5.0; cam.pitch = 0.16; cam.yaw = 0;
+            } else {
+              // from the foot of the flight, looking east up the risers: the
+              // same angle that made the four tread sample legible
+              cam.target.set(X0 + (is25 ? 7.0 : 8.2), Y0 + 7.90, Z0 + 0.50);
+              cam.dist = 7.4; cam.pitch = 0.17; cam.yaw = 3.14;
+            }
+          }
         } else if (kind === 'pit'){
           cam.target.set(X0 + 9.60, Y0 + 5.80, Z0 - 0.20);
           cam.dist = 6.4;
