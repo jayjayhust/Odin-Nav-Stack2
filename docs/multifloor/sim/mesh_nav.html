@@ -58,6 +58,8 @@
   <select id="unit"><option value="auto" selected>自动</option><option value="m">米</option><option value="cm">厘米</option></select>
   <span class="lbl">上方向</span>
   <select id="up"><option value="z" selected>Z 向上</option><option value="y">Y 向上</option><option value="x">X 向上</option></select>
+  <span class="lbl">台阶上限</span>
+  <select id="step"><option value="0.45" selected>0.45 m</option><option value="0.25">0.25 m（Go2 实机）</option></select>
   <button class="btn" id="setStart">点模型设起点</button>
   <button class="btn" id="setGoal">点模型设终点</button>
   <button class="btn primary" id="go" disabled>规划</button>
@@ -230,7 +232,10 @@ let MAX_STEP_Z = 3;            // 0.45 m, in cells of the current map
 let SNAP_R = 12;               // 1.80 m, in cells of the current map
 
 function buildMap(pos, idx, res, infR){
-  MAX_STEP_Z = Math.max(1, Math.round(MAX_STEP_M / res));
+  // The 0.45 m default is the demo allowance; the Go2 airframe is rated to
+  // 0.25 m, so the same map can be judged against the real limit.
+  const stepM = +(document.getElementById('step').value || MAX_STEP_M);
+  MAX_STEP_Z = Math.max(1, Math.round(stepM / res));
   SNAP_R = Math.max(4, Math.round(SNAP_M / res));
   const pad = 0.6;
   let lo = [1e9, 1e9, 1e9], hi = [-1e9, -1e9, -1e9];
@@ -247,12 +252,19 @@ function buildMap(pos, idx, res, infR){
         nz = Math.ceil((hi[2]-lo[2])/res)+1;
   const cells = nx*ny*nz;
   if (cells > 40e6) return {tooBig:true, nx, ny, nz, lo, cellCount:cells};
-  const data = new Uint8Array(cells);          // UNKNOWN everywhere, like configure()
+  const data = new Uint8Array(cells);
+  const topFace = new Uint8Array(cells);          // UNKNOWN everywhere, like configure()
   const F = (i, j, k) => (k*ny + j)*nx + i;    // voxel_grid.cpp: flatten()
 
   function insertOne(ix, iy, iz, upwardClear){
     if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) return;
-    data[F(ix, iy, iz)] = OCC;
+    const f1 = F(ix, iy, iz);
+    data[f1] = OCC;
+    // Remember that this solid cell carries a walk surface on its top. A
+    // narrow tread (0.40 m, i.e. two cells) never reaches the eight cells the
+    // 5x5 span test wants, so without this bit every stair in an imported
+    // mesh reads as unsupported and the flight comes out as a sieve.
+    if (upwardClear) topFace[f1] = 1;
     if (!upwardClear) return;
     for (let d = 1; d <= CLEARANCE; ++d){
       const k = iz + d;
@@ -317,7 +329,10 @@ function buildMap(pos, idx, res, infR){
   function support(ix, iy, iz){
     const zl = iz - 1;
     if (zl < 0) return false;
-    if (data[F(ix, iy, zl)] !== OCC) return false;
+    const fb = F(ix, iy, zl);
+    if (data[fb] !== OCC) return false;
+    // a cell that came from an upward facing sample is a floor by definition
+    if (topFace[fb]) return true;
     if (zl - 1 >= 0 && data[F(ix, iy, zl-1)] === FREE){
       let span = 0;
       for (let sy = -2; sy <= 2; ++sy)
@@ -345,6 +360,18 @@ function buildMap(pos, idx, res, infR){
         if (iz + u >= nz) return false;
         if (data[F(ix, iy, iz+u)] === OCC) return false;
       }
+      // A hole in a plate is surrounded by plate; open air over a void is
+      // not. Without this test the search also accepted cells hanging in the
+      // air past a cliff edge and cut diagonally across the model instead of
+      // following the stair, because every unknown cell below looked the same.
+      let sides = 0;
+      if (iz - 1 >= 0){
+        if (ix > 0 && data[F(ix-1, iy, iz-1)] === OCC) ++sides;
+        if (ix < nx-1 && data[F(ix+1, iy, iz-1)] === OCC) ++sides;
+        if (iy > 0 && data[F(ix, iy-1, iz-1)] === OCC) ++sides;
+        if (iy < ny-1 && data[F(ix, iy+1, iz-1)] === OCC) ++sides;
+      }
+      if (sides < 2) return false;
       return true;
     }
     return support(ix, iy, iz);
@@ -508,8 +535,35 @@ function buildMap(pos, idx, res, infR){
         if (wz < zmin) zmin = wz;
         if (wz > zmax) zmax = wz;
       }
+  let nStair = 0;
+  for (let i = 0; i < nx*ny; ++i) if (stairCol[i]) ++nStair;
+
+  // Riser histogram: for every column, the vertical gaps between walk surfaces
+  // that are small enough to be a step. This is what tells the user whether the
+  // import kept the stair geometry at all, and whether the risers are inside
+  // the 0.45 m the search allows.
+  const risers = new Map();
+  let nOver = 0, nStepGaps = 0;
+  for (let j = 0; j < ny; ++j)
+    for (let i = 0; i < nx; ++i){
+      let prev = -1;
+      for (let k = 0; k < nz; ++k){
+        if (!topFace[F(i, j, k)]) continue;
+        if (prev >= 0){
+          const dz = (k - prev) * res;
+          if (dz <= 0.60 && dz >= 0.05){
+            const key = Math.round(dz / 0.05) * 0.05;
+            risers.set(key, (risers.get(key) || 0) + 1);
+            ++nStepGaps;
+            if (dz > MAX_STEP_M) ++nOver;
+          }
+        }
+        prev = k;
+      }
+    }
+  const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          stairCol, nStand, nInfl, 
+          stairCol, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -1539,9 +1593,13 @@ function loadModel(pos, idx, name){
     '<span class="k">可站格</span> <span class="v">' + m.nStand.toLocaleString() + '</span> · ' +
     '<span class="k">膨胀吃掉</span> <span class="v">' + m.nInfl.toLocaleString() + '</span><br>' +
     '<span class="k">格</span> <span class="v">' + m.nx + '×' + m.ny + '×' + m.nz + '</span> · ' +
-    '<span class="k">分辨率</span> <span class="v">' + res + ' m</span><br>' +
+    '<span class="k">分辨率</span> <span class="v">' + res + ' m</span> · ' +
+    '<span class="k">楼梯柱</span> <span class="v">' + (m.nStair || 0).toLocaleString() + '</span><br>' +
     '<span class="k">膨胀</span> <span class="v">' + infR + ' m</span> · ' +
     '<span class="k">建图</span> <span class="v">' + Math.round(ms) + ' ms</span><br>' +
+    (m.nStepGaps ? ('<span class="k">台阶高</span> <span class="v">' +
+      (m.riserTop || []).map(([dz, c]) => dz.toFixed(2) + ' m×' + c).join(' / ') +
+      '</span> · <span class="k">超 0.45 m</span> <span class="v">' + m.nOver + ' 处</span><br>') : '') +
     '<span class="k">可走高度</span> <span class="v">' + (zmin).toFixed(2) + ' … ' + (zmax).toFixed(2) + ' m</span>' +
     (scaled ? '<br><span class="k">换算</span> <span class="v">' + scaled + '</span>' : ''));
   document.getElementById('go').disabled = !(state.start && state.goal);
