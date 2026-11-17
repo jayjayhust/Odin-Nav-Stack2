@@ -457,7 +457,14 @@ function buildMap(pos, idx, res, infR){
         if (iy > 0 && data[F(ix, iy-1, iz-1)] === OCC) ++sides;
         if (iy < ny-1 && data[F(ix, iy+1, iz-1)] === OCC) ++sides;
       }
-      if (sides < 2) return false;
+      // Two occupied sides was enough while a rail was air: it described a
+      // hole in a plate, which always has four. Since a panel thinner than a
+      // cell is now stamped one cell thick, the rail itself supplies one or
+      // two occupied sides, and two of them then described the empty column
+      // beside a handrail as if it were a hole in the floor - the route cut
+      // diagonally across a flight, over the rail. A hole in a plate has
+      // three or four; open air beside a rail has one or two.
+      if (sides < 3) return false;
       return true;
     }
     return support(ix, iy, iz);
@@ -477,6 +484,13 @@ function buildMap(pos, idx, res, infR){
     if (iz < 1) return false;
     if (supportOrUnknown(ix, iy, iz)) return true;
     if (!stairCol[ix + iy*nx]) return false;
+    // A handrail runs one riser above the treads, so the flight test below
+    // accepts the cells above it and the route rode the rail top instead of
+    // the stair. A one or two cell cap is never something to stand on.
+    {
+      const fb = F(ix, iy, iz-1);
+      if (data[fb] === OCC && topFace[fb] && capWide[fb] < 7) return false;
+    }
     // The same test VoxelGrid::hasTreadSupport runs: some occupied cell within
     // one step below must be part of a wide horizontal face, counted on the
     // 5x5 box. A wall hit spans one or two cells and never passes; a tread or
