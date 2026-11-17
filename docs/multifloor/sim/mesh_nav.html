@@ -487,6 +487,12 @@ function buildMap(pos, idx, res, infR){
   // stair gait does with its body anyway, and it is what an octomap planner
   // gets for free, because it plans through free space and never asks what is
   // underneath.
+  // Declared before walkable runs: buildMap calls walkable while it is still
+  // filling the mask, and a const declared further down is in the temporal
+  // dead zone at that point. The values are written once the tread heights are
+  // known; until then every lookup reads -1 and the older stair tests decide.
+  let stairRamp = new Float32Array(nx*ny).fill(-1);
+
   function walkable(ix, iy, iz){
     if (iz < 1) return false;
     if (supportOrUnknown(ix, iy, iz)) return true;
@@ -497,6 +503,15 @@ function buildMap(pos, idx, res, infR){
     {
       const fb = F(ix, iy, iz-1);
       if (data[fb] === OCC && topFace[fb] && capWide[fb] < 7) return false;
+    }
+    // Standing on the ramp: anywhere within one and a half cells of the
+    // smoothed surface counts as on the flight, so the search does not have to
+    // land exactly on a tread top and can take the slope in one run. The ban
+    // above has already rejected the rail top, which sits one riser up.
+    {
+      const rk = stairRamp[ix + iy*nx];
+      if (rk >= 0 && Math.abs(iz - rk) <= 1.6 && data[F(ix, iy, iz)] === FREE)
+        return true;
     }
     // The edge column of a flight has a wide tread one riser below just like
     // the middle does, so the test above alone accepted a path that ran along
@@ -682,6 +697,30 @@ function buildMap(pos, idx, res, infR){
       for (let k = nz - 1; k >= 1; --k)
         if (walkable(i, j, k)){ treadTop[f] = k; break; }
     }
+  // A flight read as a ramp instead of as steps. The tread heights along a
+  // flight are a staircase, and a 3D grid search over a staircase can only
+  // climb it one riser at a time, which paints the line the user calls
+  // stepping into air. Smoothed over a 3x3 window the same data is a continuous
+  // slope, and that is what the dog's body actually follows. Store it per
+  // column as a float and use it two ways: to let the search ascend smoothly,
+  // and to re-project the finished line so it reads as one inclined run.
+  for (let j = 1; j < ny-1; ++j)
+    for (let i = 1; i < nx-1; ++i){
+      const f = i + j*nx;
+      if (!stairProfile[f]) continue;
+      const k0 = treadTop[f];
+      if (k0 < 0) continue;
+      let sum = 0, n = 0;
+      for (let dj = -1; dj <= 1; ++dj)
+        for (let di = -1; di <= 1; ++di){
+          const f2 = f + di + dj*nx, k2 = treadTop[f2];
+          if (k2 < 0) continue;
+          if (Math.abs(k2 - k0) > MAX_STEP_Z + 1) continue;
+          sum += k2; ++n;
+        }
+      if (n) stairRamp[f] = sum / n;
+    }
+
   const riseMask = new Uint8Array(nx*ny);
   {
     const lo = 1, hi = MAX_STEP_Z + 1;
@@ -871,7 +910,7 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          capWide, stairCol, stairProfile, riseMask, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, stairProfile, riseMask, stairRamp, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -879,7 +918,7 @@ function buildMap(pos, idx, res, infR){
 // ---------- 3D A*, same rules as astar3d.cpp -------------------------------
 const fmt3 = v => '[' + v.map(x => (+x).toFixed(2)).join(',') + ']';
 function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
-  const {res, lo, nx, ny, nz, data, stairCol} = m;
+  const {res, lo, nx, ny, nz, data, stairCol, stairRamp} = m;
   const walkable = m.walkable;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   const cells = m.cells;
@@ -1077,7 +1116,12 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
   let c = foundCell;
   while (c >= 0){
     const i = c % nx, j = ((c/nx)|0) % ny, k = (c/(nx*ny))|0;
-    pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res]);
+    // On a flight, put the point on the smoothed surface rather than on the
+    // centre of whichever voxel the search happened to stand in: the run then
+    // reads as one incline instead of a line of little shelves.
+    const rk = stairRamp ? stairRamp[i + j*nx] : -1;
+    const kz = (rk >= 0) ? (lo[2] + (rk + 0.5)*res) : (lo[2] + (k+0.5)*res);
+    pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, kz]);
     if (c === startId) break;
     c = from[c];
   }
