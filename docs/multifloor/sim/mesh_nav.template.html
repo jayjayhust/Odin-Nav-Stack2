@@ -392,7 +392,7 @@ function buildMap(pos, idx, res, infR){
     // a cell that came from an upward facing sample is a floor by definition,
     // unless that face is a narrow cap such as a railing top
     if (topFace[fb]){
-      if (!wideCap(ix, iy, zl) || !capSolid(ix, iy, zl)) return false;
+      if (!wideCap(ix, iy, zl)) return false;
       // A wide cap on top of a tall solid is the top of a wall, a pillar or a
       // railing post, not a floor: a slab is one or two cells thick and then
       // open air, a wall keeps going down. Standing on a 0.45 m wide post cap
@@ -473,7 +473,6 @@ function buildMap(pos, idx, res, infR){
       const k = iz - d;
       if (k < 1) break;
       if (data[F(ix, iy, k)] !== OCC) continue;
-      if (topFace[F(ix, iy, k)] && !wideCap(ix, iy, k)) continue;
       let span = 0;
       for (let sy = -2; sy <= 2; ++sy)
         for (let sx = -2; sx <= 2; ++sx){
@@ -1542,6 +1541,13 @@ function makePlanes(m){
             if (nb > 2) break;
           }
         if (nb <= 2) continue;
+        // Paint only what sits on a stamped top face. The 3x3 ring that plugs
+        // holes in the shell is occupied but is not a surface, so the cell one
+        // layer above it is standable through the span fallback and paints as
+        // a one cell brim sticking out past every plate edge - the thin sheets
+        // hovering over the floor. This is a drawing rule only: planning still
+        // sees the cell, so no route changes.
+        if (!topFace[F(i, j, k-1)]) continue;
         stand[F(i, j, k)] = 1;
       }
 
