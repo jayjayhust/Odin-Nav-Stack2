@@ -855,9 +855,28 @@ function buildMap(pos, idx, res, infR){
         const kk = k + d;
         if (kk < nz && data[F(i, j, kk)] === OCC) ++run;
       }
-      // a narrow cap is a barrier whatever is above it; a plain vertical
-      // face still has to stack four cells to count as a wall
-      if (!topFace[f] && run < 4) continue;
+      // The first step of a flight is a solid body, three metres of it under
+      // the ramp, so the four-cell test called it a wall and painted a banned
+      // band over the floor in front of the stair - the dog then could not
+      // reach the stair at all. A face is climbable, not a wall, when there is
+      // a wide top within one riser above it and air above that top: that is
+      // exactly what a step is. A wall under a slab can pass this test only in
+      // its top two or three cells, which are up at the ceiling and never
+      // where the dog walks.
+      if (!topFace[f]){
+        let step = false;
+        for (let d = 1; d <= MAX_STEP_Z + 1 && !step; ++d){
+          const kk = k + d;
+          if (kk + 1 >= nz) break;
+          const fa = F(i, j, kk);
+          if (data[fa] === OCC && topFace[fa] && capWide[fa] >= 4 &&
+              data[F(i, j, kk+1)] === FREE) step = true;
+        }
+        if (step) continue;                     // a step to climb, not a wall
+        // a narrow cap is a barrier whatever is above it; a plain vertical
+        // face still has to stack four cells to count as a wall
+        if (run < 4) continue;
+      }
       for (let dj = -rxy; dj <= rxy; ++dj){
         const jj = j + dj;
         if (jj < 0 || jj >= ny) continue;
@@ -870,6 +889,61 @@ function buildMap(pos, idx, res, infR){
         }
       }
     }
+  }
+
+  // The band around a stair foot is the one band that must not exist: the
+  // floor in front of the first step is where the dog has to walk to start
+  // climbing, and a 0.30 m clearance there means it can never reach the stair.
+  // Take it back after inflation instead of guessing which faces are risers:
+  // an inflated cell becomes walkable again when it has support underneath and
+  // a stair column with a real tread sits within the clearance radius and one
+  // riser above it. Everything else keeps its band.
+  if (false){   // disabled: it moved 100 cells and broke the four floor demo
+    for (let k = 1; k < nz; ++k)
+      for (let j = 0; j < ny; ++j)
+        for (let i = 0; i < nx; ++i){
+          const f = F(i, j, k);
+          if (data[f] !== INFL) continue;
+          if (!support(i, j, k)) continue;
+          let reach = false;
+          for (let dj = -rxy; dj <= rxy && !reach; ++dj){
+            const jj = j + dj;
+            if (jj < 0 || jj >= ny) continue;
+            for (let di = -rxy; di <= rxy; ++di){
+              if (di*di + dj*dj > rxy*rxy) continue;
+              const ii = i + di;
+              if (ii < 0 || ii >= nx) continue;
+              if (!stairCol[ii + jj*nx]) continue;
+              for (let d = 0; d <= MAX_STEP_Z; ++d){
+                const kk = k + d;
+                if (kk >= nz) break;
+                const fa = F(ii, jj, kk);
+                if (data[fa] === OCC && topFace[fa] && capWide[fa] >= 4){ reach = true; break; }
+              }
+              if (reach) break;
+            }
+          }
+          if (reach) data[f] = FREE;
+        }
+  }
+
+  // A tread is a walk surface, and the clearance band expects to be painted
+  // beside a wall, never on the stair it belongs to. On this model 362 cells
+  // of the flight - the first two or three treads at each foot, where the
+  // stringer and the body come closest - came out inflated, red and
+  // unwalkable, so the dog could not stand on the first step at all. A cell on
+  // a stair column with a wide tread immediately below it is a surface to
+  // stand on; take the band back.
+  {
+    for (let k = 1; k < nz; ++k)
+      for (let j = 0; j < ny; ++j)
+        for (let i = 0; i < nx; ++i){
+          const f = F(i, j, k);
+          if (data[f] !== INFL) continue;
+          if (!stairCol[i + j*nx]) continue;
+          const fb = F(i, j, k-1);
+          if (data[fb] === OCC && topFace[fb] && capWide[fb] >= 4) data[f] = FREE;
+        }
   }
 
   // bounds of standable cells, for the camera and the HUD
