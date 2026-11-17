@@ -140,6 +140,19 @@ function applyCam(){
     cam.target.z + cam.dist * Math.sin(cam.pitch));
   camera.lookAt(cam.target);
 }
+
+// Turn the head, do not swing the rig: yaw and pitch change, the eye stays
+// where it is. This is the difference between the Unreal viewport's right-drag
+// and an orbit - orbiting pivots around the target, so from inside a room the
+// whole room appears to slide past instead of you looking sideways.
+function lookCam(yaw, pitch, px, py, pz){
+  cam.yaw = yaw; cam.pitch = pitch;
+  const cp = Math.cos(pitch);
+  cam.target.set(px - cam.dist * cp * Math.cos(yaw),
+                 py - cam.dist * cp * Math.sin(yaw),
+                 pz - cam.dist * Math.sin(pitch));
+  applyCam();
+}
 applyCam();
 
 // ---------- state ----------------------------------------------------------
@@ -1861,14 +1874,22 @@ document.getElementById('clear').onclick = () => {
 // ---------- orbit --------------------------------------------------------
 let drag = null;
 host.addEventListener('pointerdown', e => {
-  if (e.button === 2) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
+  if (e.button === 2) drag = {look: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch,
+                              px: camera.position.x, py: camera.position.y, pz: camera.position.z};
   else if (e.button === 1) drag = {pan: true, x: e.clientX, y: e.clientY, tx: cam.target.x, ty: cam.target.y};
   else if (e.button === 0 && !state.mode) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
 });
 window.addEventListener('pointermove', e => {
   if (!drag) return;
   const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
-  if (drag.rot){
+  if (drag.look){
+    // first person: the eye is pinned, only the view direction moves, and
+    // pitch may go all the way up and down because nobody needs a horizon
+    lookCam(drag.yaw - dx * 0.006,
+            Math.max(-1.45, Math.min(1.45, drag.pitch + dy * 0.005)),
+            drag.px, drag.py, drag.pz);
+    return;
+  } else if (drag.rot){
     cam.yaw = drag.yaw - dx * 0.006;
     cam.pitch = Math.max(-0.25, Math.min(1.45, drag.pitch + dy * 0.005));
   } else if (drag.pan){
