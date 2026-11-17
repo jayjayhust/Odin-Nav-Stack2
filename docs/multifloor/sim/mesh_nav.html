@@ -504,15 +504,6 @@ function buildMap(pos, idx, res, infR){
       const fb = F(ix, iy, iz-1);
       if (data[fb] === OCC && topFace[fb] && capWide[fb] < 7) return false;
     }
-    // Standing on the ramp: anywhere within one and a half cells of the
-    // smoothed surface counts as on the flight, so the search does not have to
-    // land exactly on a tread top and can take the slope in one run. The ban
-    // above has already rejected the rail top, which sits one riser up.
-    {
-      const rk = stairRamp[ix + iy*nx];
-      if (rk >= 0 && Math.abs(iz - rk) <= 1.6 && data[F(ix, iy, iz)] === FREE)
-        return true;
-    }
     // The edge column of a flight has a wide tread one riser below just like
     // the middle does, so the test above alone accepted a path that ran along
     // the stringer with half the body over the drop. Ask for three stair
@@ -528,6 +519,16 @@ function buildMap(pos, idx, res, infR){
           if (stairCol[i2 + j2*nx]) ++nbs;
         }
       if (nbs < 4) return false;
+    }
+    // Standing on the ramp, inside a flight: within one and a half cells of
+    // the smoothed surface the search may stand, so a flight is taken in one
+    // inclined run instead of one riser at a time. Placed after the interior
+    // test on purpose - before it, a wall column carried a slope value of its
+    // own and opened cells in mid air beside it.
+    {
+      const rk = stairRamp[ix + iy*nx];
+      if (rk >= 0 && Math.abs(iz - rk) <= 1.6 && data[F(ix, iy, iz)] === FREE)
+        return true;
     }
     // The same test VoxelGrid::hasTreadSupport runs: some occupied cell within
     // one step below must be part of a wide horizontal face, counted on the
@@ -1119,8 +1120,15 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
     // On a flight, put the point on the smoothed surface rather than on the
     // centre of whichever voxel the search happened to stand in: the run then
     // reads as one incline instead of a line of little shelves.
+    // Only when the point is on the slope. The smoothed field also holds a
+    // value in columns that are not a flight at all (a wall carries a walk
+    // surface at every storey, so it lands in the same profile mask), and
+    // projecting those moved the whole line to another floor: the path looked
+    // unrelated to the start and goal. Two cells is the tolerance the search
+    // itself uses to sit on the ramp.
     const rk = stairRamp ? stairRamp[i + j*nx] : -1;
-    const kz = (rk >= 0) ? (lo[2] + (rk + 0.5)*res) : (lo[2] + (k+0.5)*res);
+    const kz = (rk >= 0 && Math.abs(rk - k) <= 2.0)
+      ? (lo[2] + (rk + 0.5)*res) : (lo[2] + (k+0.5)*res);
     pts.push([lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, kz]);
     if (c === startId) break;
     c = from[c];
