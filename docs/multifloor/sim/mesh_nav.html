@@ -334,6 +334,23 @@ function buildMap(pos, idx, res, infR){
     }
   }
 
+  // A cap at least three cells across is a surface a dog can stand on. A
+  // railing, a handrail cap or a wall top is one or two cells wide, and its
+  // upward face is also a "top face" - which is why railing tops kept showing
+  // up as little sheets floating along the stair, and why the one-cell rail
+  // top looked standable at all. Seven of the nine cells in the 3x3 must be
+  // occupied: 1-2 wide gives 3-6, a tread or a plate gives 9.
+  function wideCap(ix, iy, k){
+    let c = 0;
+    for (let dy = -1; dy <= 1; ++dy)
+      for (let dx = -1; dx <= 1; ++dx){
+        const i2 = ix + dx, j2 = iy + dy;
+        if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+        if (data[F(i2, j2, k)] === OCC && topFace[F(i2, j2, k)]) ++c;
+      }
+    return c >= 7;
+  }
+
   // hasGroundSupport, transposed from voxel_grid.cpp with xy radius 0: the
   // cell below must be occupied, and a one cell thick sheet is only accepted
   // when it is a real horizontal face rather than a wall hit on one layer.
@@ -342,8 +359,23 @@ function buildMap(pos, idx, res, infR){
     if (zl < 0) return false;
     const fb = F(ix, iy, zl);
     if (data[fb] !== OCC) return false;
-    // a cell that came from an upward facing sample is a floor by definition
-    if (topFace[fb]) return true;
+    // a cell that came from an upward facing sample is a floor by definition,
+    // unless that face is a narrow cap such as a railing top
+    if (topFace[fb]){
+      if (!wideCap(ix, iy, zl)) return false;
+      // A wide cap on top of a tall solid is the top of a wall, a pillar or a
+      // railing post, not a floor: a slab is one or two cells thick and then
+      // open air, a wall keeps going down. Standing on a 0.45 m wide post cap
+      // a metre above the stairs is what keeps drawing those floating sheets.
+      let deep = 0;
+      for (let d = 1; d <= 6; ++d){
+        if (zl - d < 0) break;
+        if (data[F(ix, iy, zl-d)] !== OCC) break;
+        ++deep;
+      }
+      if (deep >= 6) return false;
+      return true;
+    }
     if (zl - 1 >= 0 && data[F(ix, iy, zl-1)] === FREE){
       let span = 0;
       for (let sy = -2; sy <= 2; ++sy)
@@ -411,6 +443,7 @@ function buildMap(pos, idx, res, infR){
       const k = iz - d;
       if (k < 1) break;
       if (data[F(ix, iy, k)] !== OCC) continue;
+      if (topFace[F(ix, iy, k)] && !wideCap(ix, iy, k)) continue;
       let span = 0;
       for (let sy = -2; sy <= 2; ++sy)
         for (let sx = -2; sx <= 2; ++sx){
@@ -1870,13 +1903,14 @@ function flyStep(dt){
   if (!nz && !rx && !uz) return;
   const sp = Math.max(2.5, cam.dist * 0.55) * (keys.ShiftLeft || keys.ShiftRight ? 3 : 1) * dt;
   const cp = Math.cos(cam.pitch), sp2 = Math.sin(cam.pitch);
-  // forward is the horizontal view direction; vertical is a separate axis so
-  // W never climbs into the ceiling unless you look up
-  const fx = Math.cos(cam.yaw) * cp, fy = Math.sin(cam.yaw) * cp;
+  // camera.position = target + dist*(cos yaw, sin yaw, sin pitch), so the view
+  // direction points the other way; W has to move along it, not along the
+  // offset, or forward and back come out swapped.
+  const fx = -Math.cos(cam.yaw) * cp, fy = -Math.sin(cam.yaw) * cp;
   const sx = -Math.sin(cam.yaw), sy = Math.cos(cam.yaw);
   cam.target.x += (fx * nz + sx * rx) * sp;
   cam.target.y += (fy * nz + sy * rx) * sp;
-  cam.target.z += (uz * sp + sp2 * nz * sp);
+  cam.target.z += (uz * sp - sp2 * nz * sp);
   applyCam();
 }
 
