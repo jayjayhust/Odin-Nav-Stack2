@@ -82,7 +82,13 @@
   <span><span class="sw" style="background:#8fa9c4"></span>可通行面</span>
   <span><span class="sw" style="background:#ff5a5a"></span>膨胀后的墙 / 不可走</span>
   <span><span class="sw" style="background:#2f8cff"></span>全局路径</span>
-  <span><span class="sw" style="background:#ffcf3f"></span>局部规划（NeuPAN 约束：点集 5 cm 硬阈值 + 2 s rollout）</span>
+  <span><span class="sw" style="background:#ffcf3f"></span>局部规划
+    <select id="lp" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
+            title="SRU 后端需要外部的 SRU 工作空间与训练好的 ONNX 模型（策略 + VAE），本页只做占位">
+      <option value="neupan" selected>NeuPAN</option>
+      <option value="sru" disabled>SRU（未开放）</option>
+    </select>
+    <span id="lpNote">点集 5 cm 硬阈值 + 2 s rollout</span></span>
   <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
   <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
@@ -163,6 +169,10 @@ applyCam();
 
 // ---------- state ----------------------------------------------------------
 const state = {
+  // Local tracker behind the global path. Only NeuPAN ships with the page;
+  // SRU is a goal-pose end-to-end policy that needs an external workspace and
+  // a trained ONNX policy + VAE, so it stays a disabled item for now.
+  localPlanner: 'neupan',
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
@@ -1768,6 +1778,9 @@ window.__MESH = {
   letgo(){ window.recHold = false; },
   get dog(){ return dogMesh ? [+dogMesh.position.x.toFixed(2), +dogMesh.position.y.toFixed(2), +dogMesh.position.z.toFixed(2)] : null; },
   get leg(){ return localLine ? localLine.geometry.drawRange.count/2 : null; },
+  get localPlanner(){ return state.localPlanner; },
+  get sruReady(){ return false; },   // 外部 SRU 工作空间与 ONNX 模型都还没有
+
   get blocked(){ return state.blocked; },
 };
 
@@ -2248,6 +2261,22 @@ document.getElementById('res').onchange = () => {
   const g = srcMesh.geometry;
   const pos = g.attributes.position.array, idx = g.index ? g.index.array : null;
   loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
+};
+
+// Local planner backend. The page only carries NeuPAN: SRU is an end-to-end
+// goal-pose policy that lives in its own workspace with a trained ONNX policy
+// and VAE encoder, and it bypasses the global path this page draws. Selecting
+// it here cannot do anything real, so say so instead of pretending.
+document.getElementById('lp').onchange = (ev) => {
+  const want = ev.target.value;
+  if (want === 'sru'){
+    say('SRU 后端未开放：需要外部 SRU 工作空间与训练好的 ONNX 策略 + VAE，且它不走全局路径，本页无法演示');
+    ev.target.value = state.localPlanner;
+    return;
+  }
+  state.localPlanner = want;
+  document.getElementById('lpNote').textContent =
+    want === 'neupan' ? '（NeuPAN 约束：点集 5 cm 硬阈值 + 2 s rollout）' : '';
 };
 
 document.getElementById('inf').onchange = () => {
