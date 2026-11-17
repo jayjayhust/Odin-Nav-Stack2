@@ -72,7 +72,7 @@ for i in range(4):
 # eight risers down, all on the same line so a plan has to take the climb,
 # walk the landing and descend again. Solid from the floor up, like the model
 # staircase it stands in for.
-NX, NY0, NY1 = 8, 7.20, 8.60
+NX, NY0, NY1 = 8, 7.35, 8.45
 RX, LAND = 4.00, 1.50
 for i in range(NX):
     x0 = RX + i * TREAD

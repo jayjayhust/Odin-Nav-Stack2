@@ -187,14 +187,25 @@ Two real bugs from the previous round stay fixed: `snap` accepted a free cell it
 
 ### The crossing: eight up, a 1.50 m landing, eight down
 
-A bridge straight across the room: from x = 4.00 m, eight treads each one `RISE` higher, an 8 x `RISE` landing 1.50 m long and 1.40 m wide, then eight treads back to the floor. At the 0.15 m tier the deck sits 1.20 m up and reaches x ~ 12.70; at the 25 cm tier it is 2.00 m up and reaches x ~ 9.98. Every box is solid from z = 0, nothing floats.
+A bridge straight across the room: from x = 4.00 m, eight treads each one `RISE` higher, an 8 x `RISE` landing 1.50 m long and 1.10 m wide, then eight treads back to the floor. At the 0.15 m tier the deck sits 1.20 m up and reaches x ~ 12.70; at the 25 cm tier it is 2.00 m up and reaches x ~ 9.98. Every box is solid from z = 0, nothing floats.
 
 | hash | terrain | 0.15 m tier | 25 cm tier |
 |---|---|---|---|
-| `#single,ridge` | floor at the foot of the flight to the **landing deck** (eight risers are unavoidable) | 38 cells / 6.67 m / 471 expanded / z 0.13 to 1.33 | 29 cells / 5.07 m / 258 expanded / z 0.17 to 2.12 |
-| `#single,ridgedn` | landing deck to the floor east of the bridge (eight risers down) | 36 cells / 6.25 m / 1,009 expanded / z 1.33 to 0.13 | 26 cells / 4.62 m / 242 expanded / z 2.12 to 0.17 |
+| `#single,ridge` | floor at the foot of the flight to the **landing deck** (eight risers are unavoidable) | 38 cells / 6.56 m / 421 expanded / z 0.13 to 1.33 | 29 cells / 5.13 m / 292 expanded / z 0.17 to 2.12 |
+| `#single,ridgedn` | landing deck to the floor east of the bridge (eight risers down) | 35 cells / 6.05 m / 784 expanded / z 1.33 to 0.13 | 26 cells / 4.62 m / 198 expanded / z 2.12 to 0.17 |
 
-Why those endpoints: the first attempt was "floor west of the bridge to floor east of it", and it gave **76 cells / 11.93 m with z flat at 0.13** - A* went round the bridge, because climbing eight risers does not beat walking 1.4 m around it. Putting the goal **on the landing deck** (1.20 m up, reachable only up a flight) turns "must climb" into something a measurement can confirm. The bridge is still walkable round; that is stated rather than hidden.
+Why those endpoints: the first attempt was "floor west of the bridge to floor east of it", and it gave **76 cells / 11.93 m with z flat at 0.13** - A* went round the bridge, because climbing eight risers does not beat walking 1.1 m around it. Putting the goal **on the landing deck** (1.20 m up, reachable only up a flight) turns "must climb" into something a measurement can confirm. The bridge is still walkable round; that is stated rather than hidden.
+
+### Why the bridge is now 1.10 m wide: the dog used to climb along the nosing
+
+Recording the walk showed the dog tracking the **south edge** of the treads instead of the middle of the flight. A CDP probe of `dogMesh.position` reproduced it: over `prog` 0 to 6 m, y went 7.28 -> 6.60 -> 6.89 -> 7.12 -> 7.28, and 6.60 is exactly the south boundary of the deck (7.20 in model coordinates). Tagging every point of the path showed `stairCol` = 0 throughout - A* stands in the **free cell above the tread**, level with the whole bridge band, so the cheapest cell lands on the column nearest the edge.
+
+Two post-processing centring passes were tried, both failed, both removed:
+
+1. Filtering on `stairCol`: a single tread is only two cells thick and never counts as a tall column, so the flag is 0 for the whole path and the pass did nothing.
+2. Centring on "same layer walkable plus equal column top, take the midpoint": the column top of that free cell is flattened all the way to the north floor boundary, so the climb points were pushed to the north edge (y 7.88) - worse than the original.
+
+The fix is geometric: the bridge is narrowed from 1.40 m to **1.10 m** (a normal indoor flight), so after 0.30 inflation plus 0.175 half body only 2-3 cells are left and A* has no edge to hug. Re-measured: y becomes 7.28 -> 6.67 -> 7.07 -> 7.28, and 7.28 is the band centre (7.30 in world), i.e. the climb and the deck are back on the centre line.
 
 ## Limits worth knowing
 
