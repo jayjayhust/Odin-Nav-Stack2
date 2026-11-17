@@ -503,7 +503,7 @@ function buildMap(pos, idx, res, infR){
 
 // ---------- 3D A*, same rules as astar3d.cpp -------------------------------
 const fmt3 = v => '[' + v.map(x => (+x).toFixed(2)).join(',') + ']';
-function planPath(m, sx, sy, sz, gx, gy, gz){
+function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
   const {res, lo, nx, ny, nz, data} = m;
   const walkable = m.walkable;
   const F = (i, j, k) => (k*ny + j)*nx + i;
@@ -621,7 +621,22 @@ function planPath(m, sx, sy, sz, gx, gy, gz){
           if (!traversable(i, j, k)) continue;
           if (k < 1 || !walkable(i, j, k)) continue;
           const step = res*Math.hypot(di, dj, dk);
-          const tentative = gScore[cur] + step;
+          // Lateral cost inside a declared stair corridor, same rule as
+          // astar3d.cpp: weight * |y - y_centre| paid on entry, so the search
+          // pays for sitting off-centre instead of discovering it at the top.
+          let lateral = 0;
+          if (corridors){
+            const wx = lo[0] + (i+0.5)*res, wy = lo[1] + (j+0.5)*res,
+                  wz = lo[2] + (k+0.5)*res;
+            for (const c of corridors){
+              if (!c.weight || wz < c.z_min || wz > c.z_max ||
+                  wx < c.x_min || wx > c.x_max) continue;
+              const dyw = Math.abs(wy - c.y_centre);
+              if (dyw > c.y_half) continue;
+              lateral += c.weight * dyw;
+            }
+          }
+          const tentative = gScore[cur] + step + lateral;
           if (tentative >= gScore[nf]) continue;
           gScore[nf] = tentative;
           from[nf] = cur;
@@ -929,6 +944,103 @@ function neupanLeg(m, pose, target){
   return best.map(([x, y]) => [x, y, z0 + 0.03]);
 }
 
+// Stair local layer: a flight is handled as an unwrapped flat corridor.
+// The vertical motion belongs to the gait, so a riser must not read as a
+// collision; what still has to be solved locally is the horizontal problem -
+// railings and walls on both sides, and people or clutter standing on a tread.
+// Collision is therefore evaluated in the corridor's own (s, t) frame with the
+// same candidate set, the same hard limit (half width + 5 cm) and the same
+// 10 x 0.1 s receding horizon as the NeuPAN leg. The verdict stays go / stop.
+const STAIR_LOOK = 1.6;          // how far ahead a tread obstacle matters
+function stairFrame(path, s){
+  const a = pathAt(path, Math.max(0, s));
+  const b = pathAt(path, Math.min(pathLen, s + 0.6));
+  let fx = b[0]-a[0], fy = b[1]-a[1];
+  const n = Math.hypot(fx, fy) || 1; fx /= n; fy /= n;
+  return {a, fx, fy, lx: -fy, ly: fx};
+}
+
+// Half width of the tread strip, measured perpendicular to travel: the
+// narrower of the left and right runs of walkable cells at the same layer,
+// sampled a little ahead so the bound tightens before the dog reaches it.
+function stairHalfWidth(m, path, s, f){
+  const {res, lo} = m;
+  const k = Math.floor((f.a[2]-lo[2])/res);
+  let half = 0.90;                  // a flight is never wider than this here
+  for (const ds of [0.15, 0.55, 0.95]){
+    const q = pathAt(path, Math.min(pathLen, s + ds));
+    for (const sg of [1, -1]){
+      let t = 0;
+      for (let n2 = 1; n2 <= 10; ++n2){
+        const px = q[0] + sg*f.lx*n2*res, py = q[1] + sg*f.ly*n2*res;
+        const i = Math.floor((px-lo[0])/res), j = Math.floor((py-lo[1])/res);
+        if (!m.walkable(i, j, k)) break;
+        t = n2*res;
+      }
+      // walkable stops one inflation radius short of the physical tread edge
+      const phys = t + m.infR;
+      if (phys < half) half = phys;
+    }
+  }
+  return half;
+}
+
+function stairLocalLeg(m, path, s, pose, target){
+  const x0 = pose[0], y0 = pose[1];
+  const f = stairFrame(path, s);
+  const half = stairHalfWidth(m, path, s, f);
+  const tFree = half - HALF_W - CLR_HARD;      // lateral budget either side
+  // Obstacles standing on this flight, projected into (s, t). Their height is
+  // compared with the surface the dog is about to stand on, not with base_z -
+  // that is the whole point: the riser is not an obstacle, a person is.
+  const obs = [];
+  for (const o of state.obs){
+    const ds = (o.x - f.a[0])*f.fx + (o.y - f.a[1])*f.fy;
+    if (ds < -0.4 || ds > STAIR_LOOK) continue;
+    const surf = pathAt(path, Math.min(pathLen, s + Math.max(0, ds)));
+    if (o.z + o.h < surf[2] + 0.12 || o.z > surf[2] + 0.55) continue;
+    obs.push({ds, dt: (o.x - f.a[0])*f.lx + (o.y - f.a[1])*f.ly, r: o.r});
+  }
+  let best = null, bestCost = 1e18;
+  for (const vx of [0.625, 0.45, 0.25, 0.0])
+    for (const vy of [-0.25, -0.12, 0.0, 0.12, 0.25])
+      for (const wz of [-0.7, -0.35, 0.0, 0.35, 0.7]){
+        let x = x0, y = y0, yaw = pose[3] || 0, bad = false;
+        const tr = [[x, y]];
+        for (let k2 = 0; k2 < NEU_STEPS; ++k2){
+          x += (vx*Math.cos(yaw) - vy*Math.sin(yaw)) * NEU_ROLL_H;
+          y += (vx*Math.sin(yaw) + vy*Math.cos(yaw)) * NEU_ROLL_H;
+          yaw += wz * NEU_ROLL_H;
+          if (k2 % 2 === 0){
+            const ds = (x - f.a[0])*f.fx + (y - f.a[1])*f.fy;
+            const dt = (x - f.a[0])*f.lx + (y - f.a[1])*f.ly;
+            // railings and walls: hard lateral bound, no softening
+            if (Math.abs(dt) > tFree){ bad = true; break; }
+            for (const o of obs)
+              if (Math.abs(ds - o.ds) < 0.6 &&
+                  Math.abs(dt - o.dt) < o.r + HALF_W + CLR_HARD){ bad = true; break; }
+            if (bad) break;
+          }
+          tr.push([x, y]);
+        }
+        if (bad) continue;
+        const dsE = (x - f.a[0])*f.fx + (y - f.a[1])*f.fy;
+        const dtE = (x - f.a[0])*f.lx + (y - f.a[1])*f.ly;
+        const targetS = Math.min(pathLen, s + 2.0);
+        const tgt = pathAt(path, targetS);
+        const cost = Math.hypot(tgt[0]-x, tgt[1]-y) + 0.35*Math.abs(wz);
+        if (cost < bestCost){ bestCost = cost; best = tr; }
+      }
+  if (!best) return null;
+  // lift the polyline onto the tread surface so the yellow line follows the
+  // flight instead of lying flat at its base
+  return best.map(([x, y]) => {
+    const ds = (x - f.a[0])*f.fx + (y - f.a[1])*f.fy;
+    const q = pathAt(path, Math.min(pathLen, Math.max(0, s + ds)));
+    return [x, y, q[2] + 0.03];
+  });
+}
+
 function makeWinBox(c, half){
   const g = new THREE.BoxGeometry(half*2, half*2, 2.2);
   const e = new THREE.EdgesGeometry(g);
@@ -964,6 +1076,20 @@ function startLocalDemo(){
   if (location.hash.indexOf('ped') >= 0){
     const q = pathAt(pts, Math.min(pathLen, prog + 3.0));
     addObstacle(q[0], q[1], q[2], true);
+    updObsCount();
+  }
+  // A stationary obstacle standing on a tread is the honest test of the stair
+  // local layer: the dog must decide in the corridor's own frame, because the
+  // riser sits in its height band and no point-set planner would move at all.
+  if (location.hash.indexOf('treadblock') >= 0){
+    const q = pathAt(pts, Math.min(pathLen, prog + 2.7));
+    addObstacle(q[0], q[1], q[2], false);
+    updObsCount();
+  }
+  if (location.hash.indexOf('personstep') >= 0){
+    const q = pathAt(pts, Math.min(pathLen, prog + 2.7));
+    const o = addObstacle(q[0], q[1], q[2], true);
+    o.vx = 0; o.vy = 0;               // stand still on the tread for the test
     updObsCount();
   }
   const g = new THREE.BufferGeometry();
@@ -1384,8 +1510,11 @@ function tick(){
       let leg;
       state.blocked = false;
       if (isStair(state.path, prog)){
-        leg = stairLeg(state.path, prog);        // stair_gait has the flight
-        if (winBox) winBox.visible = false;
+        // a flight is an unwrapped flat corridor: same local layer, with the
+        // riser out of the collision test and the tread edges as hard bounds
+        if (winBox) winBox.visible = true;
+        leg = stairLocalLeg(state.map, state.path, prog, [p[0], p[1], p[2], yaw], tgt);
+        if (!leg){ state.blocked = true; leg = stairLeg(state.path, prog); }
       } else {
         if (winBox) winBox.visible = true;
         leg = neupanLeg(state.map, [p[0], p[1], p[2], yaw], tgt);
@@ -1425,6 +1554,15 @@ if (location.hash.indexOf('single') >= 0){
       // have obstacles dropped in front of it.
       const upStartX = is25 ? 4.60 : 4.20, upGoalZ = is25 ? 1.02 : 0.62;
       const pitGoalZ = is25 ? 0.98 : 0.58;
+      // Declared stair corridor, the same structure astar3d.cpp takes: the
+      // route pays weight * |y - y_centre| for sitting off the centre line,
+      // so the plan comes out on the middle of the treads instead of grazing
+      // the nosing. This is the repo's own mechanism, not a post-hoc pass.
+      const corr = (kind === 'ridge' || kind === 'ridgedn') ? [{
+        x_min: X0 + 3.80, x_max: X0 + 4.00 + 16*(is25?0.28:0.45) + 1.50 + 0.6,
+        y_centre: Y0 + 7.90, y_half: 1.60,
+        z_min: -0.30, z_max: 8*(is25?0.25:0.15) + 0.30, weight: 1.0,
+      }] : null;
       if (kind === 'floor'){
         // open floor at both ends: the platform occupies x 0.6..2.0 / y 0.6..2.6
         // and the pit x 8.6..11.0 / y 5.0..6.6, so neither end may sit there
@@ -1454,7 +1592,7 @@ if (location.hash.indexOf('single') >= 0){
         state.goal  = [X0 + 10.70, Y0 + 5.80, Z0 - pitGoalZ];
       }
       const r = planPath(m, state.start[0], state.start[1], state.start[2],
-                             state.goal[0], state.goal[1], state.goal[2]);
+                             state.goal[0], state.goal[1], state.goal[2], corr);
       if (location.hash.indexOf('diag') >= 0 && r.pts){
         let zlo = 1e9, zhi = -1e9;
         for (const pt of r.pts){ zlo = Math.min(zlo, pt[2]); zhi = Math.max(zhi, pt[2]); }

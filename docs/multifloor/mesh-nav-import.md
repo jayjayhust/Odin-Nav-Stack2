@@ -207,6 +207,30 @@ Two post-processing centring passes were tried, both failed, both removed:
 
 The fix is geometric: the bridge is narrowed from 1.40 m to **1.10 m** (a normal indoor flight), so after 0.30 inflation plus 0.175 half body only 2-3 cells are left and A* has no edge to hug. Re-measured: y becomes 7.28 -> 6.67 -> 7.07 -> 7.28, and 7.28 is the band centre (7.30 in world), i.e. the climb and the deck are back on the centre line.
 
+## Local dynamic avoidance on a flight: the stairs as an unwrapped flat corridor
+
+The old split handed the whole flight to `stair_gait` blind, so nothing responded to a person or clutter standing on a tread. It is now handled as "a flight is an unwrapped flat segment", all in `stairLocalLeg()`:
+
+- **Vertical motion is not the local layer's job.** Risers stay out of the collision test (which is exactly why the old version rejected every candidate); the gait owns the height.
+- **The two sides are a hard bound.** The flight is cut into a corridor frame `(s, t)` along the route. Tread half-width is taken as "walkable strip + inflation radius" - the walkable strip already stops one inflation radius short of the physical edge, so subtracting it twice produced a negative budget (first version's bug, fixed). Candidates with `|t| > t_half - half_body - 5 cm` are dropped, i.e. railings and walls.
+- **Tread obstacles are judged in the same frame.** Every obstacle in `state.obs` is projected to `(s, t)` and its height compared with **the tread the dog is about to stand on**, not with `base_z`; only what falls in `+0.12 .. +0.55` counts. A candidate whose lateral clearance to it is under `r + half_body + 5 cm` within 0.6 m is dropped.
+- **Same candidate set and same limit as the NeuPAN leg:** `vx` in {0.625, 0.45, 0.25, 0.0}, `vy` in plus/minus {0.25, 0.12, 0}, `wz` in plus/minus {0.7, 0.35}, 10 steps of 0.1 s. If every candidate is rejected, `state.blocked = true` and the dog stops - the same verdict as on flat ground, with the point set replaced by the corridor plus the tread obstacles.
+
+The JS A* also got the **stair corridor lateral cost** the repo already had (`params.corridors`, `weight * |y - y_centre|`, see `astar3d.cpp`): the single-floor bridge declares `y_centre = band centre`, `weight 1.0`. At the current 1.10 m width the route is already centred, so it mainly shows up as expansions rising from 421 to 1,993; it becomes the thing that centres the route once the bridge is widened again.
+
+Measured (`#single,ridge,diag` baseline vs `#single,ridge,treadblock,diag` with a post on a tread):
+
+| state | prog 0 | 1.5 | 2.2 | 2.6 | 3.0 | 3.4 | 4.0 | 4.8 |
+|---|---|---|---|---|---|---|---|---|
+| clear flight | go | go | go | go | go | go | go | go |
+| post at s ~ 2.7 | go | go | stop | stop | stop | stop | go | go |
+
+The stop window runs from "obstacle enters the 1.6 m look-ahead" to "it is behind"; the verdict comes from `stairLocalLeg`, not the fallback `stairLeg` (8 points when falling back, 11 when the corridor layer decides).
+
+**Capability limit, stated plainly:** on a 1.10 m or 1.60 m flight, after 0.30 inflation and 0.175 half body the lateral budget is 0.075 / 0.375 m, less than the 0.22 m person plus 0.225 m clearance - so the correct action is **stop and wait**, not a side-step. A lateral swerve needs a flight of 2 m or more.
+
+**Not done:** this rule lives in the mesh page only; the `flights_only` scenes in `test/nav_sim.cpp` still drive blind, so the C++ port is outstanding. Keeping the two simulators identical is a standing requirement, hence this is flagged rather than glossed over.
+
 ## Limits worth knowing
 
 - 9,891 standable cells (one storey) and 5,940 (four storey); the inflation band costs 2-4% of the plate, not the old version's striped floor.
