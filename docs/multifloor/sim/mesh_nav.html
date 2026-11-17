@@ -927,6 +927,16 @@ function buildMap(pos, idx, res, infR){
         }
   }
 
+  // Stair columns dilated by one cell, so the band painted along the rails
+  // does not eat the treads the narrow stair test missed.
+  const stairNear = new Uint8Array(nx*ny);
+  for (let j = 1; j < ny-1; ++j)
+    for (let i = 1; i < nx-1; ++i){
+      if (!stairCol[i + j*nx]) continue;
+      for (let dj = -1; dj <= 1; ++dj)
+        for (let di = -1; di <= 1; ++di) stairNear[(i+di) + (j+dj)*nx] = 1;
+    }
+
   // A tread is a walk surface, and the clearance band expects to be painted
   // beside a wall, never on the stair it belongs to. On this model 362 cells
   // of the flight - the first two or three treads at each foot, where the
@@ -940,9 +950,20 @@ function buildMap(pos, idx, res, infR){
         for (let i = 0; i < nx; ++i){
           const f = F(i, j, k);
           if (data[f] !== INFL) continue;
-          if (!stairCol[i + j*nx]) continue;
-          const fb = F(i, j, k-1);
-          if (data[fb] === OCC && topFace[fb] && capWide[fb] >= 4) data[f] = FREE;
+          if (!stairCol[i + j*nx] && !stairNear[i + j*nx]) continue;
+          // The cell right above a tread is where a foot lands. On a flight
+          // the rails and the stringer sit one or two columns beside the
+          // treads, and their band reaches across the whole width: the dog
+          // ends up with a single walkable column in the middle of a 1 m
+          // stair. Whatever the band painted above a tread is a place to stand,
+          // so take it back - one column out to cover the treads the stair
+          // test missed at the foot and the landing.
+          if (k <= treadTop[i + j*nx]) data[f] = FREE;
+          else if (data[F(i, j, k-1)] === OCC) data[f] = FREE;
+          else {
+            const fb = F(i, j, k-1);
+            if (topFace[fb] && stairNear[i + j*nx]) data[f] = FREE;
+          }
         }
   }
 
