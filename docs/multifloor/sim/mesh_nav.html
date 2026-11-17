@@ -1534,7 +1534,10 @@ function say(t){ document.getElementById('say').textContent = t; }
 // 3000 units across, which is 30 m, but read as metres it needs 20,000 cells
 // per axis. Scale is decided from the bounding box, and a resolution that
 // still overshoots the cell budget is coarsened instead of being refused.
-const CELL_CAP = 12e6;
+// 0.10 m on a 30 m x 30 m x 12 m building is 1.4e7 cells: keep that usable,
+// because a 0.20 m riser is exactly two cells at 0.10 and one or two at 0.15,
+// so the finer grid is what makes a 0.20 m stair legible at all.
+const CELL_CAP = 16e6;
 const RES_LADDER = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.75,
                     1.00, 1.50, 2.00, 3.00, 5.00, 8.00, 12.0, 20.0];
 
