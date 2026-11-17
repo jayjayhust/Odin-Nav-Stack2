@@ -43,6 +43,7 @@ import sys
 RISE = float(sys.argv[sys.argv.index('--rise')+1]) if '--rise' in sys.argv else 0.15
 TREAD = float(sys.argv[sys.argv.index('--tread')+1]) if '--tread' in sys.argv else 0.45
 OUT = sys.argv[sys.argv.index('--out')+1] if '--out' in sys.argv else 'example_single_floor.obj'
+RAIL_H = 0.95                    # railing height above the tread it stands on
 PLAT = RISE * 4
 box(0.60, 2.00, 0.60, 2.60, 0, PLAT, "platform")
 box(0.60, 2.00, 0.60, 2.60, PLAT, PLAT, "platform-cap")   # the walking face
@@ -52,7 +53,14 @@ box(0.60, 2.00, 0.60, 2.60, PLAT, PLAT, "platform-cap")   # the walking face
 # model's own bounds, so the phase is never guaranteed and 2 cells became 3.
 for i in range(4):
     x0 = 2.00 + i * TREAD
-    box(x0, x0 + TREAD, 0.80, 2.40, 0, PLAT - RISE * (i + 1), "tread-up")
+    top = PLAT - RISE * (i + 1)
+    box(x0, x0 + TREAD, 0.80, 2.40, 0, top, "tread-up")
+    # railing on both sides, one segment per tread so it steps with the flight.
+    # It sits OUTSIDE the tread span (0.74..0.80 and 2.40..2.46): inside it
+    # would eat the walkable strip, since the planner's 0.30 inflation is
+    # measured from any solid face.
+    box(x0, x0 + TREAD, 0.74, 0.80, top, top + RAIL_H, "rail-up")
+    box(x0, x0 + TREAD, 2.40, 2.46, top, top + RAIL_H, "rail-up")
 
 # --------------------------------------------------------- down-going pit --
 box(PX0, PX1, PY0, PY1, -PLAT - 0.10, -PLAT, "pit-floor")
@@ -61,10 +69,24 @@ box(PX0, PX1, PY0, PY1, -PLAT - 0.10, -PLAT, "pit-floor")
 # solid then lays an occupied layer across the whole pit mouth, which caps the
 # descending flight at floor height and severs it from the pit floor.
 box(PX1 - 0.06, PX1, PY0, PY1, -PLAT, 0, "pit-wall")
+# The down-flight needs the same railings as the up-flight, otherwise the dog
+# can step sideways off the descending treads into the hole. Level with the
+# floor and outside the hole's y edges, so they fence the mouth without
+# stealing walkable strip from the treads below.
+# They have to reach DOWN to the pit floor as well: a fence that starts at
+# z = 0 floats above the descending treads, the 0.30 inflation is applied per
+# height, and the planner then treats the pit rim as standable - the descent
+# ran along the rim, 0.03 m inside the tread edge, and the dog overhung it.
+box(PX0, PX1, PY0 - 0.06, PY0, 0, RAIL_H, "rail-pit")
+box(PX0, PX1, PY1, PY1 + 0.06, 0, RAIL_H, "rail-pit")
 # four treads dropping west into the pit from the open edge at x 8.80
 for i in range(4):
     x0 = PX0 + i * TREAD
-    box(x0, x0 + TREAD, PY0 + 0.10, PY1 - 0.10, -PLAT,
+    # Full pit width, no 0.10 m side gaps. Those gaps were a sliver: the
+    # planner found a standable column in the strip between the floor edge and
+    # the tread, and the descent ran along the pit rim (y 5.03 instead of the
+    # 5.8 centre line) - right where the new railings stand.
+    box(x0, x0 + TREAD, PY0, PY1, -PLAT,
         -RISE * (i + 1), "tread-down")
 
 # ------------------------------------------------ up 8 / flat / down 8 ridge --

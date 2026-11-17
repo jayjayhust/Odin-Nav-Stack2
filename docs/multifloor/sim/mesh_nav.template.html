@@ -1184,6 +1184,8 @@ window.__MESH = {
   // read-only handles for the CDP probes: the page's own functions live in
   // script scope, which Runtime.evaluate cannot reach
   get path(){ return state.path; },
+  get map(){ return state.map; },
+  walk(i, j, k){ return state.map ? state.map.walkable(i, j, k) : null; },
   pathAt(s2){ return pathAt(state.path, s2); },
   flatWin(s2){
     const a = pathAt(state.path, s2), b = pathAt(state.path, Math.min(pathLen, s2 + 0.35));
@@ -1213,9 +1215,13 @@ function startLocalDemo(){
   root.add(dogMesh);
   winBox = makeWinBox(p0, LOCAL_HALF);
   root.add(winBox);
+  // Obstacles are only ever dropped by the buttons. Planning must not add
+  // them: a plan click that silently plants a post reads as a broken planner.
+  // The internal avoidance tests opt in with #...,autoobs.
+  const autoObs = location.hash.indexOf('autoobs') >= 0;
   // a dropped post right on the route is the honest test of the local layer:
   // the dog should refuse, not walk through it
-  if (location.hash.indexOf('obs') >= 0){
+  if (autoObs && location.hash.indexOf('obs') >= 0){
     // Place the demo post where a detour is actually possible, not wherever
     // happens to be 2.2 m ahead: dropped into the pocket between the bridge
     // pier and the desk, the honest verdict is "stop here", which reads as
@@ -1236,7 +1242,7 @@ function startLocalDemo(){
     addObstacle(q[0], q[1], q[2], false);
     updObsCount();
   }
-  if (location.hash.indexOf('ped') >= 0){
+  if (autoObs && location.hash.indexOf('ped') >= 0){
     const q = pathAt(pts, Math.min(pathLen, prog + 3.0));
     addObstacle(q[0], q[1], q[2], true);
     updObsCount();
@@ -1244,12 +1250,12 @@ function startLocalDemo(){
   // A stationary obstacle standing on a tread is the honest test of the stair
   // local layer: the dog must decide in the corridor's own frame, because the
   // riser sits in its height band and no point-set planner would move at all.
-  if (location.hash.indexOf('treadblock') >= 0){
+  if (autoObs && location.hash.indexOf('treadblock') >= 0){
     const q = pathAt(pts, Math.min(pathLen, prog + 2.7));
     addObstacle(q[0], q[1], q[2], false);
     updObsCount();
   }
-  if (location.hash.indexOf('treadhug') >= 0){
+  if (autoObs && location.hash.indexOf('treadhug') >= 0){
     // Pressed against the north railing: with a 1.10 m bridge the free strip
     // for the dog's centre is 0.325 m either side, and a 0.22 m person at
     // +0.33 leaves [-0.325, -0.115] on the other side - a real 0.21 m window.
@@ -1267,7 +1273,7 @@ function startLocalDemo(){
     o.vx = 0; o.vy = 0;              // standing against the railing
     updObsCount();
   }
-  if (location.hash.indexOf('personstep') >= 0){
+  if (autoObs && location.hash.indexOf('personstep') >= 0){
     const q = pathAt(pts, Math.min(pathLen, prog + 2.7));
     const o = addObstacle(q[0], q[1], q[2], true);
     o.vx = 0; o.vy = 0;               // stand still on the tread for the test
@@ -1308,7 +1314,7 @@ function makeWinBox(c, half){
 }
 
 // ---------- drawing -------------------------------------------------------
-const COL_FLOOR = 0x8fa9c4, COL_WALL = 0xff5a5a, COL_PATH = 0x4fc3ff;
+const COL_FLOOR = 0x8fa9c4, COL_WALL = 0xff5a5a, COL_PATH = 0x2f8cff;
 const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
 
 function clearRoot(){
@@ -1804,7 +1810,13 @@ if (location.hash.indexOf('single') >= 0){
         x_min: X0 + 3.80, x_max: X0 + 4.00 + 16*(is25?0.28:0.45) + 1.50 + 0.6,
         y_centre: Y0 + 7.90, y_half: 1.60,
         z_min: -0.30, z_max: 8*(is25?0.25:0.15) + 0.30, weight: 1.0,
-      }] : null;
+      }] : (kind === 'pit' ? [{
+        // down the middle of the pit, not along its rim: the railings stand on
+        // the rim, and a plan that grazes the nosing puts the dog under them
+        x_min: X0 + 8.20, x_max: X0 + 11.40,
+        y_centre: Y0 + 5.80, y_half: 1.40,
+        z_min: Z0 - 1.0, z_max: Z0 + 0.30, weight: 1.0,
+      }] : null);
       if (kind === 'floor'){
         // open floor at both ends: the platform occupies x 0.6..2.0 / y 0.6..2.6
         // and the pit x 8.6..11.0 / y 5.0..6.6, so neither end may sit there
@@ -1910,8 +1922,16 @@ if (location.hash.indexOf('demo') >= 0){
     if (location.hash.indexOf('nofill') >= 0) infSel.value = '0.00';
     document.getElementById('demo').click();
     setTimeout(() => {
+      // the demo button loads the model asynchronously; picking the endpoints
+      // before the map exists used to return silently and leave the button
+      // looking dead, so wait for the map instead of giving up.
+      let waitTries = 0;
+      (function waitMap(){
+        if (state.map){ pickDemo(); return; }
+        if (++waitTries < 80) setTimeout(waitMap, 400);
+      })();
+      function pickDemo(){
       const m = state.map;
-      if (!m) return;
       const F = (i, j, k) => (k*m.ny + j)*m.nx + i;
       // A storey is a wide stratum; a roof edge or a handrail top is a thin
       // one. Pick the widest stratum as the floor to start and finish on,
@@ -1931,13 +1951,13 @@ if (location.hash.indexOf('demo') >= 0){
       for (let k = 0; k < m.nz; ++k) if (cnt[k] >= maxC*0.5){ if (kLo < 0) kLo = k; kHi = k; }
       // Pick the most open cell on each of those two strata: a centroid can
       // land on a pillar or inside a handrail and leave the search in a pocket.
-      function bestOn(k, mask){
+      function bestOn(k, mask, strict){
         let bi = -1, bj = -1, bn = -1;
         for (let j = 1; j < m.ny-1; ++j)
           for (let i = 1; i < m.nx-1; ++i){
             const v = m.data[F(i, j, k)];
             if (v !== FREE && v !== INFL) continue;
-            if (!m.supportOrUnknown(i, j, k)) continue;
+            if (strict ? !m.support(i, j, k) : !m.supportOrUnknown(i, j, k)) continue;
             if (mask && !mask[F(i, j, k)]) continue;
             let n = 0;
             for (let dj = -1; dj <= 1; ++dj)
@@ -1972,9 +1992,27 @@ if (location.hash.indexOf('demo') >= 0){
             if (reach.seen[F(i, j, k)]) ++c;
         cntR[k] = c;
       }
+      // The highest reachable stratum can be the air above the roof: those
+      // cells read as walkable only through the optimistic unknown-support
+      // rule, and a goal there sends the path climbing out of the building.
+      // Require real support on the stratum, and take the highest one that
+      // still forms a plate.
       let topK = -1;
-      for (let k = 0; k < m.nz; ++k) if (cntR[k] >= 150) topK = k;
-      const g0 = bestOn(topK, reach.seen);
+      for (let k = 0; k < m.nz; ++k){
+        if (cntR[k] < 150) continue;
+        let real = 0;
+        for (let j = 0; j < m.ny; ++j)
+          for (let i = 0; i < m.nx; ++i){
+            const f = F(i, j, k);
+            if (!reach.seen[f]) continue;
+            if (m.data[f] !== FREE && m.data[f] !== INFL) continue;
+            if (m.support(i, j, k)) ++real;
+          }
+        // 400 is a floor plate; the air over a long handrail also passes the
+        // support test, but only with a few hundred cells along its top.
+        if (real >= 400) topK = k;
+      }
+      const g0 = bestOn(topK, reach.seen, true);
       if (!g0) return;
       console.log('demo reach', reach.cells, 'cells, top storey k', topK, 'goal', g0);
       const toWorld = v => [m.lo[0] + (v[0]+0.5)*m.res, m.lo[1] + (v[1]+0.5)*m.res,
@@ -2003,12 +2041,13 @@ if (location.hash.indexOf('demo') >= 0){
         }
         console.log('start cell', m.data[F2(si,sj,sk)], 'neighbours', nb);
       }
+      }
       document.getElementById('go').disabled = false;
       document.getElementById('go').click();
       // #demo,close pulls the camera in so a screenshot shows the floor plate
       // rather than the whole block
       if (location.hash.indexOf('close') >= 0){
-        cam.dist = cam.dist * 0.45;
+        cam.dist = cam.dist * 0.30;
         cam.target.set(m.lo[0] + m.nx*m.res*0.5, m.lo[1] + m.ny*m.res*0.5,
                        m.lo[2] + 6*m.res*0.5);
         applyCam();
