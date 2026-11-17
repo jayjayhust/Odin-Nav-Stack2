@@ -283,3 +283,10 @@ Mesh files exported from a game engine are often in centimetres - Unreal's `Thir
 - An oversized model is no longer refused: the resolution ladder 0.05 / 0.10 / 0.15 ... 0.60 / 0.75 / 1.0 / 1.5 / 2.0 / 3.0 / 5.0 / 8.0 / 12 / 20 picks the first value that keeps the grid under 12 million cells, and the HUD reports the value actually used (the dropdown keeps showing your choice).
 
 Measured on `ThirdPersonExampleMap.obj` (710 vertices / 520 faces): detected as centimetres, 30 x 10 x 30 m, resolution stays 0.15 m, grid 210 x 76 x 210, 27,421 standable cells, 738 ms to build, and a two-point plan of 202 points / 34.3 m / A* 109 ms. The ladder on its own: 60 m cube -> 0.30 m, 120 m -> 0.60 m, 300 m -> 1.50 m.
+
+
+### Up axis
+
+OBJ's own convention is Y up, while the Odin point cloud and this page keep Z up; Unreal exports converted to OBJ often swap Z for Y, so the model arrives lying on its side. The toolbar now has an up-axis selector (Z / Y / X) that rotates the vertices once on import (Y->Z is `(x,y,z) -> (x,-z,y)`, X->Z is `-> (-z,y,x)`), so the planner, the camera and the dog all share one frame; the HUD states the axis used.
+
+Measured on the full `ThirdPersonExampleMap.obj` (36,472 vertices / 54,644 faces / 5.4 MB): only Y-up puts it the right way up (30 x 30 m footprint, 12.7 m tall); detected as centimetres, grid 210 x 210 x 94, 53,633 standable cells, 282 ms build, two-point plan 253 points / 46.9 m / A* 55 ms. With Z-up the same file becomes a 30 m ring of walls - the model is fine, the axes were not aligned.

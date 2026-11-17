@@ -56,6 +56,8 @@
   <select id="inf"><option value="0.00">0 m</option><option value="0.30" selected>0.30 m</option><option value="0.45">0.45 m</option><option value="0.60">0.60 m</option></select>
   <span class="lbl">单位</span>
   <select id="unit"><option value="auto" selected>自动</option><option value="m">米</option><option value="cm">厘米</option></select>
+  <span class="lbl">上方向</span>
+  <select id="up"><option value="z" selected>Z 向上</option><option value="y">Y 向上</option><option value="x">X 向上</option></select>
   <button class="btn" id="setStart">点模型设起点</button>
   <button class="btn" id="setGoal">点模型设终点</button>
   <button class="btn primary" id="go" disabled>规划</button>
@@ -1469,6 +1471,23 @@ function loadModel(pos, idx, name){
   }
   srcMesh = makeSrcMesh(pos, idx);
   root.add(srcMesh);
+
+  // An engine export is usually Y up (OBJ's own convention) while this page,
+  // like the point cloud from Odin, keeps Z up. Turn the vertices once so the
+  // planner and the camera agree, instead of asking the user to rotate the view.
+  const upAxis = document.getElementById('up').value;
+  if (upAxis === 'y'){
+    for (let i = 0; i < pos.length; i += 3){
+      const y = pos[i+1], z = pos[i+2];
+      pos[i+1] = -z; pos[i+2] = y;
+    }
+  } else if (upAxis === 'x'){
+    for (let i = 0; i < pos.length; i += 3){
+      const x = pos[i], z = pos[i+2];
+      pos[i] = -z; pos[i+2] = x;
+    }
+  }
+  if (upAxis !== 'z') scaled += (scaled ? '，' : '') + '上方向 ' + upAxis.toUpperCase();
 
   let res = +document.getElementById('res').value;
   const infR = +document.getElementById('inf').value;
