@@ -344,9 +344,22 @@ function buildMap(pos, idx, res, infR){
     for (let u = 0; u <= n; ++u){
       for (let v = 0; v + u <= n; ++v){
         const a = u/n, b = v/n;
-        insert(vA[0] + a*e1[0] + b*e2[0],
-               vA[1] + a*e1[1] + b*e2[1],
-               vA[2] + a*e1[2] + b*e2[2], up);
+        const px = vA[0] + a*e1[0] + b*e2[0],
+              py = vA[1] + a*e1[1] + b*e2[1],
+              pz = vA[2] + a*e1[2] + b*e2[2];
+        insert(px, py, pz, up);
+        // A face that stands upright and is thinner than a cell is not there:
+        // at 0.15 m a 0.06 m handrail never fills an occupied cell, so neither
+        // the search nor the obstacle band can see it and the route climbs the
+        // stair hugging a rail that is, in the grid, empty air. Stamp the cell
+        // across the face as well, so a thin panel lands as a one cell wall
+        // instead of vanishing. Floors are untouched: this runs only on the
+        // else branch, and a slab's normal points up, not sideways.
+        if (!up){
+          const ax = Math.abs(nX), ay = Math.abs(nY);
+          if (ax >= ay) insert(px + (nX > 0 ? 1.2 : -1.2)*res, py, pz, false);
+          else insert(px, py + (nY > 0 ? 1.2 : -1.2)*res, pz, false);
+        }
       }
     }
   }
