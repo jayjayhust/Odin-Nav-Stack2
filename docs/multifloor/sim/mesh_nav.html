@@ -98,7 +98,7 @@
 
 <div id="cv">
   <div id="hud">等待载入模型</div>
-  <div id="say">先点「示例」看效果，也可以直接选自己的 OBJ / STL 文件</div>
+  <div id="say">先点「示例」看效果，也可以直接选自己的 OBJ / STL 文件 · 双击任意格可查它的坐标与判红原因</div>
 </div>
 
 <div class="foot">
@@ -940,11 +940,17 @@ function buildMap(pos, idx, res, infR){
   // Stair columns dilated by one cell, so the band painted along the rails
   // does not eat the treads the narrow stair test missed.
   const stairNear = new Uint8Array(nx*ny);
-  for (let j = 1; j < ny-1; ++j)
-    for (let i = 1; i < nx-1; ++i){
+  const nearR = Math.max(1, Math.round(infR / res));   // same reach as one band
+  for (let j = 0; j < ny; ++j)
+    for (let i = 0; i < nx; ++i){
       if (!stairCol[i + j*nx]) continue;
-      for (let dj = -1; dj <= 1; ++dj)
-        for (let di = -1; di <= 1; ++di) stairNear[(i+di) + (j+dj)*nx] = 1;
+      for (let dj = -nearR; dj <= nearR; ++dj)
+        for (let di = -nearR; di <= nearR; ++di){
+          if (di*di + dj*dj > nearR*nearR) continue;
+          const ii = i+di, jj = j+dj;
+          if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
+          stairNear[ii + jj*nx] = 1;
+        }
     }
 
   // A tread is a walk surface, and the clearance band expects to be painted
@@ -2296,6 +2302,35 @@ function pick(ev){
   const hit = ray.intersectObject(srcMesh, false)[0];
   return hit ? hit.point : null;
 }
+
+// Double-click any cell and the page reports which voxel it is, what it holds
+// and why it came out forbidden. Guessing at a screenshot costs rounds; this
+// answers with numbers.
+host.addEventListener('dblclick', ev => {
+  const p = pick(ev);
+  if (!p){ say('没点到模型上'); return; }
+  if (!state.map){ say('先载入模型'); return; }
+  const m = state.map, r = m.res;
+  const i = Math.floor((p.x - m.lo[0]) / r), j = Math.floor((p.y - m.lo[1]) / r);
+  const V = (ii, jj, kk) => (ii < 0 || jj < 0 || kk < 0 ||
+      ii >= m.nx || jj >= m.ny || kk >= m.nz) ? -1 : m.data[((kk*m.ny + jj)*m.nx) + ii];
+  let k = Math.max(0, Math.floor((p.z - m.lo[2]) / r));
+  for (let s = 0; s < 8 && k < m.nz - 1; ++s){
+    const v = V(i, j, k);
+    if (v === FREE || v === INFL || v === UNKNOWN) break;
+    ++k;
+  }
+  const v = V(i, j, k), kb = k - 1;
+  const fid = i + j*m.nx, fb = ((kb*m.ny + j)*m.nx) + i;
+  const names = {[-1]: '界外', 0: '空', 1: '可走', 2: '墙', 3: '红/膨胀'};
+  say('格 x' + p.x.toFixed(2) + ' y' + p.y.toFixed(2) + ' z' + p.z.toFixed(2) +
+      ' · i' + i + ' j' + j + ' k' + k + ' · 值 ' + (names[v] || v) +
+      ' · 楼梯柱 ' + (m.stairCol[fid] ? 1 : 0) +
+      ' · 支撑 ' + (m.support(i, j, k) ? 1 : 0) +
+      ' · 可站 ' + (m.walkable(i, j, k) ? 1 : 0) +
+      ' · 下方 ' + (V(i, j, kb) === OCC ? '墙(踏面?)' : V(i, j, kb)) +
+      ' topFace ' + (m.topFace[fb] ? 1 : 0) + ' 宽 ' + m.capWide[fb]);
+});
 
 host.addEventListener('click', ev => {
   if (!state.mode) return;
