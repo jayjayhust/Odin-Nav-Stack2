@@ -234,6 +234,12 @@ struct Scenario {
   // clearance threshold - no occupancy grid and no inflation. "dwa" is the
   // sampling planner this simulator grew, which does use the inflated grid.
   std::string planner = "neupan";
+  // Fixed per-scene seed. Position-based seeds looked reproducible until a new
+  // scene was appended: every later scenario shifted by one and its run
+  // changed, which reads as a regression in scenes nobody touched. Each scene
+  // owns its seed now; the DWA twin gets +5 so both planners see the same
+  // geometry with their own noise.
+  int seed = 0;
   double minx = 0, miny = 0, maxx = 10, maxy = 10;
   std::vector<Obstacle> obs;
   double sx = 1, sy = 1, gx = 9, gy = 9;
@@ -347,13 +353,21 @@ const double STAIR_LOOK = 1.6;   // metres of tread ahead the layer watches
 
 bool stairTreadBlocked(const std::vector<Obstacle>& clutter, double t,
                        double x, double y, double base_z,
-                       double* s_hit = nullptr, double* lat_hit = nullptr) {
+                       double* s_hit = nullptr, double* window = nullptr,
+                       double* t_target = nullptr) {
   const bool upper = (y > 1.80);              // run A climbs +x, run B -x
   if (y < 0.66 || y > 3.04) return false;     // not over the treads at all
   const double cy = upper ? 2.40 : 1.30;      // run centre line
   const double dirx = upper ? 1.0 : -1.0;
   const double tread_half = 0.50;             // 1.00 m clear width per run
-  const double budget = tread_half - kHalfWid - 0.05;   // lateral room off centre
+  const double budget = tread_half - kHalfWid - 0.05;   // |t| the hull allows
+  // Every obstacle forbids a *band* of lateral offsets, not just the one point
+  // it stands on: the dog has to keep r + half body + clearance away from it.
+  // Clamping the dog towards the obstacle - which is what this did first - is
+  // the wrong test and concluded "1.0 m flights can never be passed"; a person
+  // hugging one railing leaves a 0.11 m window on the other side, and this
+  // sweep below is what finds it.
+  std::vector<std::pair<double, double>> bands;
   for (const auto& o : clutter) {
     if (!o.present(t)) continue;
     double ox, oy, orr;
@@ -366,20 +380,42 @@ bool stairTreadBlocked(const std::vector<Obstacle>& clutter, double t,
     }
     if (oy < 0.66 || oy > 3.04) continue;     // beyond the railings
     // Height against the tread the dog is about to stand on, not base_z: a
-    // tread one step up is +0.19, one step down -0.19, and the body always
-    // reads as standing on the tread under its feet.
+    // tread one step up is +0.19, one step down -0.19.
     if (o.z1 < base_z + 0.12 || o.z0 > base_z + 0.55) continue;
     const double ds = (ox - x) * dirx;        // along-track, ahead is positive
     if (ds < -0.40 || ds > STAIR_LOOK + orr) continue;
-    // The closest the dog can bring its hull: shift as far as the budget lets.
+    const double need = orr + kHalfWid + 0.05;
     const double want = oy - cy;
-    const double t_best = std::max(-budget, std::min(budget, want));
-    const double gap = std::fabs(want - t_best);   // residual lateral offset
-    if (gap >= orr + kHalfWid + 0.05) continue;    // clears it without stopping
     if (s_hit) *s_hit = ds;
-    if (lat_hit) *lat_hit = gap;
-    return true;
+    bands.push_back({want - need, want + need});
   }
+  if (bands.empty()) {
+    if (t_target) *t_target = 0.0;
+    if (window) *window = 2.0 * budget;
+    return false;
+  }
+  std::sort(bands.begin(), bands.end());
+  double cur = -budget, best_lo = 0.0, best_hi = 0.0, best_w = -1.0;
+  for (const auto& b : bands) {
+    if (b.first > cur) {
+      const double w = std::min(b.first, budget) - cur;
+      if (w > best_w) { best_w = w; best_lo = cur; best_hi = std::min(b.first, budget); }
+    }
+    cur = std::max(cur, b.second);
+    if (cur >= budget) break;
+  }
+  if (cur < budget) {
+    const double w = budget - cur;
+    if (w > best_w) { best_w = w; best_lo = cur; best_hi = budget; }
+  }
+  if (window) *window = std::max(0.0, best_w);
+  // 6 cm is the practical minimum: a window that wide means the hull really
+  // clears, and it is wider than any sensor jitter the planner already eats.
+  if (best_w < 0.06) return true;
+  // Hold the free interval's point nearest the centre line. If the obstacle is
+  // against one rail the far end of the interval is the only way past, so this
+  // picks that side; with clearance on both sides it stays near the nose.
+  if (t_target) *t_target = std::max(best_lo, std::min(best_hi, 0.0));
   return false;
 }
 
@@ -387,6 +423,7 @@ bool stairTreadBlocked(const std::vector<Obstacle>& clutter, double t,
 Scenario officeLoop() {
   Scenario s;
   s.name = "office_loop";
+  s.seed = 0;
   s.desc = "10 x 8 m 办公室：两张 0.75 m 高的桌子（狗能从桌下过、桌腿不能）、一根承重柱；起点左下、目标右上，直线会撞桌";
   s.minx = 0; s.miny = 0; s.maxx = 10; s.maxy = 8;
   wall(s.obs, 0.0, 0.0, 10.0, 8.0, 2.6, 0.15);
@@ -407,6 +444,7 @@ Scenario officeLoop() {
 Scenario stairTwoFloor() {
   Scenario s;
   s.name = "stair_two_floor";
+  s.seed = 3;
   s.desc = "两层办公楼：双跑楼梯（净宽 1.0 m）+ 1.70 m 转弯平台，每跑 9 级 × 0.189 m，层高 3.40 m；"
            "一层起点、二层目标，楼梯段由 stair_gait 接管";
   s.minx = -0.2; s.maxx = 7.0;
@@ -511,10 +549,29 @@ Scenario stairTwoFloor() {
 Scenario stairTreadBlock() {
   Scenario s = stairTwoFloor();
   s.name = "stair_tread_block";
+  s.seed = 5;
   s.desc = "两层办公楼 + 第 6 级踏面上放一只纸箱：楼梯段局部层应停车等待，而不是撞上去";
   // Run A climbs +x at y 1.90..2.90. Tread 6 tops at 6 x 0.189 = 1.13 m.
   Obstacle c = box(4.75, 2.10, 5.05, 2.70, 0.0, 2.40);
   s.clutter.push_back(c);
+  s.limit = 120.0;
+  return s;
+}
+
+// C3. the same core, but the person stands against the north railing instead
+// of on the centre line. This is the case that proves the corridor is passable:
+// 1.00 m clear width, hull 0.35 m, person r 0.22 m hugging the rail at
+// y = 2.68 leaves a 0.11 m window on the south side - tight, but real. The
+// first version of the layer clamped the dog *towards* the obstacle and
+// declared every 1.0 m flight impassable; it now sweeps the free interval.
+Scenario stairTreadSide() {
+  Scenario s = stairTwoFloor();
+  s.name = "stair_tread_side";
+  s.seed = 6;
+  s.desc = "两层办公楼 + 第 6 级踏面北侧贴栏板站一个人（r=0.22）：应贴边通过，而不是停车";
+  // Run A treads span y 1.90..2.90; the railing's inner face is 2.90. A person
+  // pressed against it stands at 2.90 - 0.22 = 2.68.
+  s.clutter.push_back(cyl(4.90, 2.68, 0.22, 0.0, 2.40));
   s.limit = 120.0;
   return s;
 }
@@ -526,6 +583,7 @@ Scenario stairTreadBlock() {
 Scenario fourFloor() {
   Scenario s;
   s.name = "four_floor";
+  s.seed = 4;
   s.desc = "四层办公楼：同一楼梯芯垂直叠三层（双跑 × 9 级 × 0.189 m、净宽 1.0 m、层高 3.40 m），"
            "一层起点 → 四层目标，连爬三个层间，共 6 跑 54 级";
   // The landing is 1.60 m deep, not 1.20: a real stair hall always gives a full
@@ -666,6 +724,7 @@ Scenario fourFloor() {
 Scenario corridorBlock() {
   Scenario s;
   s.name = "corridor_block";
+  s.seed = 1;
   s.desc = "1.6 m 净宽走廊：3 秒后一只 0.4 x 0.4 m 箱子落在通道中段靠下侧，只剩 1.2 m 可过——用来测「跑起来之后才发现」的重规划与局部避障";
   s.minx = 0; s.miny = 0; s.maxx = 14; s.maxy = 1.9;
   wall(s.obs, 0.0, 0.0, 14.0, 1.9, 2.6, 0.15);
@@ -681,6 +740,7 @@ Scenario corridorBlock() {
 Scenario narrowGate() {
   Scenario s;
   s.name = "narrow_gate";
+  s.seed = 2;
   s.desc = "两间房中间 1.2 m 门洞（膨胀后净剩 0.7 m，狗宽 0.34 m）；4 秒后一个人从目标侧朝狗走来——测窄通道里的对向避让";
   s.minx = 0; s.miny = 0; s.maxx = 13; s.maxy = 5;
   wall(s.obs, 0.0, 0.0, 13.0, 5.0, 2.6, 0.15);
@@ -1173,6 +1233,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
   double last_plan_t = -10.0;
   bool have_plan = false;
   bool stair_stop = false;   // the flight's local layer is holding the dog
+  bool stair_shift = false;  // ... or is steering across to pass something
 
   auto replan = [&](double t) {
     VoxelKey s, g;
@@ -1501,20 +1562,46 @@ Run simulate(const Scenario& sc, unsigned seed) {
           // Local layer for the flight: a tread obstacle inside the corridor
           // stops the run. The gait still owns the height, the corridor still
           // owns the sides; this only answers "is the way ahead clear".
-          double s_hit = 0.0, lat_hit = 0.0;
-          if (stairTreadBlocked(clutter, t, x, y, base_z, &s_hit, &lat_hit)) {
+          double s_hit = 0.0, t_win = 0.0, t_tgt = 0.0;
+          if (stairTreadBlocked(clutter, t, x, y, base_z, &s_hit, &t_win, &t_tgt)) {
             vx = 0.0; vy = 0.0; wz = 0.0;
             if (!stair_stop) {
               stair_stop = true;
+              stair_shift = false;
               char buf[200];
               std::snprintf(buf, sizeof(buf),
-                            "楼梯段局部层：踏面障碍 s=%.2f m、横向余量 %.2f m，停车等待",
-                            s_hit, lat_hit);
+                            "楼梯段局部层：踏面障碍 s=%.2f m、可用横向窗口 %.2f m，停车等待",
+                            s_hit, t_win);
               out.events.push_back({t, buf});
             }
-          } else if (stair_stop) {
-            stair_stop = false;
-            out.events.push_back({t, "楼梯段局部层：踏面已清空，继续爬梯"});
+          } else if (s_hit > 0.0 && std::fabs(t_tgt) > 0.02) {
+            // A window exists but it is off the centre line: shift across and
+            // keep climbing. The lateral command is body-frame y, converted
+            // from the corridor's world +y so it stays right on run B, where
+            // the dog faces -x and body y points the other way.
+            if (stair_stop) {
+              stair_stop = false;
+              out.events.push_back({t, "楼梯段局部层：改为贴边通过，不再等待"});
+            }
+            const double cyw = (y > 1.80) ? 2.40 : 1.30;
+            const double et = t_tgt - (y - cyw);
+            double lat = std::max(-0.25, std::min(0.25, 1.2 * et));
+            const double cy2 = std::cos(yaw);
+            if (std::fabs(cy2) > 0.30) vy = (lat - vx * std::sin(yaw)) / cy2;
+            if (!stair_shift) {
+              stair_shift = true;
+              char buf[200];
+              std::snprintf(buf, sizeof(buf),
+                            "楼梯段局部层：贴边通过（窗口 %.2f m，横向目标 %+.2f m）",
+                            t_win, t_tgt);
+              out.events.push_back({t, buf});
+            }
+          } else {
+            if (stair_stop) {
+              stair_stop = false;
+              out.events.push_back({t, "楼梯段局部层：踏面已清空，继续爬梯"});
+            }
+            stair_shift = false;
           }
         } else {
           // which way is the route pointing? use the nearest route point a
@@ -1946,7 +2033,8 @@ int main() {
   std::vector<Scenario> scenarios;
   for (const char* who : {"neupan", "dwa"}) {
     for (Scenario base : {officeLoop(), corridorBlock(), narrowGate(),
-                          stairTwoFloor(), fourFloor(), stairTreadBlock()}) {
+                          stairTwoFloor(), fourFloor(), stairTreadBlock(),
+                          stairTreadSide()}) {
       base.planner = who;
       const std::string tag = (std::string(who) == "neupan") ? "NeuPAN" : "DWA";
       base.name += " · " + tag;
@@ -1972,7 +2060,9 @@ int main() {
   o << "\"scenarios\":[";
   for (size_t i = 0; i < scenarios.size(); ++i) {
     if (i) o << ",";
-    Run r = simulate(scenarios[i], 1000u + (unsigned)i);
+    const unsigned seed = 1000u + (unsigned)scenarios[i].seed +
+                          (scenarios[i].planner == "dwa" ? 5u : 0u);
+    Run r = simulate(scenarios[i], seed);
     o << jsonScenario(scenarios[i], r);
     std::fprintf(stderr, "[%-14s] reached=%d collided=%d t=%.1fs len=%.1fm mincl=%.2fm replans=%d swerves=%d\n",
                  scenarios[i].name.c_str(), (int)r.reached, (int)r.collided, r.time, r.length,

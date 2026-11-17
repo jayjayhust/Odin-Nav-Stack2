@@ -131,6 +131,8 @@ const state = {
   obs: [],             // obstacles the user drops in
   place: null,         // 'static' | 'ped' while placing
   blocked: false,      // last local decision: no legal candidate
+  latOff: 0,           // how far off the route centre the dog is riding
+  latTgt: 0,           // where the local layer wants it, on the current flight
 };
 const obsGroup = new THREE.Group();
 
@@ -964,25 +966,44 @@ function stairFrame(path, s){
 // narrower of the left and right runs of walkable cells at the same layer,
 // sampled a little ahead so the bound tightens before the dog reaches it.
 function stairHalfWidth(m, path, s, f){
+  // Physical half-width of the tread: "walkable strip + inflation radius",
+  // because the walkable field stops one inflation radius short of the edge.
+  //
+  // Two details matter and both were wrong at first:
+  //  * z must be searched, not trusted. The route's z often lands on a cell
+  //    boundary, where the column reads solid and the strip collapses to zero.
+  //  * the samples ahead must be combined with MIN, not MAX. Taking the max
+  //    let a wide landing ahead widen the flight under the dog's feet, and a
+  //    post sitting on the centre line then looked passable.
   const {res, lo} = m;
-  const k = Math.floor((f.a[2]-lo[2])/res);
-  let half = 0.90;                  // a flight is never wider than this here
-  for (const ds of [0.15, 0.55, 0.95]){
+  const k0 = Math.floor((f.a[2]-lo[2])/res);
+  let half = Infinity;
+  for (const ds of [0.10, 0.45, 0.80]){
     const q = pathAt(path, Math.min(pathLen, s + ds));
-    for (const sg of [1, -1]){
-      let t = 0;
-      for (let n2 = 1; n2 <= 10; ++n2){
-        const px = q[0] + sg*f.lx*n2*res, py = q[1] + sg*f.ly*n2*res;
-        const i = Math.floor((px-lo[0])/res), j = Math.floor((py-lo[1])/res);
-        if (!m.walkable(i, j, k)) break;
-        t = n2*res;
+    let perSample = 0;
+    for (const dk of [0, -1, 1, -2, 2, -3]){
+      const k = k0 + dk;
+      let narrow = Infinity;               // narrower of the two sides here
+      for (const sg of [1, -1]){
+        let t = 0;
+        for (let n2 = 1; n2 <= 10; ++n2){
+          const px = q[0] + sg*f.lx*n2*res, py = q[1] + sg*f.ly*n2*res;
+          const i = Math.floor((px-lo[0])/res), j = Math.floor((py-lo[1])/res);
+          if (!m.walkable(i, j, k)) break;
+          t = n2*res;
+        }
+        // + half a cell: the walkable test removes a cell when its CENTRE is
+        // within infR of the wall face, so the strip ends half a cell short of
+        // where the geometry really ends. Without this the bridge read 0.90 m
+        // wide instead of 1.10 m, which made a railing-hugging person look
+        // impossible to pass - the same arithmetic error as the C++ side.
+        narrow = Math.min(narrow, t + m.infR + m.res*0.5);
       }
-      // walkable stops one inflation radius short of the physical tread edge
-      const phys = t + m.infR;
-      if (phys < half) half = phys;
+      if (narrow > perSample) perSample = narrow;   // best layer at this ds
     }
+    if (perSample < half) half = perSample;
   }
-  return half;
+  return Math.max(0, Math.min(0.90, half));
 }
 
 function stairLocalLeg(m, path, s, pose, target){
@@ -1051,6 +1072,20 @@ function makeWinBox(c, half){
   return l;
 }
 
+// A read-only handle for the capture scripts: script scope is invisible to
+// Runtime.evaluate, so the probes need an explicit door instead of guessing at
+// top-level consts.
+window.__MESH = {
+  get state(){ return state; },
+  get prog(){ return prog; },
+  get pathLen(){ return pathLen; },
+  hold(v){ window.recHold = true; window.recProg = v; },
+  letgo(){ window.recHold = false; },
+  get dog(){ return dogMesh ? [+dogMesh.position.x.toFixed(2), +dogMesh.position.y.toFixed(2), +dogMesh.position.z.toFixed(2)] : null; },
+  get leg(){ return localLine ? localLine.geometry.drawRange.count/2 : null; },
+  get blocked(){ return state.blocked; },
+};
+
 function startLocalDemo(){
   const at = location.hash.match(/at=([0-9.]+)/);
   const pts = state.path;
@@ -1084,6 +1119,24 @@ function startLocalDemo(){
   if (location.hash.indexOf('treadblock') >= 0){
     const q = pathAt(pts, Math.min(pathLen, prog + 2.7));
     addObstacle(q[0], q[1], q[2], false);
+    updObsCount();
+  }
+  if (location.hash.indexOf('treadhug') >= 0){
+    // Pressed against the north railing: with a 1.10 m bridge the free strip
+    // for the dog's centre is 0.325 m either side, and a 0.22 m person at
+    // +0.33 leaves [-0.325, -0.115] on the other side - a real 0.21 m window.
+    // Put the person on the flight, not on the approach floor: hw measured on
+    // the floor is the room's width and the offset would land the person in
+    // mid-air. Walk forward to the first flight sample first.
+    let sf = prog + 0.4;
+    while (sf < pathLen - 1.0 && !isStair(pts, sf)) sf += 0.1;
+    sf = Math.min(pathLen - 0.4, sf + 1.0);
+    const q = pathAt(pts, sf);
+    const ff = stairFrame(pts, sf);
+    const hw = stairHalfWidth(state.map, pts, sf, ff);
+    const off = Math.max(0.10, hw - 0.22);
+    const o = addObstacle(q[0] + ff.lx*off, q[1] + ff.ly*off, q[2], true);
+    o.vx = 0; o.vy = 0;              // standing against the railing
     updObsCount();
   }
   if (location.hash.indexOf('personstep') >= 0){
@@ -1489,6 +1542,26 @@ function tick(){
     if (!window.recHold && !state.blocked) prog += dt * 1.2;
     if (prog > pathLen) prog = 0;     // loop, so the page keeps demonstrating
     const p = pathAt(state.path, prog);
+    // The local layer's answer is a lateral offset, and the dog has to take
+    // it: on a flight the route is one line down the middle, so a person
+    // hugging the railing is passable only if the dog actually steps aside.
+    // Offsetting the dog is the cheapest honest way to show that - the route
+    // itself stays where the global planner put it.
+    const onStair = isStair(state.path, prog);
+    if (onStair){
+      const f = stairFrame(state.path, prog);
+      const hw = stairHalfWidth(state.map, state.path, prog, f);
+      const tFree = Math.max(0, hw - HALF_W - CLR_HARD);
+      state.latTgt = Math.max(-tFree, Math.min(tFree, state.latTgt));
+      // slew rate 0.5 m/s: a side step is a deliberate move, not a twitch
+      const step = 0.5 * Math.max(dt, 0.0);
+      const d = state.latTgt - state.latOff;
+      state.latOff += Math.abs(d) <= step ? d : Math.sign(d) * step;
+      p[0] += f.lx * state.latOff;
+      p[1] += f.ly * state.latOff;
+    } else {
+      state.latTgt = 0; state.latOff = 0;
+    }
     dogMesh.position.set(p[0], p[1], p[2]);
     winBox.position.set(p[0], p[1], p[2]);
     // #...,follow rides the camera behind the dog, which is how a recording
@@ -1521,6 +1594,14 @@ function tick(){
         if (!leg){ state.blocked = true; leg = stairLeg(state.path, prog); }
       }
       updateLocalLine(leg);
+      // What the leg asks for laterally: its own end point, in the flight's
+      // frame. The leg already proved that point clears both the railings and
+      // the obstacles, so this is a verified offset, not a guess.
+      if (isStair(state.path, prog)){
+        const f2 = stairFrame(state.path, prog);
+        const e = leg[leg.length - 1];
+        state.latTgt = (e[0] - f2.a[0])*f2.lx + (e[1] - f2.a[1])*f2.ly;
+      }
       if (dogMesh) dogMesh.rotation.z = yaw;
     }
   }

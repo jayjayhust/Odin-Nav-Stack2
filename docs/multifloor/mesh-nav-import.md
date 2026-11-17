@@ -227,9 +227,13 @@ Measured (`#single,ridge,diag` baseline vs `#single,ridge,treadblock,diag` with 
 
 The stop window runs from "obstacle enters the 1.6 m look-ahead" to "it is behind"; the verdict comes from `stairLocalLeg`, not the fallback `stairLeg` (8 points when falling back, 11 when the corridor layer decides).
 
-**Capability limit, stated plainly:** on a 1.10 m or 1.60 m flight, after 0.30 inflation and 0.175 half body the lateral budget is 0.075 / 0.375 m, less than the 0.22 m person plus 0.225 m clearance - so the correct action is **stop and wait**, not a side-step. A lateral swerve needs a flight of 2 m or more.
+**Where a side-step is possible** - and this figure was wrong at first, so it is worth stating carefully. The usable band for the dog's centre is `B = W/2 - 0.175 - 0.05`; clearing a body of radius `r` needs `R = r + 0.175 + 0.05` = 0.445 m for a person. Only a person **on the centre line** needs `B >= R`, i.e. `W >= 1.34 m`. A person **hugging one railing** sits at `a - r`, and clearing on the far side only needs `(a - r) + B >= R`, which collapses to **`W >= 0.89 m`** - a 1.00 m flight leaves an 0.11 m window, 1.10 m leaves 0.21 m, 1.60 m leaves 0.71 m. A 2 m flight was never required.
 
-**Now ported to C++:** the same rule also runs in `stairTreadBlocked()` inside the flight hand-over of `test/nav_sim.cpp`, with a new `stair_tread_block` scenario to prove it - a carton on tread 6 stops the dog 1.9 m short of it (`7.90 s` event, `s = 1.91 m`, lateral residual `0.00 m`, `collided = 0`). Both simulators now run the same rule.
+The layer now sweeps the free lateral interval instead of nudging the dog toward the obstacle: each obstacle forbids a band `[t_o - R, t_o + R]`, and if any window of 6 cm or more remains inside `[-B, +B]` the dog takes it (`#single,ridge,treadhug`: a person against the railing at +0.33 m, dog rides at -0.11 to -0.18 m and passes). A post on the centre line still stops it (`#single,ridge,treadblock`: `blocked` from prog 2.4 to 3.0 m).
+
+Two defects in the mesh page were found while making these cases agree with C++: `stairHalfWidth` combined the look-ahead samples with MAX instead of MIN (a wide landing ahead widened the flight under the dog, which made a centred post look passable), and "walkable strip + inflation" was half a cell short, reading the 1.10 m bridge as 0.90 m.
+
+**Now ported to C++:** the same rule runs in `stairTreadBlocked()` inside the flight hand-over of `test/nav_sim.cpp`. Two scenarios prove the two halves of it: `stair_tread_block` (carton on the centre line of tread 6) stops the dog 1.9 m short (`7.90 s`, window `0.00 m`, `collided = 0`), and `stair_tread_side` (person `r = 0.22` hugging the north railing) passes with a `0.12 m` window and a `-0.16 m` lateral target in 41.4 s. Both simulators now say the same thing.
 
 ## Limits worth knowing
 
