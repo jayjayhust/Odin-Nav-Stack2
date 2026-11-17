@@ -11,7 +11,11 @@
   .hd{padding:22px 28px 10px}
   .hd h1{margin:0 0 6px;font-size:22px;letter-spacing:.4px}
   .hd p{margin:0;color:var(--dim);font-size:13px}
-  .bar{display:flex;gap:10px;flex-wrap:wrap;align-items:center;padding:14px 28px 12px;border-bottom:1px solid var(--line)}
+  .bar{display:flex;gap:7px;flex-wrap:nowrap;align-items:center;padding:10px 20px;
+       border-bottom:1px solid var(--line);overflow-x:auto;white-space:nowrap}
+  .bar .btn{padding:6px 10px;font-size:12px}
+  .bar .lbl{font-size:12px;color:var(--dim);margin-left:2px}
+  .bar select{height:30px;padding:0 6px;font-size:12px;max-width:150px}
   .grp{display:flex;gap:0;border:1px solid var(--line);border-radius:9px;overflow:hidden;background:#0c151f}
   .grp button{border:0;background:transparent;color:var(--dim);padding:8px 14px;font-size:13px;cursor:pointer;font-family:inherit}
   .grp button:hover{color:#fff}
@@ -46,10 +50,10 @@
 
 <div class="bar">
   <input type="file" id="file" accept=".obj,.stl,.txt" style="display:none">
-  <button class="btn primary" id="pick">选择模型文件…</button>
-  <button class="btn" id="demo">示例 · 四层带楼梯</button>
-  <button class="btn" id="demo1">示例 · 单层带阶梯</button>
-  <button class="btn" id="demo2">示例 · 单层（25 cm 极限梯）</button>
+  <button class="btn primary" id="pick">选择模型</button>
+  <button class="btn" id="demo">示例 四层楼梯</button>
+  <button class="btn" id="demo1">示例 单层阶梯</button>
+  <button class="btn" id="demo2">示例 25 cm 梯</button>
   <span class="lbl">分辨率</span>
   <select id="res"><option value="0.05">0.05 m</option><option value="0.10">0.10 m</option><option value="0.15" selected>0.15 m</option><option value="0.20">0.20 m</option><option value="0.30">0.30 m</option></select>
   <span class="lbl">膨胀</span>
@@ -59,13 +63,15 @@
   <span class="lbl">上方向</span>
   <select id="up"><option value="z" selected>Z 向上</option><option value="y">Y 向上</option><option value="x">X 向上</option></select>
   <span class="lbl">台阶上限</span>
-  <select id="step"><option value="0.45" selected>0.45 m</option><option value="0.25">0.25 m（Go2 实机）</option></select>
-  <button class="btn" id="setStart">点模型设起点</button>
-  <button class="btn" id="setGoal">点模型设终点</button>
+  <select id="step"><option value="0.45" selected>0.45 m</option><option value="0.25">0.25 m</option></select>
+  <span class="lbl">|</span>
+  <button class="btn" id="setStart">设起点</button>
+  <button class="btn" id="setGoal">设终点</button>
   <button class="btn primary" id="go" disabled>规划</button>
+  <span class="lbl">|</span>
   <button class="btn" id="clear">清空</button>
-  <button class="btn" id="placeStatic">放障碍（立柱）</button>
-  <button class="btn" id="placePed">放行人（会走）</button>
+  <button class="btn" id="placeStatic">放立柱</button>
+  <button class="btn" id="placePed">放行人</button>
   <button class="btn" id="clearObs">清障碍</button>
   <span class="lbl" id="obsCount">障碍 0</span>
 </div>
@@ -73,7 +79,7 @@
 <div class="legend">
   <span><span class="sw" style="background:#8fa9c4"></span>可通行面</span>
   <span><span class="sw" style="background:#ff5a5a"></span>膨胀后的墙 / 不可走</span>
-  <span><span class="sw" style="background:#4fc3ff"></span>全局路径</span>
+  <span><span class="sw" style="background:#2f8cff"></span>全局路径</span>
   <span><span class="sw" style="background:#ffcf3f"></span>局部规划（NeuPAN 约束：点集 5 cm 硬阈值 + 2 s rollout）</span>
   <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
