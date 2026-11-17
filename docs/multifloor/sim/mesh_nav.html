@@ -670,12 +670,28 @@ function buildMap(pos, idx, res, infR){
   // connected stair columns, their bounds, and the axis they run along.
   const stairCorr = [];
   {
+    // The stair profile mask (a column with two or more walk surfaces, which a
+    // wall never has) is one cell wide in places, because sampling leaves gaps,
+    // so grouping it directly produced 132 slivers instead of one box per
+    // flight. Dilate by one cell first. Dilating the stair column mask instead
+    // also matched every wall and merged the whole perimeter into strips.
+    const stairDil = new Uint8Array(nx*ny);
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        if (!stairProfile[i + j*nx]) continue;
+        for (let dj = -1; dj <= 1; ++dj)
+          for (let di = -1; di <= 1; ++di){
+            const i2 = i + di, j2 = j + dj;
+            if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+            stairDil[i2 + j2*nx] = 1;
+          }
+      }
     const seen = new Uint8Array(nx*ny), stack = [];
     const nb4 = [-1, 1, -nx, nx];
     for (let j0 = 0; j0 < ny; ++j0)
       for (let i0 = 0; i0 < nx; ++i0){
         const id0 = i0 + j0*nx;
-        if (!stairProfile[id0] || seen[id0]) continue;
+        if (!stairDil[id0] || seen[id0]) continue;
         stack.length = 0; stack.push(id0); seen[id0] = 1;
         let imin = i0, imax = i0, jmin = j0, jmax = j0, cnt = 0, kmin = 1e9, kmax = -1;
         while (stack.length){
@@ -699,14 +715,22 @@ function buildMap(pos, idx, res, infR){
               const nj = qj + nb4[d];
               if (nj < 0 || nj >= ny) continue;
             }
-            if (!stairProfile[nq] || seen[nq]) continue;
+            if (!stairDil[nq] || seen[nq]) continue;
             seen[nq] = 1; stack.push(nq);
           }
         }
-        if (cnt < 12 || kmax < 0) continue;
+        if (cnt < 20 || kmax < 0) continue;
         const wx0 = lo[0] + imin*res, wx1 = lo[0] + (imax+1)*res;
         const wy0 = lo[1] + jmin*res, wy1 = lo[1] + (jmax+1)*res;
         const wdx = wx1-wx0, wdy = wy1-wy0;
+        // A flight is narrow across and short vertically. A wall column also has
+        // two walk surfaces (its own top and a slab edge), so without this the
+        // perimeter of a storey came through as a corridor 30 m wide and 8 m
+        // tall and the lateral cost then applied everywhere.
+        const wmin = Math.min(wdx, wdy), wmax = Math.max(wdx, wdy);
+        if (wmin < 0.5 || wmin > 2.2) continue;
+        if (wmax > 12.0) continue;
+        if ((kmax - kmin)*res > 6.0) continue;
         stairCorr.push({x_min: wx0, x_max: wx1, y_min: wy0, y_max: wy1,
                         z_min: lo[2] + kmin*res - 0.10, z_max: lo[2] + (kmax+1)*res + 0.10,
                         axis: wdx >= wdy ? 'x' : 'y',
@@ -919,7 +943,12 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           if (di === 0 && dj === 0 && dk === 0) continue;
           // A pure vertical step is never a way up in a building: it only
           // shows up where a sparse surface leaves a hole in the layer above.
-          if (dk !== 0 && di === 0 && dj === 0) continue;
+          // A dog climbs a stair straight up, and this page used to forbid the
+          // only edge that expresses it: a pure vertical step. Every climb then
+          // had to drift a cell sideways, which paints a diagonal of cells up
+          // the flight - the line that reads as stepping into air. A stair
+          // needs the vertical edge; a sparse surface leaving a hole in the
+          // layer above is handled by the walkable test, not by this ban.
           // Rising while moving diagonally is a corner cut over the void
           // beside a flight: the two endpoints are valid cells but the step
           // between them passes over air and past the handrail.
@@ -930,7 +959,19 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           if (closed[nf]) continue;
           if (!traversable(i, j, k)) continue;
           if (k < 1 || !walkable(i, j, k)) continue;
-          const step = res*Math.hypot(di, dj, dk);
+          // A riser is climbed straight. Rising while drifting one cell sideways
+          // is legal here only because the grid is coarse; chained, it paints a
+          // diagonal line across a flight and reads as stepping into air. Do
+          // not forbid it (a stair that is not axis aligned needs it), make it
+          // pay: lateral distance during a climb costs double.
+          const latd = res*Math.hypot(di, dj);
+          // Jumping three risers in one edge is legal against MAX_STEP_Z but
+          // reads as the dog stepping into air, and it is what makes the line
+          // look like it floats up the flight. Charge a comfort margin per
+          // extra cell climbed so a flight is taken one riser at a time.
+          const jump = Math.abs(dk);
+          const step = res*Math.hypot(di, dj, dk) + (dk !== 0 ? latd*2.0 : 0) +
+                       (jump > 1 ? 0.4*res*(jump-1) : 0);
           // Lateral cost inside a declared stair corridor, same rule as
           // astar3d.cpp: weight * |y - y_centre| paid on entry, so the search
           // pays for sitting off-centre instead of discovering it at the top.
@@ -1514,6 +1555,17 @@ window.__MESH = {
   get blocked(){ return state.blocked; },
 };
 
+
+// Planning again must not leave the previous result on screen: the old line,
+// the dog and its window all belong to the previous route.
+function clearPlan(){
+  if (pathLine){ root.remove(pathLine); pathLine.geometry.dispose(); pathLine = null; }
+  if (localLine){ root.remove(localLine); localLine.geometry.dispose(); localLine = null; }
+  if (dogMesh){ root.remove(dogMesh); dogMesh = null; }
+  if (winBox){ root.remove(winBox); winBox = null; }
+  pathLen = 0; prog = 0; lastLocal = -1;
+}
+
 function startLocalDemo(){
   const at = location.hash.match(/at=([0-9.]+)/);
   const pts = state.path;
@@ -2024,6 +2076,7 @@ document.getElementById('setGoal').onclick  = () => { state.mode = 'goal';  say(
 
 document.getElementById('go').onclick = () => {
   if (!state.map || !state.start || !state.goal) return;
+  clearPlan();
   const t0 = performance.now();
   const r = planPath(state.map, state.start[0], state.start[1], state.start[2] + 0.05,
                                 state.goal[0],  state.goal[1],  state.goal[2]  + 0.05,
