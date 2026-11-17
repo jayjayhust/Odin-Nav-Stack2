@@ -1555,6 +1555,25 @@ function makePlanes(m){
         // hovering over the floor. This is a drawing rule only: planning still
         // sees the cell, so no route changes.
         if (!topFace[F(i, j, k-1)]) continue;
+        // A stamped top face proves the cell below is a surface, but not that
+        // it is a floor: a railing cap, a plate edge and a 45 degree sliver all
+        // get stamped. Two more drawing-only tests, the same shapes the planner
+        // already tolerates: the face must be wide (3x3 mostly stamped) and the
+        // solid under it must be thin (a slab, not a wall or a post shaft).
+        let cap = 0;
+        for (let dj = -1; dj <= 1; ++dj)
+          for (let di = -1; di <= 1; ++di){
+            const f2 = F(i+di, j+dj, k-1);
+            if (topFace[f2]) ++cap;
+          }
+        if (cap < 7) continue;
+        let deep = 0;
+        for (let dz = 1; dz <= 6; ++dz){
+          if (k-1-dz < 0) break;
+          if (data[F(i, j, k-1-dz)] === 0) break;
+          ++deep;
+        }
+        if (deep >= 6) continue;
         stand[F(i, j, k)] = 1;
       }
 
