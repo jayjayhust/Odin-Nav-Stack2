@@ -615,4 +615,4 @@ g++ -std=c++14 -O2 -I include test/planner_sim.cpp src/voxel_grid.cpp src/astar3
 
 同一套判据在 mesh 页面已有等价的实现与实测（`#single,ridge,treadblock`：无梯上障碍时可通行，梯上立柱时在 prog 2.2–3.4 m 停、4.0 m 起通行）。两个仿真器现在说的是同一件事。
 
-**回放页**：`docs/multifloor/sim/nav_sim.html` 多出第 5 个场景卡片，事件栏会直接显示上面那条停车记录。
+**回放页**：`docs/multifloor/sim/nav_sim.html` 现在 6 场 × 2 规划器共 12 个场景卡片。`stair_tread_block` 的徽标是**按设计停车**而不是**未到达**：`reached = false` 说的是“没走完”，`held` 说的是“该停的地方停住了”，两者不能混着看。事件栏会直接打出上面那条停车记录。
