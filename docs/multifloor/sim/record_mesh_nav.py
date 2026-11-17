@@ -1,3 +1,17 @@
+#!/usr/bin/env python3
+"""Frame-grab a mesh_nav.html run into a PNG sequence, via CDP.
+
+The page walks the dog along the planned route by itself, but a screenshot is a
+single instant. This drives `window.recProg` from outside, so every frame sits at
+an exact point on the route and the sequence can be encoded at any frame rate
+without racing the wall clock.
+
+    REPO=$PWD python3 record_mesh_nav.py "single,ridge,close,solid,stairs" out/ 96 6.6
+    ffmpeg -framerate 16 -i out/f%04d.png -vf format=yuv420p walk.mp4
+
+Needs chromium on PATH and websocket-client. REPO is the repository root.
+"""
+
 import base64, json, os, subprocess, sys, time, urllib.request
 import websocket
 
