@@ -498,6 +498,22 @@ function buildMap(pos, idx, res, infR){
       const fb = F(ix, iy, iz-1);
       if (data[fb] === OCC && topFace[fb] && capWide[fb] < 7) return false;
     }
+    // The edge column of a flight has a wide tread one riser below just like
+    // the middle does, so the test above alone accepted a path that ran along
+    // the stringer with half the body over the drop. Ask for three stair
+    // neighbours of eight: an interior tread column has six to eight, an
+    // edge column three to five and a corner one or two.
+    {
+      let nbs = 0;
+      for (let dj = -1; dj <= 1; ++dj)
+        for (let di = -1; di <= 1; ++di){
+          if (!di && !dj) continue;
+          const i2 = ix + di, j2 = iy + dj;
+          if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+          if (stairCol[i2 + j2*nx]) ++nbs;
+        }
+      if (nbs < 4) return false;
+    }
     // The same test VoxelGrid::hasTreadSupport runs: some occupied cell within
     // one step below must be part of a wide horizontal face, counted on the
     // 5x5 box. A wall hit spans one or two cells and never passes; a tread or
@@ -646,6 +662,59 @@ function buildMap(pos, idx, res, infR){
       for (let k = 0; k < nz; ++k) if (topFace[F(i, j, k)]) ++tops;
       if (tops >= 2) stairProfile[i + j*nx] = 1;
     }
+  // ---- stair corridors, for the lateral cost ------------------------------
+  // astar3d charges weight * |offset from the centre line| on entry, so the
+  // route prefers the middle of a flight instead of grazing a handrail. The
+  // mesh page never passed a corridor, so that term was dead here and the
+  // search had no reason to stay off the edge. One box per flight: the
+  // connected stair columns, their bounds, and the axis they run along.
+  const stairCorr = [];
+  {
+    const seen = new Uint8Array(nx*ny), stack = [];
+    const nb4 = [-1, 1, -nx, nx];
+    for (let j0 = 0; j0 < ny; ++j0)
+      for (let i0 = 0; i0 < nx; ++i0){
+        const id0 = i0 + j0*nx;
+        if (!stairProfile[id0] || seen[id0]) continue;
+        stack.length = 0; stack.push(id0); seen[id0] = 1;
+        let imin = i0, imax = i0, jmin = j0, jmax = j0, cnt = 0, kmin = 1e9, kmax = -1;
+        while (stack.length){
+          const q = stack.pop(); ++cnt;
+          const qj = (q / nx) | 0, qi = q - qj*nx;
+          if (qi < imin) imin = qi;
+          if (qi > imax) imax = qi;
+          if (qj < jmin) jmin = qj;
+          if (qj > jmax) jmax = qj;
+          for (let k = 0; k < nz; ++k){
+            if (data[F(qi, qj, k)] !== OCC) continue;
+            if (k < kmin) kmin = k;
+            if (k > kmax) kmax = k;
+          }
+          for (let d = 0; d < 4; ++d){
+            const nq = q + nb4[d];
+            if (d < 2){
+              const ni = qi + nb4[d];
+              if (ni < 0 || ni >= nx) continue;
+            } else {
+              const nj = qj + nb4[d];
+              if (nj < 0 || nj >= ny) continue;
+            }
+            if (!stairProfile[nq] || seen[nq]) continue;
+            seen[nq] = 1; stack.push(nq);
+          }
+        }
+        if (cnt < 12 || kmax < 0) continue;
+        const wx0 = lo[0] + imin*res, wx1 = lo[0] + (imax+1)*res;
+        const wy0 = lo[1] + jmin*res, wy1 = lo[1] + (jmax+1)*res;
+        const wdx = wx1-wx0, wdy = wy1-wy0;
+        stairCorr.push({x_min: wx0, x_max: wx1, y_min: wy0, y_max: wy1,
+                        z_min: lo[2] + kmin*res - 0.10, z_max: lo[2] + (kmax+1)*res + 0.10,
+                        axis: wdx >= wdy ? 'x' : 'y',
+                        x_centre: (wx0+wx1)/2, x_half: wdx/2,
+                        y_centre: (wy0+wy1)/2, y_half: wdy/2,
+                        weight: 2.0});
+      }
+  }
   const rxy = Math.max(0, Math.round(infR/res));
   if (rxy > 0){
     const occ = [];
@@ -733,7 +802,7 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          capWide, stairCol, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -851,6 +920,10 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           // A pure vertical step is never a way up in a building: it only
           // shows up where a sparse surface leaves a hole in the layer above.
           if (dk !== 0 && di === 0 && dj === 0) continue;
+          // Rising while moving diagonally is a corner cut over the void
+          // beside a flight: the two endpoints are valid cells but the step
+          // between them passes over air and past the handrail.
+          if (dk !== 0 && di !== 0 && dj !== 0) continue;
           const i = ci + di;
           if (i < 0 || i >= nx) continue;
           const nf = F(i, j, k);
@@ -866,11 +939,17 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
             const wx = lo[0] + (i+0.5)*res, wy = lo[1] + (j+0.5)*res,
                   wz = lo[2] + (k+0.5)*res;
             for (const c of corridors){
-              if (!c.weight || wz < c.z_min || wz > c.z_max ||
-                  wx < c.x_min || wx > c.x_max) continue;
-              const dyw = Math.abs(wy - c.y_centre);
-              if (dyw > c.y_half) continue;
-              lateral += c.weight * dyw;
+              if (!c.weight || wz < c.z_min || wz > c.z_max) continue;
+              if (wx < c.x_min || wx > c.x_max || wy < c.y_min || wy > c.y_max) continue;
+              // A flight has a centre line across its width, and that width is
+              // whichever of the two horizontal extents is the narrow one.
+              if (c.axis === 'y'){
+                const off = Math.abs(wx - c.x_centre);
+                if (off <= c.x_half) lateral += c.weight * off;
+              } else {
+                const off = Math.abs(wy - c.y_centre);
+                if (off <= c.y_half) lateral += c.weight * off;
+              }
             }
           }
           const tentative = gScore[cur] + step + lateral;
@@ -1947,7 +2026,8 @@ document.getElementById('go').onclick = () => {
   if (!state.map || !state.start || !state.goal) return;
   const t0 = performance.now();
   const r = planPath(state.map, state.start[0], state.start[1], state.start[2] + 0.05,
-                                state.goal[0],  state.goal[1],  state.goal[2]  + 0.05);
+                                state.goal[0],  state.goal[1],  state.goal[2]  + 0.05,
+                                state.map.stairCorr);
   const ms = performance.now() - t0;
   if (r.error){ say(r.error); return; }
   state.path = r.pts;
