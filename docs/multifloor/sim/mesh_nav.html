@@ -89,6 +89,13 @@
       <option value="sru" disabled>SRU（未开放）</option>
     </select>
     <span id="lpNote">点集 5 cm 硬阈值 + 2 s rollout</span></span>
+  <span>楼梯口让位
+    <select id="stairOpen" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
+            title="把楼梯柱附近被净空带涂红的踏面还回可走；调大会连墙和栏杆的禁行带一起让开">
+      <option value="0">关</option>
+      <option value="1" selected>1 格</option>
+      <option value="2">1 带（0.30 m）</option>
+    </select></span>
   <span><span class="sw" style="background:#6fd3ff"></span>局部窗口 2.5 m</span>
   <span><span class="sw" style="background:#5ce0a3"></span>起点</span>
   <span><span class="sw" style="background:#ff8fb1"></span>终点</span>
@@ -173,6 +180,9 @@ const state = {
   // SRU is a goal-pose end-to-end policy that needs an external workspace and
   // a trained ONNX policy + VAE, so it stays a disabled item for now.
   localPlanner: 'neupan',
+  // cells out from a stair column whose tread may take its clearance band back
+  // (0 = off, 1 = one cell, 2 = one full band at 0.30 m / 0.15 m)
+  stairOpen: 1,
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
@@ -939,14 +949,17 @@ function buildMap(pos, idx, res, infR){
 
   // Stair columns dilated by one cell, so the band painted along the rails
   // does not eat the treads the narrow stair test missed.
+  // How far out from a stair column a tread may take its band back. 0 keeps
+  // every band except the stair's own columns, 1 is one cell out, and
+  // "one band" (round(infR/res)) reaches as far as the band itself - which
+  // also eats the wall and rail bands beside the flight, so it is opt-in.
+  const stairOpenR = Math.max(0, Math.round(state.stairOpen || 0));
   const stairNear = new Uint8Array(nx*ny);
-  const nearR = Math.max(1, Math.round(infR / res));   // same reach as one band
   for (let j = 0; j < ny; ++j)
     for (let i = 0; i < nx; ++i){
       if (!stairCol[i + j*nx]) continue;
-      for (let dj = -nearR; dj <= nearR; ++dj)
-        for (let di = -nearR; di <= nearR; ++di){
-          if (di*di + dj*dj > nearR*nearR) continue;
+      for (let dj = -stairOpenR; dj <= stairOpenR; ++dj)
+        for (let di = -stairOpenR; di <= stairOpenR; ++di){
           const ii = i+di, jj = j+dj;
           if (ii < 0 || jj < 0 || ii >= nx || jj >= ny) continue;
           stairNear[ii + jj*nx] = 1;
@@ -2138,6 +2151,11 @@ function fitRes(lo, hi, res){
 }
 
 function loadModel(pos, idx, name){
+  // loadModel scales and rotates pos in place, so keep the original around:
+  // a rebuild for a parameter change must start from the same raw vertices,
+  // or the mesh gets turned twice and the map collapses.
+  state.rawPos = new Float32Array(pos);
+  state.rawIdx = idx;
   clearRoot();
   state.start = state.goal = state.path = null;
   const sp = pos.length / 3;
@@ -2269,6 +2287,15 @@ document.getElementById('res').onchange = () => {
   loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
 };
 
+// How far the stairs may open up. Rebuilds the voxel map from the cached mesh,
+// the same way the inflation select does, so the trade-off is testable in place.
+document.getElementById('stairOpen').onchange = (ev) => {
+  state.stairOpen = +ev.target.value;
+  if (!state.rawPos) return;
+  loadModel(new Float32Array(state.rawPos), state.rawIdx, 'reload');
+  clearPlan();
+};
+
 // Local planner backend. The page only carries NeuPAN: SRU is an end-to-end
 // goal-pose policy that lives in its own workspace with a trained ONNX policy
 // and VAE encoder, and it bypasses the global path this page draws. Selecting
@@ -2286,10 +2313,8 @@ document.getElementById('lp').onchange = (ev) => {
 };
 
 document.getElementById('inf').onchange = () => {
-  if (!srcMesh) return;
-  const g = srcMesh.geometry;
-  const pos = g.attributes.position.array, idx = g.index ? g.index.array : null;
-  loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
+  if (!state.rawPos) return;
+  loadModel(new Float32Array(state.rawPos), state.rawIdx, 'reload');
 };
 
 // ---------- picking -------------------------------------------------------
