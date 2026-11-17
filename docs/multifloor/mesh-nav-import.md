@@ -229,7 +229,7 @@ The stop window runs from "obstacle enters the 1.6 m look-ahead" to "it is behin
 
 **Capability limit, stated plainly:** on a 1.10 m or 1.60 m flight, after 0.30 inflation and 0.175 half body the lateral budget is 0.075 / 0.375 m, less than the 0.22 m person plus 0.225 m clearance - so the correct action is **stop and wait**, not a side-step. A lateral swerve needs a flight of 2 m or more.
 
-**Not done:** this rule lives in the mesh page only; the `flights_only` scenes in `test/nav_sim.cpp` still drive blind, so the C++ port is outstanding. Keeping the two simulators identical is a standing requirement, hence this is flagged rather than glossed over.
+**Now ported to C++:** the same rule also runs in `stairTreadBlocked()` inside the flight hand-over of `test/nav_sim.cpp`, with a new `stair_tread_block` scenario to prove it - a carton on tread 6 stops the dog 1.9 m short of it (`7.90 s` event, `s = 1.91 m`, lateral residual `0.00 m`, `collided = 0`). Both simulators now run the same rule.
 
 ## Limits worth knowing
 

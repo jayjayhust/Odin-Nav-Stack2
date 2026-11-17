@@ -239,6 +239,11 @@ struct Scenario {
   double sx = 1, sy = 1, gx = 9, gy = 9;
   double sz = 0.0, gz = 0.0;          // standing height at start / goal
   double zmin = -0.20, zmax = 2.4;    // vertical extent of the grid
+  // Clutter dropped on a flight: cartons, a toolbox, a person standing still.
+  // The flight's local layer judges only these - the treads and railings are
+  // the corridor itself, not obstacles in it. Same split the mesh page uses
+  // (`state.obs` versus the map).
+  std::vector<Obstacle> clutter;
   std::vector<Zone> stair;            // where stair_gait takes over from DWA
   // Legs handed over one at a time (x, y, standing height). Empty means "one
   // leg straight to the goal".
@@ -321,6 +326,60 @@ bool inStair(const Scenario& sc, double x, double y, double z) {
   for (const auto& q : sc.stair)
     if (x >= q.x0 && x <= q.x1 && y >= q.y0 && y <= q.y1 && z >= q.z0 && z <= q.z1)
       return true;
+  return false;
+}
+
+// Local layer for a flight: the stairs as an unwrapped flat corridor.
+//
+// The mesh page runs this as `stairLocalLeg()`; this is the same rule against
+// the simulator's truth obstacles instead of a point set. Vertical motion
+// belongs to the gait, so risers stay out of the test - that is why the old
+// hand-over drove blind: a point-set planner sees the next tread as a wall and
+// rejects every candidate. What remains is (a) the corridor the railings leave
+// and (b) whatever stands on the treads.
+//
+// Corridor frame: `s` runs up the flight, `t` across it. The dog may shift
+// laterally only as far as the tread allows, so on a 1.0 m core the budget is
+// 0.50 - 0.175 - 0.05 = 0.275 m: a 0.22 m person leaves no room to pass, and
+// the correct verdict is "stop and wait", not a side step. A wider flight
+// would clear instead - the same conclusion the mesh page reports.
+const double STAIR_LOOK = 1.6;   // metres of tread ahead the layer watches
+
+bool stairTreadBlocked(const std::vector<Obstacle>& clutter, double t,
+                       double x, double y, double base_z,
+                       double* s_hit = nullptr, double* lat_hit = nullptr) {
+  const bool upper = (y > 1.80);              // run A climbs +x, run B -x
+  if (y < 0.66 || y > 3.04) return false;     // not over the treads at all
+  const double cy = upper ? 2.40 : 1.30;      // run centre line
+  const double dirx = upper ? 1.0 : -1.0;
+  const double tread_half = 0.50;             // 1.00 m clear width per run
+  const double budget = tread_half - kHalfWid - 0.05;   // lateral room off centre
+  for (const auto& o : clutter) {
+    if (!o.present(t)) continue;
+    double ox, oy, orr;
+    if (o.kind == 0) {
+      ox = 0.5 * (o.a[0] + o.a[2]);
+      oy = 0.5 * (o.a[1] + o.a[3]);
+      orr = 0.5 * std::hypot(o.a[2] - o.a[0], o.a[3] - o.a[1]);
+    } else {
+      ox = o.a[0]; oy = o.a[1]; orr = o.a[2];
+    }
+    if (oy < 0.66 || oy > 3.04) continue;     // beyond the railings
+    // Height against the tread the dog is about to stand on, not base_z: a
+    // tread one step up is +0.19, one step down -0.19, and the body always
+    // reads as standing on the tread under its feet.
+    if (o.z1 < base_z + 0.12 || o.z0 > base_z + 0.55) continue;
+    const double ds = (ox - x) * dirx;        // along-track, ahead is positive
+    if (ds < -0.40 || ds > STAIR_LOOK + orr) continue;
+    // The closest the dog can bring its hull: shift as far as the budget lets.
+    const double want = oy - cy;
+    const double t_best = std::max(-budget, std::min(budget, want));
+    const double gap = std::fabs(want - t_best);   // residual lateral offset
+    if (gap >= orr + kHalfWid + 0.05) continue;    // clears it without stopping
+    if (s_hit) *s_hit = ds;
+    if (lat_hit) *lat_hit = gap;
+    return true;
+  }
   return false;
 }
 
@@ -441,6 +500,22 @@ Scenario stairTwoFloor() {
   s.flights_only = true;
   s.ztol = 0.10;
   s.limit = 140.0;
+  return s;
+}
+
+// C2. the same two-storey core with a carton standing on a tread of run A.
+// The geometry is identical, so the only difference in the outcome is the
+// flight's local layer: before it, the hand-over drove blind and walked straight
+// through the box; now the run holds at the tread below it, the way the mesh
+// page holds at the bottom of its flight.
+Scenario stairTreadBlock() {
+  Scenario s = stairTwoFloor();
+  s.name = "stair_tread_block";
+  s.desc = "两层办公楼 + 第 6 级踏面上放一只纸箱：楼梯段局部层应停车等待，而不是撞上去";
+  // Run A climbs +x at y 1.90..2.90. Tread 6 tops at 6 x 0.189 = 1.13 m.
+  Obstacle c = box(4.75, 2.10, 5.05, 2.70, 0.0, 2.40);
+  s.clutter.push_back(c);
+  s.limit = 120.0;
   return s;
 }
 
@@ -1047,6 +1122,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
   surveyMap(sc, sm, rng, prior);
 
   std::vector<Obstacle> obs = sc.obs;
+  std::vector<Obstacle> clutter = sc.clutter;
   std::vector<Point> cloud;           // current sweep
   std::vector<Point> accum;           // last few sweeps, what the map is built from
 
@@ -1096,6 +1172,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
   std::vector<WP> first_path;                     // route as first planned
   double last_plan_t = -10.0;
   bool have_plan = false;
+  bool stair_stop = false;   // the flight's local layer is holding the dog
 
   auto replan = [&](double t) {
     VoxelKey s, g;
@@ -1222,6 +1299,7 @@ Run simulate(const Scenario& sc, unsigned seed) {
     ++step;
 
     for (auto& o : obs) o.advance(t);
+    for (auto& o : clutter) o.advance(t);
 
     // The local planner consumes the live sweep, and the deployed stack feeds
     // NeuPAN at 10 Hz. Refreshing it at 2 Hz let a 0.28 m/s pedestrian close a
@@ -1419,6 +1497,25 @@ Run simulate(const Scenario& sc, unsigned seed) {
           vx = (std::fabs(err) > 0.55) ? 0.0 : 0.25;  // STAIR_SPEED
           vy = 0.0;                                   // linear.y hard-wired to 0
           wz = std::max(-1.0, std::min(1.0, 2.0 * err));
+
+          // Local layer for the flight: a tread obstacle inside the corridor
+          // stops the run. The gait still owns the height, the corridor still
+          // owns the sides; this only answers "is the way ahead clear".
+          double s_hit = 0.0, lat_hit = 0.0;
+          if (stairTreadBlocked(clutter, t, x, y, base_z, &s_hit, &lat_hit)) {
+            vx = 0.0; vy = 0.0; wz = 0.0;
+            if (!stair_stop) {
+              stair_stop = true;
+              char buf[200];
+              std::snprintf(buf, sizeof(buf),
+                            "楼梯段局部层：踏面障碍 s=%.2f m、横向余量 %.2f m，停车等待",
+                            s_hit, lat_hit);
+              out.events.push_back({t, buf});
+            }
+          } else if (stair_stop) {
+            stair_stop = false;
+            out.events.push_back({t, "楼梯段局部层：踏面已清空，继续爬梯"});
+          }
         } else {
           // which way is the route pointing? use the nearest route point a
           // little ahead of us, not the raw goal, so a detour is respected
@@ -1849,7 +1946,7 @@ int main() {
   std::vector<Scenario> scenarios;
   for (const char* who : {"neupan", "dwa"}) {
     for (Scenario base : {officeLoop(), corridorBlock(), narrowGate(),
-                          stairTwoFloor(), fourFloor()}) {
+                          stairTwoFloor(), fourFloor(), stairTreadBlock()}) {
       base.planner = who;
       const std::string tag = (std::string(who) == "neupan") ? "NeuPAN" : "DWA";
       base.name += " · " + tag;
