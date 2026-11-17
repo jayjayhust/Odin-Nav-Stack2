@@ -249,7 +249,7 @@ function buildMap(pos, idx, res, infR){
   const topFace = new Uint8Array(cells);          // UNKNOWN everywhere, like configure()
   const F = (i, j, k) => (k*ny + j)*nx + i;    // voxel_grid.cpp: flatten()
 
-  function insertOne(ix, iy, iz, upwardClear){
+  function insertOne(ix, iy, iz, upwardClear, isRing){
     if (ix < 0 || iy < 0 || iz < 0 || ix >= nx || iy >= ny || iz >= nz) return;
     const f1 = F(ix, iy, iz);
     data[f1] = OCC;
@@ -257,7 +257,11 @@ function buildMap(pos, idx, res, infR){
     // narrow tread (0.40 m, i.e. two cells) never reaches the eight cells the
     // 5x5 span test wants, so without this bit every stair in an imported
     // mesh reads as unsupported and the flight comes out as a sieve.
-    if (upwardClear) topFace[f1] = 1;
+    // The ring of the 3x3 gap filler is NOT a walk surface: it exists only so
+    // the span test can count a continuous plate, and treating it as one put a
+    // standable cell one layer above the plate edge - those are the thin flakes
+    // floating beside every imported surface.
+    if (upwardClear && !isRing) topFace[f1] = 1;
     if (!upwardClear) return;
     for (let d = 1; d <= CLEARANCE; ++d){
       const k = iz + d;
@@ -281,7 +285,7 @@ function buildMap(pos, idx, res, infR){
     for (let dy = -1; dy <= 1; ++dy)
       for (let dx = -1; dx <= 1; ++dx){
         if (!dx && !dy) continue;
-        insertOne(ix+dx, iy+dy, iz, true);
+        insertOne(ix+dx, iy+dy, iz, true, true);
       }
   }
 
@@ -491,6 +495,19 @@ function buildMap(pos, idx, res, infR){
         if (run >= 4){ stairCol[i + j*nx] = 1; break; }
       }
     }
+  // A stair column and a wall column both read as four-plus cells stacked, so
+  // the old blanket exemption let the walls of an imported model go without
+  // any clearance band. What makes a column a stair is that it carries two or
+  // more walk surfaces: that is what the dog climbs; a wall carries one, at
+  // its top.
+  const stairProfile = new Uint8Array(nx*ny);
+  for (let j = 0; j < ny; ++j)
+    for (let i = 0; i < nx; ++i){
+      if (!stairCol[i + j*nx]) continue;
+      let tops = 0;
+      for (let k = 0; k < nz; ++k) if (topFace[F(i, j, k)]) ++tops;
+      if (tops >= 2) stairProfile[i + j*nx] = 1;
+    }
   const rxy = Math.max(0, Math.round(infR/res));
   if (rxy > 0){
     const occ = [];
@@ -499,13 +516,21 @@ function buildMap(pos, idx, res, infR){
       const f = occ[oi];
       const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
       const j = (rem / nx) | 0, i = rem - j*nx;
-      if (stairCol[i + j*nx]) continue;
-      // A walk surface is not a wall. Inflating from one painted the band of
-      // the sampler's 3x3 stamp red on top of the next tread, which is what
-      // turned the first step of a flight into "no-go" in the import page.
-      // What has to inflate is what stands up: a wall, a railing, a solid
-      // body - and those are the cells that are not walk surfaces.
+      if (stairProfile[i + j*nx]) continue;
+      // Only a wall inflates: a walk surface is a floor, and the 3x3 gap
+      // filler is neither. A wall is a vertical face that continues for at
+      // least four cells; a riser, a kerb or a tread edge is one to three,
+      // and the dog steps over those instead of steering around them.
       if (topFace[f]) continue;
+      // Sampling leaves gaps in a thin vertical face, so the test has to be
+      // gap tolerant the way the stair column test is: four occupied cells in
+      // the six above is a wall, one or two is a riser.
+      let run = 0;
+      for (let d = 1; d <= 6; ++d){
+        const kk = k + d;
+        if (kk < nz && data[F(i, j, kk)] === OCC) ++run;
+      }
+      if (run < 4) continue;
       for (let dj = -rxy; dj <= rxy; ++dj){
         const jj = j + dj;
         if (jj < 0 || jj >= ny) continue;
@@ -1408,7 +1433,7 @@ function makeSrcMesh(pos, idx){
 }
 
 function makePlanes(m){
-  const {res, lo, nx, ny, nz, data} = m;
+  const {res, lo, nx, ny, nz, data, topFace} = m;
   const support = m.supportOrUnknown;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   // Only the cells the dog could stand on: free or inflated, with support
@@ -1421,6 +1446,23 @@ function makePlanes(m){
         const v = data[F(i, j, k)];
         if (v !== FREE && v !== INFL) continue;
         if (k < 1 || !support(i, j, k)) continue;
+        // A cell held up only by the 5x5 span fallback, with almost nothing
+        // walkable beside it, is the flake the sparse sampler leaves beside a
+        // plate edge: it draws as a little sheet hovering next to the model.
+        // It is not a surface, so it should not be painted as one.
+        const fb = F(i, j, k-1);
+        if (data[fb] !== OCC || !topFace[fb]){
+          let nb = 0;
+          for (let dj = -1; dj <= 1; ++dj)
+            for (let di = -1; di <= 1; ++di){
+              if (!di && !dj) continue;
+              const i2 = i + di, j2 = j + dj;
+              if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+              const v2 = data[F(i2, j2, k)];
+              if (v2 === FREE || v2 === INFL) ++nb;
+            }
+          if (nb <= 2) continue;
+        }
         (v === INFL ? inf : ids).push(F(i, j, k));
       }
   const quad = new THREE.PlaneGeometry(res*0.92, res*0.92);
