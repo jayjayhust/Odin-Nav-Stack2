@@ -560,6 +560,34 @@ function buildMap(pos, idx, res, infR){
     }
   }
 
+  // 3x3 count of stamped top faces, computed once: a cap is "wide" when at
+  // least seven of the nine cells around it are stamped, which separates a
+  // floor slab from a railing top, a plate rim or a slanted sliver. Two
+  // separable passes keep this linear instead of nine lookups per cell.
+  const capWide = new Uint8Array(cells);
+  {
+    const hsum = new Uint8Array(cells);
+    for (let k = 0; k < nz; ++k)
+      for (let j = 0; j < ny; ++j)
+        for (let i = 0; i < nx; ++i){
+          const f = F(i, j, k);
+          let v = 0;
+          if (i > 0 && topFace[f-1]) ++v;
+          if (topFace[f]) ++v;
+          if (i < nx-1 && topFace[f+1]) ++v;
+          hsum[f] = v;
+        }
+    for (let k = 0; k < nz; ++k)
+      for (let j = 0; j < ny; ++j)
+        for (let i = 0; i < nx; ++i){
+          const f = F(i, j, k);
+          let v = hsum[f];
+          if (j > 0) v += hsum[f-nx];
+          if (j < ny-1) v += hsum[f+nx];
+          capWide[f] = v > 9 ? 9 : v;
+        }
+  }
+
   const stairCol = new Uint8Array(nx*ny);
   for (let j = 0; j < ny; ++j)
     for (let i = 0; i < nx; ++i){
@@ -597,7 +625,13 @@ function buildMap(pos, idx, res, infR){
       // filler is neither. A wall is a vertical face that continues for at
       // least four cells; a riser, a kerb or a tread edge is one to three,
       // and the dog steps over those instead of steering around them.
-      if (topFace[f]) continue;
+      //
+      // A cap that is not wide is not a floor either: a 0.06 m railing top,
+      // the rim of a plate, the edge of a slanted patch. Those are the very
+      // things the dog must not walk along, and asking them to also stack
+      // four cells upward is why the railing gave no band at all - a rail is
+      // 0.9 m tall, its top is one cell and there is air above it.
+      if (topFace[f] && capWide[f] >= 7) continue;   // a wide cap is a floor
       // Sampling leaves gaps in a thin vertical face, so the test has to be
       // gap tolerant the way the stair column test is: four occupied cells in
       // the six above is a wall, one or two is a riser.
@@ -606,7 +640,9 @@ function buildMap(pos, idx, res, infR){
         const kk = k + d;
         if (kk < nz && data[F(i, j, kk)] === OCC) ++run;
       }
-      if (run < 4) continue;
+      // a narrow cap is a barrier whatever is above it; a plain vertical
+      // face still has to stack four cells to count as a wall
+      if (!topFace[f] && run < 4) continue;
       for (let dj = -rxy; dj <= rxy; ++dj){
         const jj = j + dj;
         if (jj < 0 || jj >= ny) continue;
@@ -663,7 +699,7 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          stairCol, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -1509,7 +1545,7 @@ function makeSrcMesh(pos, idx){
 }
 
 function makePlanes(m){
-  const {res, lo, nx, ny, nz, data, topFace} = m;
+  const {res, lo, nx, ny, nz, data, topFace, capWide} = m;
   const support = m.supportOrUnknown;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   // Only the cells the dog could stand on: free or inflated, with support
@@ -1553,12 +1589,7 @@ function makePlanes(m){
         // get stamped. Two more drawing-only tests, the same shapes the planner
         // already tolerates: the face must be wide (3x3 mostly stamped) and the
         // solid under it must be thin (a slab, not a wall or a post shaft).
-        let cap = 0;
-        for (let dj = -1; dj <= 1; ++dj)
-          for (let di = -1; di <= 1; ++di){
-            const f2 = F(i+di, j+dj, k-1);
-            if (topFace[f2]) ++cap;
-          }
+        const cap = capWide ? capWide[F(i, j, k-1)] : 9;
         if (cap < 7) continue;
         let deep = 0;
         for (let dz = 1; dz <= 6; ++dz){
