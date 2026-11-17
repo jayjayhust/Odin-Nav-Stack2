@@ -141,7 +141,7 @@ scene.add(root);
 scene.add(obsGroup);
 let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
 let localLine = null, winBox = null, dogMesh = null;
-let pathLen = 0, prog = 0, lastLocal = -1;
+let pathLen = 0, prog = 0, lastLocal = -1, lastBlocked = 0;
 let markStart = null, markGoal = null, rays = 0;
 
 // ---------- OBJ / STL ------------------------------------------------------
@@ -1006,6 +1006,107 @@ function stairHalfWidth(m, path, s, f){
   return Math.max(0, Math.min(0.90, half));
 }
 
+// The same interval rule as the flight layer, on open floor: an obstacle ahead
+// forbids a band of lateral offsets around its own offset, and the free
+// interval left inside the road decides both "may I pass" and "where do I
+// ride". Without this the floor layer could only answer stop/go, so a post on
+// the global route parked the dog forever with no side step.
+// How far the dog may ride off the route on open floor: the walkable strip
+// around the route, measured with the same cell test the flight layer uses.
+// Without this the interval rule happily picked a 0.53 m offset straight into
+// the partition beside the bridge, and the leg then (correctly) refused.
+function flatHalfWidth(m, path, s, nx, ny){
+  // Signed extents on each side, not one symmetric half-width: the route runs
+  // 0.68 m from the partition beside the bridge, so a symmetric budget let the
+  // interval rule pick the cramped side and the leg then refused.
+  if (!m || !m.walkable) return {pos: 0.9, neg: 0.9};
+  const {res, lo} = m;
+  const q = pathAt(path, s);
+  const k0 = Math.floor((q[2]-lo[2])/res);
+  const pos = [], neg = [];
+  for (const ds of [0.0, 0.35, 0.70]){
+    const a = pathAt(path, Math.min(pathLen, s + ds));
+    for (const sg of [1, -1]){
+      let best = 0;
+      for (const dk of [0, -1, 1]){
+        let t = 0;
+        for (let n2 = 1; n2 <= 18; ++n2){
+          const px = a[0] + sg*nx*n2*res, py = a[1] + sg*ny*n2*res;
+          const i = Math.floor((px-lo[0])/res), j = Math.floor((py-lo[1])/res);
+          if (!m.walkable(i, j, k0+dk)) break;
+          t = n2*res;
+        }
+        best = Math.max(best, t);
+      }
+      (sg > 0 ? pos : neg).push(best + res/2);
+    }
+  }
+  return {pos: Math.min(0.9, Math.min.apply(null, pos)),
+          neg: Math.min(0.9, Math.min.apply(null, neg))};
+}
+
+function flatLateralTarget(path, s, pose, look, lim, cur){
+  const obs = [];
+  for (const o of state.obs){
+    const q = pathAt(path, Math.min(pathLen, s + 1.0));
+    const rx = (o.x - pose[0]), ry = (o.y - pose[1]);
+    // distance along the route, positive ahead
+    let ds = 0, best = 1e9, at = s;
+    for (let d = 0; d <= look; d += 0.1){
+      const a = pathAt(path, Math.min(pathLen, s + d));
+      const h = Math.hypot(o.x - a[0], o.y - a[1]);
+      if (h < best){ best = h; at = s + d; }
+    }
+    ds = at - s;
+    if (best > o.r + HALF_W + CLR_HARD + 1.4) continue;   // not on our way
+    if (Math.abs(o.z - pose[2]) > 0.6 && o.z + o.h < pose[2] + 0.12) continue;
+    const a = pathAt(path, at), b = pathAt(path, Math.min(pathLen, at + 0.2));
+    let tx = b[0] - a[0], ty = b[1] - a[1];
+    const n = Math.hypot(tx, ty) || 1;
+    tx /= n; ty /= n;
+    // once the post is behind the dog the nearest sample is s itself, the
+    // normal projection reads ~0 and the band would keep it off the centre
+    // line for metres. Only obstacles still ahead get a say.
+    const proj = (o.x - a[0]) * tx + (o.y - a[1]) * ty;
+    if (proj < -(o.r + HALF_W + 0.05)) continue;   // body plus post fully past
+    obs.push({dt: (o.x - a[0]) * (-ty) + (o.y - a[1]) * tx, r: o.r, ds});
+  }
+  if (!obs.length) return {tgt: 0, win: 2.0, blocked: false};
+  const hiB = Math.max(0, lim.pos - HALF_W - CLR_HARD);
+  const loB = -Math.max(0, lim.neg - HALF_W - CLR_HARD);
+  const bands = obs.map(o => {
+    // CLR_HARD is the policy margin; the extra 6 cm is discretisation, not
+    // policy. The dog rides a normal offset while its real position drifts with
+    // the route's curvature, so riding exactly on the band edge grazed the post
+    // (0.005 m surface gap). C++ integrates the trajectory and does not need it.
+    const need = o.r + HALF_W + CLR_HARD + 0.06;
+    return [o.dt - need, o.dt + need];
+  }).sort((p, q) => p[0] - q[0]);
+  // Two windows of equal width are a tie, and a tie that flips as the dog
+    // advances makes it weave between +-0.525 m without ever settling - which
+    // is exactly what parked it at the post. Score each window by "how far is
+    // its nearest point from the offset I already have" first, and only then
+    // by width, so the choice is sticky.
+  const want = (typeof cur === 'number' ? cur : 0);
+  let edge = loB, lo = 0, hi = 0, win = -1, score = 1e9;
+  const consider = (a, b) => {
+    const w = b - a;
+    if (w < 0.06) return;
+    const near = Math.max(a, Math.min(b, want));
+    const sc = Math.abs(near - want) + 0.02 * Math.abs(near) - 0.001 * w;
+    if (sc < score){ score = sc; win = w; lo = a; hi = b; }
+  };
+  for (const band of bands){
+    if (band[0] > edge) consider(edge, Math.min(band[0], hiB));
+    edge = Math.max(edge, band[1]);
+    if (edge >= hiB) break;
+  }
+  if (edge < hiB) consider(edge, hiB);
+  if (win < 0.06) return {tgt: 0, win: Math.max(0, win), blocked: true};
+  return {tgt: Math.max(lo, Math.min(hi, 0)), win, blocked: false};
+  return {tgt: Math.max(lo, Math.min(hi, 0)), win, blocked: false};
+}
+
 function stairLocalLeg(m, path, s, pose, target){
   const x0 = pose[0], y0 = pose[1];
   const f = stairFrame(path, s);
@@ -1080,6 +1181,17 @@ window.__MESH = {
   get prog(){ return prog; },
   get pathLen(){ return pathLen; },
   hold(v){ window.recHold = true; window.recProg = v; },
+  // read-only handles for the CDP probes: the page's own functions live in
+  // script scope, which Runtime.evaluate cannot reach
+  get path(){ return state.path; },
+  pathAt(s2){ return pathAt(state.path, s2); },
+  flatWin(s2){
+    const a = pathAt(state.path, s2), b = pathAt(state.path, Math.min(pathLen, s2 + 0.35));
+    let tx = b[0]-a[0], ty = b[1]-a[1];
+    const nn = Math.hypot(tx, ty) || 1; tx /= nn; ty /= nn;
+    const bw = flatHalfWidth(state.map, state.path, s2, -ty, tx);
+    return {bw, f: flatLateralTarget(state.path, s2, [a[0], a[1], a[2]], 2.2, bw)};
+  },
   letgo(){ window.recHold = false; },
   get dog(){ return dogMesh ? [+dogMesh.position.x.toFixed(2), +dogMesh.position.y.toFixed(2), +dogMesh.position.z.toFixed(2)] : null; },
   get leg(){ return localLine ? localLine.geometry.drawRange.count/2 : null; },
@@ -1104,7 +1216,23 @@ function startLocalDemo(){
   // a dropped post right on the route is the honest test of the local layer:
   // the dog should refuse, not walk through it
   if (location.hash.indexOf('obs') >= 0){
-    const q = pathAt(pts, Math.min(pathLen, prog + 2.2));
+    // Place the demo post where a detour is actually possible, not wherever
+    // happens to be 2.2 m ahead: dropped into the pocket between the bridge
+    // pier and the desk, the honest verdict is "stop here", which reads as
+    // "no avoidance at all". Scan the route for the first spot whose free
+    // lateral window clears 0.22 m and put it there.
+    let q = pathAt(pts, Math.min(pathLen, prog + 2.2));
+    for (let s2 = 0.8; s2 < pathLen - 1.2; s2 += 0.25){
+      const a = pathAt(pts, s2), b = pathAt(pts, Math.min(pathLen, s2 + 0.35));
+      let tx = b[0]-a[0], ty = b[1]-a[1];
+      const nn = Math.hypot(tx, ty) || 1; tx /= nn; ty /= nn;
+      const bw = flatHalfWidth(state.map, pts, s2, -ty, tx);
+      // hypothetical post on the route at this sample
+      const saved = state.obs; state.obs = [{x:a[0], y:a[1], z:a[2], r:0.30, h:1.0}];
+      const f = flatLateralTarget(pts, s2, [a[0], a[1], a[2]], 2.2, bw);
+      state.obs = saved;
+      if (!f.blocked && f.win >= 0.22){ q = a; break; }
+    }
     addObstacle(q[0], q[1], q[2], false);
     updObsCount();
   }
@@ -1539,7 +1667,11 @@ function tick(){
     // The local layer's verdict is stop-or-go here, not a steering command: the
     // dog still follows the route, but a blocked window parks it the way
     // NeuPAN would keep receding without a legal move.
-    if (!window.recHold && !state.blocked) prog += dt * 1.2;
+    // A 1-second roll that clips the post is not proof that no move exists:
+    // on open floor the interval rule is the authority on "can I pass", so a
+    // passable window lets the dog crawl instead of freezing on the spot.
+    const floorPass = state.latWin >= 0.06 && !state.onStairNow;
+    if (!window.recHold && (!state.blocked || floorPass)) prog += dt * (state.blocked ? 0.35 : 1.2);
     if (prog > pathLen) prog = 0;     // loop, so the page keeps demonstrating
     const p = pathAt(state.path, prog);
     // The local layer's answer is a lateral offset, and the dog has to take
@@ -1548,8 +1680,11 @@ function tick(){
     // Offsetting the dog is the cheapest honest way to show that - the route
     // itself stays where the global planner put it.
     const onStair = isStair(state.path, prog);
+    state.onStairNow = onStair;
+    let nx = 0, ny = 0;          // unit normal to the route at this point
     if (onStair){
       const f = stairFrame(state.path, prog);
+      state.latWin = 0;      // the floor "may I pass" verdict must not leak here
       const hw = stairHalfWidth(state.map, state.path, prog, f);
       const tFree = Math.max(0, hw - HALF_W - CLR_HARD);
       state.latTgt = Math.max(-tFree, Math.min(tFree, state.latTgt));
@@ -1557,11 +1692,33 @@ function tick(){
       const step = 0.5 * Math.max(dt, 0.0);
       const d = state.latTgt - state.latOff;
       state.latOff += Math.abs(d) <= step ? d : Math.sign(d) * step;
-      p[0] += f.lx * state.latOff;
-      p[1] += f.ly * state.latOff;
+      nx = f.lx; ny = f.ly;
     } else {
-      state.latTgt = 0; state.latOff = 0;
+      // open floor: same interval rule, same slew, same offset applied to the
+      // dog - otherwise the layer's lateral answer dies here and a post on the
+      // route parks the dog with no way round.
+      const nxt2 = pathAt(state.path, Math.min(pathLen, prog + 0.35));
+      let tx = nxt2[0] - p[0], ty = nxt2[1] - p[1];
+      const nn = Math.hypot(tx, ty) || 1;
+      tx /= nn; ty /= nn;
+      nx = -ty; ny = tx;
+      const bw = flatHalfWidth(state.map, state.path, prog, nx, ny);
+      const f = flatLateralTarget(state.path, prog, [p[0], p[1], p[2]], 2.2, bw, state.latOff);
+      state.latTgt = f.tgt;
+      state.latWin = f.win;
+      if (f.blocked) state.blocked = true;
+      state.flatLim = bw;
+      const step = 0.5 * Math.max(dt, 0.0);
+      const d = state.latTgt - state.latOff;
+      state.latOff += Math.abs(d) <= step ? d : Math.sign(d) * step;
+      const lp = Math.max(0, bw.pos - HALF_W - CLR_HARD);
+      const ln = -Math.max(0, bw.neg - HALF_W - CLR_HARD);
+      state.latOff = Math.max(ln, Math.min(lp, state.latOff));
     }
+    // apply the offset once, for either case: the dog rides the normal, the
+    // route itself stays exactly where the global planner put it
+    p[0] += nx * state.latOff;
+    p[1] += ny * state.latOff;
     dogMesh.position.set(p[0], p[1], p[2]);
     winBox.position.set(p[0], p[1], p[2]);
     // #...,follow rides the camera behind the dog, which is how a recording
@@ -1575,8 +1732,12 @@ function tick(){
     }
     // re-plan the local leg every 0.4 m rather than every frame: the window
     // is small, but a search per frame is still waste
-    if (Math.abs(prog - lastLocal) > 0.4){
-      lastLocal = prog;
+    // a blocked dog still has to re-plan: prog is frozen, so keying off prog
+    // alone left it re-solving never and standing in front of the post forever
+    const wantReplan = Math.abs(prog - lastLocal) > 0.4
+                    || (state.blocked && now - lastBlocked > 0.35);
+    if (wantReplan){
+      lastLocal = prog; lastBlocked = now;
       const tgt = pathAt(state.path, Math.min(pathLen, prog + 2.0));
       const nxt = pathAt(state.path, Math.min(pathLen, prog + 0.35));
       const yaw = Math.atan2(nxt[1] - p[1], nxt[0] - p[0]);

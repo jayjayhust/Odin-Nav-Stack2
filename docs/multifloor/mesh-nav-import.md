@@ -235,6 +235,20 @@ Two defects in the mesh page were found while making these cases agree with C++:
 
 **Now ported to C++:** the same rule runs in `stairTreadBlocked()` inside the flight hand-over of `test/nav_sim.cpp`. Two scenarios prove the two halves of it: `stair_tread_block` (carton on the centre line of tread 6) stops the dog 1.9 m short (`7.90 s`, window `0.00 m`, `collided = 0`), and `stair_tread_side` (person `r = 0.22` hugging the north railing) passes with a `0.12 m` window and a `-0.16 m` lateral target in 41.4 s. Both simulators now say the same thing.
 
+### The floor layer runs the same rule now - otherwise a post just parks it
+
+The import page's local layer used to answer laterally only on a flight; the floor branch did `latTgt = 0; latOff = 0`, so dropping a post in front of the dog simply stopped it. It now runs the same interval rule on open floor:
+
+- the post's offset `t_o` on the route, a forbidden band `[t_o - R, t_o + R]` with `R = r + 0.175 + 0.05`;
+- the walkable strip is measured from the map, **signed on each side** rather than one symmetric budget - the route passes 0.68 m from the partition beside the bridge, and a symmetric budget read that as room to spare, after which the leg (correctly) refused and the two layers looked like they contradicted each other;
+- a window of 6 cm or more beyond the band gets taken, the dog slews `latOff` at 0.5 m/s; below that it holds.
+
+Two connected fixes were needed: equal-width windows on both sides flip as `prog` advances (the dog weaves), so window choice is now graded by distance from the offset it already has; and a blocked dog froze `prog`, which is the trigger for re-planning every 0.4 m, so it could never recover - it now retries every 0.35 s and, on floor, crawls at 0.35 m/s when the interval says the gap is passable (a 1-second roll clipping a post is not proof that no move exists).
+
+Measured (`#single,ridge,obs,close`, r = 0.30 post on the route): lateral target -0.525 m, actual -0.53 to -0.59 m, closest centre-to-surface **0.24 m** (0.065 m body gap), zero `blocked` samples, back on the centre line afterwards. The flight cases are unchanged: `treadhug` still passes at -0.19 m, `treadblock` still holds.
+
+The demo's "place obstacle" button also stops dropping the post at a fixed `prog + 2.2` - that lands in the gap between the bridge pier and the desk, where holding is the correct verdict and the page therefore showed no avoidance at all. It now scans the route for the first spot whose window clears 0.22 m.
+
 ## Limits worth knowing
 
 - 9,891 standable cells (one storey) and 5,940 (four storey); the inflation band costs 2-4% of the plate, not the old version's striped floor.
