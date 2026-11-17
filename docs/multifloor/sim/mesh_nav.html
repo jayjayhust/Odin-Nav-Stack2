@@ -67,6 +67,8 @@
   <span class="lbl">|</span>
   <button class="btn" id="setStart">设起点</button>
   <button class="btn" id="setGoal">设终点</button>
+  <button class="btn" id="setWay">加途经点</button>
+  <button class="btn" id="clearWay">清途经点</button>
   <button class="btn primary" id="go" disabled>规划</button>
   <span class="lbl">|</span>
   <button class="btn" id="clear">清空</button>
@@ -164,6 +166,7 @@ const state = {
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
+  ways: [],            // 途经点，按规划顺序 start -> ways -> goal
   res: 0.15, inf: 0.45,
   obs: [],             // obstacles the user drops in
   place: null,         // 'static' | 'ped' while placing
@@ -179,7 +182,7 @@ scene.add(obsGroup);
 let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
 let localLine = null, winBox = null, dogMesh = null;
 let pathLen = 0, prog = 0, lastLocal = -1, lastBlocked = 0;
-let markStart = null, markGoal = null, rays = 0;
+let markStart = null, markGoal = null, markWays = [], rays = 0;
 
 // ---------- OBJ / STL ------------------------------------------------------
 function parseOBJ(text){
@@ -1799,7 +1802,7 @@ function makeWinBox(c, half){
 
 // ---------- drawing -------------------------------------------------------
 const COL_FLOOR = 0x8fa9c4, COL_WALL = 0xff5a5a, COL_PATH = 0x2f8cff;
-const COL_S = 0x5ce0a3, COL_G = 0xff8fb1;
+const COL_S = 0x5ce0a3, COL_G = 0xff8fb1, COL_WAY = 0xffb648;
 
 function clearRoot(){
   while (root.children.length){
@@ -1810,6 +1813,8 @@ function clearRoot(){
   localLine = winBox = dogMesh = null;
   pathLen = 0; prog = 0; lastLocal = -1;
   markStart = markGoal = null;
+  markWays = [];
+  state.ways = [];
 }
 
 function makeSrcMesh(pos, idx){
@@ -2172,6 +2177,16 @@ host.addEventListener('click', ev => {
   if (!state.mode) return;
   const p = pick(ev);
   if (!p){ say('没点到模型上'); return; }
+  if (state.mode === 'way'){
+    state.ways.push([p.x, p.y, p.z]);
+    const m = makeBall(state.ways[state.ways.length-1], COL_WAY);
+    markWays.push(m);
+    root.add(m);
+    state.mode = null;
+    say('途经点 ' + state.ways.length + ' 个；点「加途经点」还能再加，点「规划」开始');
+    document.getElementById('go').disabled = !(state.start && state.goal);
+    return;
+  }
   if (state.mode === 'start'){
     state.start = [p.x, p.y, p.z];
     if (markStart) { root.remove(markStart); markStart.geometry.dispose(); }
@@ -2191,21 +2206,48 @@ host.addEventListener('click', ev => {
 
 document.getElementById('setStart').onclick = () => { state.mode = 'start'; say('在地板上点一下，设起点'); };
 document.getElementById('setGoal').onclick  = () => { state.mode = 'goal';  say('在目标楼层的地板上点一下，设终点'); };
+document.getElementById('setWay').onclick   = () => { state.mode = 'way';   say('在要经过的位置点一下，加一个途经点'); };
+document.getElementById('clearWay').onclick = () => {
+  for (const m of markWays){ root.remove(m); m.geometry.dispose(); }
+  markWays = []; state.ways = [];
+  say('途经点已清掉');
+};
 
 document.getElementById('go').onclick = () => {
   if (!state.map || !state.start || !state.goal) return;
   clearPlan();
   const t0 = performance.now();
-  const r = planPath(state.map, state.start[0], state.start[1], state.start[2] + 0.05,
-                                state.goal[0],  state.goal[1],  state.goal[2]  + 0.05,
-                                state.map.stairCorr);
+  // A flight of legs, not one jump: A* is run start -> way -> ... -> goal so a
+  // route can be forced through a doorway or down a particular stair. Each leg
+  // is planned on the same grid with the same edge rules; the joint point is
+  // dropped so the line has no duplicated vertices.
+  const stops = [state.start, ...state.ways, state.goal];
+  const all = [];
+  let expanded = 0, failAt = -1;
+  for (let s2 = 0; s2 + 1 < stops.length; ++s2){
+    const a = stops[s2], b = stops[s2+1];
+    const r = planPath(state.map, a[0], a[1], a[2] + 0.05, b[0], b[1], b[2] + 0.05,
+                       state.map.stairCorr);
+    if (r.error){ failAt = s2; break; }
+    expanded += r.expanded;
+    for (let q = (s2 ? 1 : 0); q < r.pts.length; ++q) all.push(r.pts[q]);
+  }
+  if (failAt >= 0){
+    say('第 ' + (failAt+1) + ' 段（' +
+        (failAt === 0 ? '起点' : ('途经' + failAt)) + ' → ' +
+        (failAt + 1 === stops.length - 1 ? '终点' : ('途经' + (failAt+1))) +
+        '）走不通');
+    return;
+  }
   const ms = performance.now() - t0;
-  if (r.error){ say(r.error); return; }
-  state.path = r.pts;
+  let len = 0;
+  for (let q = 1; q < all.length; ++q)
+    len += Math.hypot(all[q][0]-all[q-1][0], all[q][1]-all[q-1][1], all[q][2]-all[q-1][2]);
+  state.path = all;
   if (pathLine){ root.remove(pathLine); pathLine.geometry.dispose(); }
-  const pp = new Float32Array(r.pts.length * 3);
-  for (let i = 0; i < r.pts.length; ++i){
-    pp[3*i] = r.pts[i][0]; pp[3*i+1] = r.pts[i][1]; pp[3*i+2] = r.pts[i][2] + 0.06;
+  const pp = new Float32Array(all.length * 3);
+  for (let i = 0; i < all.length; ++i){
+    pp[3*i] = all[i][0]; pp[3*i+1] = all[i][1]; pp[3*i+2] = all[i][2] + 0.06;
   }
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.BufferAttribute(pp, 3));
@@ -2214,8 +2256,9 @@ document.getElementById('go').onclick = () => {
   pathLine.renderOrder = 10;
   root.add(pathLine);
   startLocalDemo();
-  say('路径 ' + r.pts.length + ' 点 · ' + r.len.toFixed(1) + ' m · A* ' +
-      Math.round(ms) + ' ms · 展开 ' + r.expanded + ' 节点');
+  say('路径 ' + all.length + ' 点 · ' + len.toFixed(1) + ' m · A* ' +
+      Math.round(ms) + ' ms · 展开 ' + expanded + ' 节点' +
+      (state.ways.length ? ' · 途经 ' + state.ways.length + ' 点' : ''));
 };
 
 function syncPlace(){
