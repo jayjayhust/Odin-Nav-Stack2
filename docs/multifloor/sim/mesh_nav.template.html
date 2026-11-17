@@ -500,6 +500,12 @@ function buildMap(pos, idx, res, infR){
       const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
       const j = (rem / nx) | 0, i = rem - j*nx;
       if (stairCol[i + j*nx]) continue;
+      // A walk surface is not a wall. Inflating from one painted the band of
+      // the sampler's 3x3 stamp red on top of the next tread, which is what
+      // turned the first step of a flight into "no-go" in the import page.
+      // What has to inflate is what stands up: a wall, a railing, a solid
+      // body - and those are the cells that are not walk surfaces.
+      if (topFace[f]) continue;
       for (let dj = -rxy; dj <= rxy; ++dj){
         const jj = j + dj;
         if (jj < 0 || jj >= ny) continue;
