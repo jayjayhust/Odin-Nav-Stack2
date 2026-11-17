@@ -138,7 +138,11 @@ function applyCam(){
 // where it is. This is the difference between the Unreal viewport's right-drag
 // and an orbit - orbiting pivots around the target, so from inside a room the
 // whole room appears to slide past instead of you looking sideways.
-function lookCam(yaw, pitch, px, py, pz){
+function lookCam(yaw, pitch){
+  // Take the eye from where it is right now, not from a position snapshotted
+  // when the button went down: WASD may still be flying, and pivoting on a
+  // stale position made the view jump back to where the drag started.
+  const px = camera.position.x, py = camera.position.y, pz = camera.position.z;
   cam.yaw = yaw; cam.pitch = pitch;
   const cp = Math.cos(pitch);
   cam.target.set(px - cam.dist * cp * Math.cos(yaw),
@@ -1867,8 +1871,7 @@ document.getElementById('clear').onclick = () => {
 // ---------- orbit --------------------------------------------------------
 let drag = null;
 host.addEventListener('pointerdown', e => {
-  if (e.button === 2) drag = {look: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch,
-                              px: camera.position.x, py: camera.position.y, pz: camera.position.z};
+  if (e.button === 2) drag = {look: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
   else if (e.button === 1) drag = {pan: true, x: e.clientX, y: e.clientY, tx: cam.target.x, ty: cam.target.y};
   else if (e.button === 0 && !state.mode) drag = {rot: true, x: e.clientX, y: e.clientY, yaw: cam.yaw, pitch: cam.pitch};
 });
@@ -1879,8 +1882,7 @@ window.addEventListener('pointermove', e => {
     // first person: the eye is pinned, only the view direction moves, and
     // pitch may go all the way up and down because nobody needs a horizon
     lookCam(drag.yaw - dx * 0.006,
-            Math.max(-1.45, Math.min(1.45, drag.pitch + dy * 0.005)),
-            drag.px, drag.py, drag.pz);
+            Math.max(-1.45, Math.min(1.45, drag.pitch + dy * 0.005)));
     return;
   } else if (drag.rot){
     cam.yaw = drag.yaw - dx * 0.006;
