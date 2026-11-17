@@ -115,8 +115,14 @@
     // The name carries the planner as the last "· x" segment.
     const who = /· (NeuPAN|DWA)$/.exec(sc.name);
     sec.dataset.planner = who ? who[1] : 'all';
+    // A scene whose whole point is to hold still is not a failure: the flight's
+    // local layer stopping the run on a tread obstacle is the expected verdict.
+    const held = !sc.ok && !sc.collided &&
+                 (sc.events || []).some(e => e.indexOf('停车等待') >= 0);
     const tag = sc.ok ? '<span class="tag ok">通过</span>'
-                      : '<span class="tag bad">' + (sc.collided ? '碰撞' : '未到达') + '</span>';
+                : sc.collided ? '<span class="tag bad">碰撞</span>'
+                : held ? '<span class="tag ok">按设计停车</span>'
+                : '<span class="tag bad">未到达</span>';
     const m = sc.metrics;
     // A level change, not a tall room: flat scenes also span 2.6 m of z_range.
     const hasZ = Math.abs((sc.goal_z || 0) - (sc.start_z || 0)) > 0.5;
