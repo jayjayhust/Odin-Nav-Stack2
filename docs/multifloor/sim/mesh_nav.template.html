@@ -54,6 +54,8 @@
   <select id="res"><option value="0.05">0.05 m</option><option value="0.10">0.10 m</option><option value="0.15" selected>0.15 m</option><option value="0.20">0.20 m</option><option value="0.30">0.30 m</option></select>
   <span class="lbl">膨胀</span>
   <select id="inf"><option value="0.00">0 m</option><option value="0.30" selected>0.30 m</option><option value="0.45">0.45 m</option><option value="0.60">0.60 m</option></select>
+  <span class="lbl">单位</span>
+  <select id="unit"><option value="auto" selected>自动</option><option value="m">米</option><option value="cm">厘米</option></select>
   <button class="btn" id="setStart">点模型设起点</button>
   <button class="btn" id="setGoal">点模型设终点</button>
   <button class="btn primary" id="go" disabled>规划</button>
@@ -1417,16 +1419,71 @@ function makeDog(p){
 function showHud(html){ document.getElementById('hud').innerHTML = html; }
 function say(t){ document.getElementById('say').textContent = t; }
 
+// A model from a game engine usually arrives in centimetres: an Unreal map is
+// 3000 units across, which is 30 m, but read as metres it needs 20,000 cells
+// per axis. Scale is decided from the bounding box, and a resolution that
+// still overshoots the cell budget is coarsened instead of being refused.
+const CELL_CAP = 12e6;
+const RES_LADDER = [0.05, 0.10, 0.15, 0.20, 0.30, 0.40, 0.50, 0.60, 0.75,
+                    1.00, 1.50, 2.00, 3.00, 5.00, 8.00, 12.0, 20.0];
+
+function fitScale(pos, mode){
+  let lo = [1e18, 1e18, 1e18], hi = [-1e18, -1e18, -1e18];
+  for (let i = 0; i < pos.length; i += 3)
+    for (let a = 0; a < 3; ++a){
+      const v = pos[i+a];
+      if (v < lo[a]) lo[a] = v;
+      if (v > hi[a]) hi[a] = v;
+    }
+  const ext = Math.max(hi[0]-lo[0], hi[1]-lo[1], hi[2]-lo[2]);
+  if (mode === 'm') return {scale: 1, ext};
+  if (mode === 'cm') return {scale: 0.01, ext};
+  // 400 m is already a large campus; anything bigger is in smaller units
+  return {scale: ext > 400 ? 0.01 : 1, ext, auto: true};
+}
+
+function fitRes(lo, hi, res){
+  const need = a => (hi[a]-lo[a])/res + 3;
+  for (let i = 0; i < RES_LADDER.length; ++i){
+    const r = RES_LADDER[i];
+    if (r < res) continue;
+    const nx = Math.ceil((hi[0]-lo[0]+1.2)/r)+1,
+          ny = Math.ceil((hi[1]-lo[1]+1.2)/r)+1,
+          nz = Math.ceil((hi[2]-lo[2]+1.2)/r)+1;
+    if (nx*ny*nz <= CELL_CAP) return r;
+  }
+  return RES_LADDER[RES_LADDER.length-1];
+}
+
 function loadModel(pos, idx, name){
   clearRoot();
   state.start = state.goal = state.path = null;
   const sp = pos.length / 3;
   if (!sp){ say('这个文件里没有三角面'); return; }
+  const unitMode = document.getElementById('unit').value;
+  const fx = fitScale(pos, unitMode);
+  let scaled = '';
+  if (fx.scale !== 1){
+    for (let i = 0; i < pos.length; ++i) pos[i] *= fx.scale;
+    scaled = '按' + (fx.scale === 0.01 ? '厘米' : '米') + '导入（×' + fx.scale + '）';
+  }
   srcMesh = makeSrcMesh(pos, idx);
   root.add(srcMesh);
 
-  const res = +document.getElementById('res').value;
+  let res = +document.getElementById('res').value;
   const infR = +document.getElementById('inf').value;
+  // the bounding box then decides the finest resolution that fits the budget
+  {
+    let lo = [1e18, 1e18, 1e18], hi = [-1e18, -1e18, -1e18];
+    for (let i = 0; i < pos.length; i += 3)
+      for (let a = 0; a < 3; ++a){
+        const v = pos[i+a];
+        if (v < lo[a]) lo[a] = v;
+        if (v > hi[a]) hi[a] = v;
+      }
+    const r2 = fitRes(lo, hi, res);
+    if (r2 > res){ res = r2; scaled += (scaled ? '，' : '') + '分辨率自动降到 ' + r2.toFixed(2) + ' m'; }
+  }
   state.res = res; state.inf = infR;
   const t0 = performance.now();
   const m = buildMap(pos, idx, res, infR);
@@ -1436,6 +1493,7 @@ function loadModel(pos, idx, name){
     showHud('<b>' + name + '</b><br><span class="k">格数超限</span>');
     return;
   }
+  if (scaled) say(scaled);
   state.map = m;
   if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
@@ -1458,7 +1516,8 @@ function loadModel(pos, idx, name){
     '<span class="k">分辨率</span> <span class="v">' + res + ' m</span><br>' +
     '<span class="k">膨胀</span> <span class="v">' + infR + ' m</span> · ' +
     '<span class="k">建图</span> <span class="v">' + Math.round(ms) + ' ms</span><br>' +
-    '<span class="k">可走高度</span> <span class="v">' + (zmin).toFixed(2) + ' … ' + (zmax).toFixed(2) + ' m</span>');
+    '<span class="k">可走高度</span> <span class="v">' + (zmin).toFixed(2) + ' … ' + (zmax).toFixed(2) + ' m</span>' +
+    (scaled ? '<br><span class="k">换算</span> <span class="v">' + scaled + '</span>' : ''));
   document.getElementById('go').disabled = !(state.start && state.goal);
   say('点「点模型设起点」，在模型上点一下');
 }

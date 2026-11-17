@@ -273,3 +273,13 @@ Three traps that had to be hit before the model worked:
 Result: **181 points / 35.7 m / z 0.08 -> 11.03 (top of the 4F plate) / 11,855 expanded nodes / A* 61 ms**, climbing flight by flight inside the stairwell with no shortcut through a plate.
 
 A timing bug was fixed as well: the `#demo` button loads the model asynchronously while the picking code used to run before the map existed and returned silently, which looked like a dead button. It now waits for `state.map`, up to 32 s.
+
+
+## Importing your own model: units and cell count
+
+Mesh files exported from a game engine are often in centimetres - Unreal's `ThirdPersonExampleMap` is 3000 units across, i.e. 30 m - and reading that as metres puts 20,000 cells on each axis, which is the "model too big" message. The toolbar now has a unit selector: auto / metre / centimetre.
+
+- Auto: any bounding-box axis over 400 m is treated as centimetres (x0.01) and the HUD says so. If the guess is wrong, pick metres in the dropdown.
+- An oversized model is no longer refused: the resolution ladder 0.05 / 0.10 / 0.15 ... 0.60 / 0.75 / 1.0 / 1.5 / 2.0 / 3.0 / 5.0 / 8.0 / 12 / 20 picks the first value that keeps the grid under 12 million cells, and the HUD reports the value actually used (the dropdown keeps showing your choice).
+
+Measured on `ThirdPersonExampleMap.obj` (710 vertices / 520 faces): detected as centimetres, 30 x 10 x 30 m, resolution stays 0.15 m, grid 210 x 76 x 210, 27,421 standable cells, 738 ms to build, and a two-point plan of 202 points / 34.3 m / A* 109 ms. The ladder on its own: 60 m cube -> 0.30 m, 120 m -> 0.60 m, 300 m -> 1.50 m.
