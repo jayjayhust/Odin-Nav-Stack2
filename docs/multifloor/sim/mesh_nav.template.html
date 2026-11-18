@@ -172,6 +172,8 @@
 
 <script>/*__THREE__*/</script>
 <script>
+/*__RECOGNIZERS__*/
+
 const DATA_OBJ = /*__OBJ__*/;
 const DATA_OBJ1 = /*__OBJ2__*/;
 const DATA_OBJ2 = /*__OBJ3__*/;
@@ -826,168 +828,19 @@ function buildMap(pos, idx, res, infR){
       }
   }
 
-  // ---- flights, fitted, for the centre-line cost ---------------------------
-  // The corridor boxes below come out empty on a sampled mesh, and a box is the
-  // wrong shape anyway when the flight runs diagonally: what a flight needs is a
-  // centre line and a width, fitted to the columns that actually step.
-  // A column steps when its tread height differs from a neighbour's by one or
-  // two cells and no more - a real riser. A gently sloping slab does not step,
-  // and a wall face has no walkable top at every height, so neither can pass.
-  // Then the fit only keeps a component that climbs: a rising band of treads
-  // with a believable stair slope, which is what "one flight" means.
-  const flights = [];
-  if (window.__FITDBG) flights._dbg = [];
-  {
-    const stepped = new Float32Array(nx*ny).fill(-1);
-    for (let j = 0; j < ny; ++j)
-      for (let i = 0; i < nx; ++i){
-        const f = i + j*nx, rk = treadTop[f];
-        if (rk < 1) continue;
-        let step = 0;
-        for (const [di, dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
-          const i2 = i + di, j2 = j + dj;
-          if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
-          const rk2 = treadTop[i2 + j2*nx];
-          if (rk2 < 1) continue;
-          const d = Math.abs(rk2 - rk);
-          if (d >= 1 && d <= 2) step = Math.max(step, d);
-        }
-        if (step) stepped[f] = rk;
-      }
-    const seen = new Uint8Array(nx*ny), stack = [];
-    for (let j0 = 0; j0 < ny; ++j0)
-      for (let i0 = 0; i0 < nx; ++i0){
-        const id0 = i0 + j0*nx;
-        if (stepped[id0] < 0 || seen[id0]) continue;
-        stack.length = 0; stack.push(id0); seen[id0] = 1;
-        const mem = [];
-        let rkMin = 1e9, rkMax = -1e9;
-        while (stack.length){
-          const q = stack.pop(); mem.push(q);
-          const qj = (q / nx) | 0, qi = q - qj*nx;
-          rkMin = Math.min(rkMin, stepped[q]); rkMax = Math.max(rkMax, stepped[q]);
-          for (const [di, dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
-            const i2 = qi + di, j2 = qj + dj;
-            if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
-            const nq = i2 + j2*nx;
-            if (stepped[nq] < 0 || seen[nq]) continue;
-            if (Math.abs(stepped[nq] - stepped[q]) > 2.0) continue;
-            seen[nq] = 1; stack.push(nq);
-          }
-        }
-        if (mem.length < 30) continue;
-        if (rkMax - rkMin < 4) continue;               // must actually climb
-        // principal axis of the footprint, so a diagonal flight fits as one run
-        let mx = 0, my = 0;
-        for (const q of mem){ mx += lo[0] + ((q % nx) + 0.5)*res; my += lo[1] + (((q / nx) | 0) % ny + 0.5)*res; }
-        mx /= mem.length; my /= mem.length;
-        let sxx = 0, syy = 0, sxy = 0;
-        for (const q of mem){
-          const wx = lo[0] + ((q % nx) + 0.5)*res - mx;
-          const wy = lo[1] + (((q / nx) | 0) % ny + 0.5)*res - my;
-          sxx += wx*wx; syy += wy*wy; sxy += wx*wy;
-        }
-        sxx /= mem.length; syy /= mem.length; sxy /= mem.length;
-        const ang = 0.5 * Math.atan2(2*sxy, sxx - syy);
-        const ux = Math.cos(ang), uy = Math.sin(ang);
-        let alongMin = 1e9, alongMax = -1e9;
-        const perps = [];
-        for (const q of mem){
-          const wx = lo[0] + ((q % nx) + 0.5)*res - mx;
-          const wy = lo[1] + (((q / nx) | 0) % ny + 0.5)*res - my;
-          const al = wx*ux + wy*uy;
-          alongMin = Math.min(alongMin, al); alongMax = Math.max(alongMax, al);
-          perps.push(Math.abs(-wx*uy + wy*ux));
-        }
-        perps.sort((a, b) => a - b);
-        const half = perps[Math.floor(perps.length * 0.9)];
-        const len = Math.max(alongMax - alongMin, res);
-        const rise = (rkMax - rkMin) * res;
-        const slope = rise / len;
-        if (half < 0.18 || half > 1.10) continue;      // a sliver, or two flights side by side
-        if (slope < 0.12 || slope > 2.2) continue;     // flat band, or a wall climb
-        if (len > 6.5) continue;                       // storey scale, not one flight
-        // A flight is not the same width at every height: at the foot its
-        // first treads merge into the floor and the cluster above misses them,
-        // so one centre and one half width for the whole run leaves the first
-        // steps outside the charge - exactly where the user saw the line climb
-        // at the side. Scan the walkable cross-section at each height instead
-        // and keep a centre per step: a spine, not a centre.
-        const kLo = Math.max(0, Math.round(rkMin) - 2);
-        const kHi = Math.min(nz - 1, Math.round(rkMax) + 2);
-        const spine = new Float32Array(kHi - kLo + 1).fill(NaN);
-        const halfK = new Float32Array(kHi - kLo + 1).fill(NaN);
-        const alongAt = new Float32Array(kHi - kLo + 1).fill(NaN);
-        const alSum = new Float64Array(kHi - kLo + 1);
-        const alNum = new Int32Array(kHi - kLo + 1);
-        {
-          const mn = new Float32Array(kHi - kLo + 1).fill(Infinity);
-          const mx2 = new Float32Array(kHi - kLo + 1).fill(-Infinity);
-          let cnt = 0;
-          for (const id of mem){
-            const jj = (id / nx) | 0, ii = id - jj*nx;
-            const kk = stepped[id];                    // a column's tread height
-            if (kk < kLo || kk > kHi) continue;
-            const al = (lo[0] + (ii+0.5)*res - mx)*ux + (lo[1] + (jj+0.5)*res - my)*uy;
-            alSum[kk - kLo] += al; alNum[kk - kLo] += 1;
-          }
-          for (let k = kLo; k <= kHi; ++k)
-            for (let j = 0; j < ny; ++j)
-              for (let i = 0; i < nx; ++i){
-                if (!walkable(i, j, k)) continue;
-                const wx = lo[0] + (i+0.5)*res, wy = lo[1] + (j+0.5)*res;
-                const ox = wx - mx, oy = wy - my;
-                if (Math.abs(ox*ux + oy*uy) > len/2 + 0.35) continue;
-                const perp = -ox*uy + oy*ux;
-                if (Math.abs(perp) > half + 0.20) continue;
-                const at = k - kLo;
-                mn[at] = Math.min(mn[at], perp); mx2[at] = Math.max(mx2[at], perp); ++cnt;
-              }
-          // fill gaps with the nearest measured height, so the spine is continuous
-          let last = NaN;
-          for (let at = 0; at <= kHi - kLo; ++at){
-            if (mn[at] > mx2[at]){ spine[at] = last; halfK[at] = NaN; continue; }
-            spine[at] = (mn[at] + mx2[at]) / 2;
-            halfK[at] = Math.max((mx2[at] - mn[at]) / 2, 0.10);
-            last = spine[at];
-            // placeholder; the regression below replaces it with one straight line
-            alongAt[at] = alNum[at] ? alSum[at] / alNum[at] : 0;
-          }
-          for (let at = kHi - kLo; at >= 0; --at){
-            if (spine[at] !== spine[at] && at + 1 <= kHi - kLo) spine[at] = spine[at+1];
-          }
-        }
-        // A cluster of stepped columns is not a flight unless it advances along
-        // its own run as it rises: the tread centre has to travel, otherwise it
-        // is a step-edged slab or a landing edge, and charging it would tilt the
-        // plan at a place that is flat.
-        let nH = 0, nP = 0, sA = 0, sL = 0, sAA = 0, sLL = 0, sAL = 0;
-        for (let at = 0; at <= kHi - kLo; ++at){
-          if (alNum[at] === 0) continue;
-          const A = at, L = alSum[at] / alNum[at];
-          ++nH; ++nP; sA += A; sL += L; sAA += A*A; sLL += L*L; sAL += A*L;
-        }
-        if (nH < 6) continue;                          // fewer steps than a stair
-        const vA = sAA - sA*sA/nP, vL = sLL - sL*sL/nP, cov = sAL - sA*sL/nP;
-        const r2 = (vA > 1e-9 && vL > 1e-9) ? (cov*cov)/(vA*vL) : 0;
-        const travel = Math.abs(cov) / Math.max(1e-9, vA) * (nH - 1);
-        if (flights._dbg) flights._dbg.push({n: mem.length, rise: +rise.toFixed(2), len: +len.toFixed(2),
-                     half: +half.toFixed(2), nH: nH, travel: +travel.toFixed(2), r2: +r2.toFixed(2)});
-        // It climbs and it moves along, in a straight line: a flight's tread
-        // centre advances linearly with height. Per-height averages zig-zag
-        // where a step edge shares a column height with the tread behind it,
-        // and a zig-zag centre line is a zig-zag plan, so keep the fit.
-        if (travel < 0.30 * rise || r2 < 0.35) continue;
-        const slopeA = cov / vA, iceptA = (sL - slopeA * sA) / nP;
-        for (let at = 0; at <= kHi - kLo; ++at)
-          alongAt[at] = Math.max(-len/2, Math.min(len/2, iceptA + slopeA * at));
-        flights.push({cx: mx, cy: my, ux, uy, half, len, rise, kLo, spine, halfK, alongAt,
-                      zmin: lo[2] + rkMin*res - 0.15, zmax: lo[2] + rkMax*res + 0.35,
-                      weight: 1.0, n: mem.length,
-                      // packed (i,j,k) cells: mem holds columns, the height is stepped[id]
-                      cells: mem.map(id => id + stepped[id]*nx*ny)});
-      }
-  }
+  // ---- terrain semantics ---------------------------------------------
+  // No fit lives in buildMap any more. Recognisers are separate files under
+  // recognizers/, they register themselves, and they only see the grid through
+  // a small facade - so a new terrain is a new file, not a rewrite of this
+  // function, and each one can be run on its own grid in a test.
+  const semantic = window.TerrainSemantics.run({
+    res, lo, nx, ny, nz,
+    walkable, tread: treadTop, topFace,
+  }, {stepM, res, maxStepZ: MAX_STEP_Z});
+  const regions = semantic.regions;
+  const semanticStats = semantic.stats;
+  const flights = regions.filter(r => r.kind === 'stairs')
+                         .map(window.TerrainSemantics.stairsToFlight);
   // ---- stair corridors, for the lateral cost ------------------------------
   // astar3d charges weight * |offset from the centre line| on entry, so the
   // route prefers the middle of a flight instead of grazing a handrail. The
@@ -1295,7 +1148,8 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          capWide, stairCol, stairProfile, riseMask, stairRamp, stairCorr, flights, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, stairProfile, riseMask, stairRamp, stairCorr, flights, regions, semanticStats,
+          nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -3017,8 +2871,21 @@ function exportFlights(){
       along: Array.from(f.alongAt).map(v => (v === v ? +v.toFixed(3) : null)),
       spine: Array.from(f.spine).map(v => (v === v ? +v.toFixed(3) : null)),
       halfAt: Array.from(f.halfK).map(v => (v === v ? +v.toFixed(3) : null)),
-      kLo: f.kLo
-    }))
+      kLo: f.kLo,
+      kind: 'stairs'
+    })),
+    // The generic form: every recogniser's regions, whatever kind they are.
+    // The planner keeps reading `flights` (A* was written against that shape);
+    // a second terrain only has to add its kind here and in the prior.
+    regions: (m.regions || []).map(r => ({
+      kind: r.kind, id: r.id,
+      centre: r.centre.map(v => +v.toFixed(3)),
+      axis: r.axis.map(v => +v.toFixed(4)),
+      half: +r.half.toFixed(3), length: +r.length.toFixed(3), rise: +(r.rise || 0).toFixed(3),
+      z: r.z.map(v => +v.toFixed(3)),
+      cells: r.cells.length, metrics: r.metrics || null
+    })),
+    recognisers: m.semanticStats || null
   };
   downloadBlob((state.fileName || 'map').replace(/\.[^.]+$/, '') + '.stairs.json',
     new Blob([JSON.stringify(out, null, 1)], {type: 'application/json'}));

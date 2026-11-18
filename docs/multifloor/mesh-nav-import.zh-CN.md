@@ -357,3 +357,30 @@ pgm 只有「可走 / 不可走」，没有「这段是楼梯、该从中间上�
 - RViz：地图一到就 latched 发布 `~stair_prior`（`visualization_msgs/MarkerArray`，橙线，每段一条，位于 `z` 中值），不看路径也能确认「先验认的是哪几段」。
 
 **实测**（本页导出的 `parkinglot.stairs.json`，2 段，898 字节）：离线喂给 C++ 测试程序 → `loaded 1 flights 2`；横向偏移 0.00 / 0.60 / 1.20 m 的代价倍数 1.009 / 1.42 / 1.85，带外 1.000，缺文件 `load=false, factor=1.000`。仿真页里同样的代价已把不点途经点的爬升段压到离中线 0.03~0.14 m（原版是 0.2~1.0 m 贴栏杆）。
+
+## 地形语义识别器（可扩展）
+
+页面里"什么算楼梯"不再是写死在 `buildMap` 里的拟合，而是一组独立文件：
+
+```
+docs/multifloor/sim/recognizers/
+  terrain.js    注册表 + 运行 + 区域契约（不是某种地形）
+  stairs.js     楼梯：登高、沿轴前进、踏面逐级中线
+```
+
+每个识别器自己注册，只通过一个只读 façade 看网格：
+
+```js
+window.TerrainSemantics.register({
+  id: 'stairs',          // 稳定标识，导出与先验都用它
+  title: '楼梯段',        // 界面上的名字
+  detects: 'walkable stair flights with per-step tread centres',
+  detect(grid, opts) {   // grid: {res, lo, nx, ny, nz, walkable, tread, topFace}
+    return [ {/* region */} ];   // 认不出来就返回 []
+  },
+});
+```
+
+区域（region）是下游唯一认的单位：`kind`（默认取识别器 id）、`cells`（打包的 `i+j*nx+k*nx*ny`，**画的和收费的就是这一批**）、`centre/axis/half/length/rise/z`，以及可选的每级细节 `steps`。`TerrainSemantics.run()` 逐个计时、互不连坐——一个识别器抛错不影响其它，错误记在 `semanticStats` 里显示在 HUD。
+
+加一类新地形（坡道、门洞、平台沿）就是加一个文件：`recognizers/ramp.js` 里 `register({id:'ramp', ...})`，在 `cells` 里给出它声称的表面；页面绘制、`buildMap` 返回的 `regions`、导出的 `regions` 字段、HUD 统计都自动带上，不用改 `buildMap`。真机侧 `map_planner` 目前仍读 `flights`（A* 的代价是按航线形状写的），`regions` 已经一并导出，增加第二类地形时再在 `stair_prior.h` 里按 `kind` 分支即可。
