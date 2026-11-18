@@ -64,7 +64,9 @@
   <select id="up"><option value="z" selected>Z 向上</option><option value="y">Y 向上</option><option value="x">X 向上</option></select>
   <span class="lbl">台阶上限</span>
   <select id="step"><option value="0.45" selected>0.45 m</option><option value="0.25">0.25 m</option></select>
-  <span class="lbl">|</span>
+</div>
+
+<div class="bar">
   <button class="btn" id="setStart">设起点</button>
   <button class="btn" id="setGoal">设终点</button>
   <button class="btn" id="setWay">加途经点</button>
@@ -75,7 +77,12 @@
   <button class="btn" id="placeStatic">放立柱</button>
   <button class="btn" id="placePed">放行人</button>
   <button class="btn" id="clearObs">清障碍</button>
-  <button class="btn" id="erase" title="点亮后在模型上单击，把那一格红色禁行改成可走；松手即生效">擦禁行</button>
+  <span class="lbl">|</span>
+  <button class="btn" id="erase" title="点亮后在模型上单击，把那一格红色禁行改成可走">擦禁行</button>
+  <button class="btn" id="block" title="点亮后在模型上单击，把那一格标成不可走">增禁行</button>
+  <span class="lbl">|</span>
+  <button class="btn" id="save" title="把这一版起终点、途经点、擦除与增补的格子存到本机，同时下载一份 JSON">保存</button>
+  <button class="btn" id="load" title="恢复这张图上一次保存的改动">载入</button>
   <span class="lbl" id="obsCount">障碍 0</span>
 </div>
 
@@ -191,8 +198,10 @@ const state = {
   // cells out from a stair column whose tread may take its clearance band back
   // (0 = off, 1 = one cell, 2 = one full band at 0.30 m / 0.15 m)
   stairOpen: 1,
-  // cells the user painted back to walkable; kept per loaded model
+  // cells the user painted by hand; kept per loaded model
   erased: new Set(),
+  added: new Set(),
+  modelName: '',
   // 0 keeps the clearance band a wall; 2 or 4 let a route cross it at that
   // price, which is what "prefer the middle of the stair" needs: the middle
   // stays cheap, the edge is expensive rather than impossible.
@@ -1836,6 +1845,10 @@ window.__MESH = {
   get path(){ return state.path; },
   get map(){ return state.map; },
   get erased(){ return state.erased ? state.erased.size : 0; },
+  get added(){ return state.added ? state.added.size : 0; },
+  blockCell(i, j, k){ return blockCell(i, j, k); },
+  save(){ document.getElementById('save').click(); },
+  load(){ document.getElementById('load').click(); },
   eraseCell(i, j, k){ return eraseCell(i, j, k); },
   walk(i, j, k){ return state.map ? state.map.walkable(i, j, k) : null; },
   pathAt(s2){ return pathAt(state.path, s2); },
@@ -2203,6 +2216,8 @@ function fitRes(lo, hi, res){
 }
 
 function loadModel(pos, idx, name){
+  state.modelName = name;
+  let restoredSaved = null;
   // loadModel scales and rotates pos in place, so keep the original around:
   // a rebuild for a parameter change must start from the same raw vertices,
   // or the mesh gets turned twice and the map collapses.
@@ -2263,7 +2278,28 @@ function loadModel(pos, idx, name){
     return;
   }
   if (scaled) say(scaled);
+  if (restoredSaved){
+    say('已自动载入这张图的存档：擦 ' + state.erased.size + ' 格 · 增 ' + state.added.size + ' 格');
+    restoredSaved = null;
+  }
   state.map = m;
+  // A model edited by hand comes back with those edits: a rebuild for a
+  // parameter change must not silently throw the work away.
+  {
+    let rec = null;
+    try { const raw = localStorage.getItem(saveKeyFor(name, res, infR)); rec = raw ? JSON.parse(raw) : null; }
+    catch (e){ rec = null; }
+    if (rec && (!rec.grid || !rec.grid[0] ||
+        (rec.grid[0] === m.nx && rec.grid[1] === m.ny && rec.grid[2] === m.nz))){
+      state.erased = new Set(rec.erased || []);
+      state.added = new Set(rec.added || []);
+      if (location.hash.indexOf('nosave') < 0) restoredSaved = rec;
+    }
+  }
+  for (const f of state.erased)
+    if (f < m.data.length && m.data[f] === INFL) m.data[f] = FREE;
+  for (const f of state.added)
+    if (f < m.data.length && m.data[f] === FREE) m.data[f] = INFL;
   if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
   walkMesh = makePlanes(m);
@@ -2358,18 +2394,98 @@ document.getElementById('bandSoft').onchange = (ev) => {
     : '红色净空带恢复为硬禁行：路线一律绕开');
 };
 
-// Eraser toggle. One click on the model undoes one red cell.
-document.getElementById('erase').onclick = (ev) => {
-  state.erase = !state.erase;
-  ev.target.classList.toggle('on', state.erase);
-  if (state.erase){
+// Brushes. One click on the model undoes or adds one cell of clearance.
+function setBrush(which){
+  state.erase = which === 'erase';
+  state.block = which === 'block';
+  document.getElementById('erase').classList.toggle('on', state.erase);
+  document.getElementById('block').classList.toggle('on', state.block);
+  if (state.erase || state.block){
     state.mode = '';
-    for (const b of document.querySelectorAll('[data-mode]')) b.classList.remove('on');
-    say('擦除模式：在模型上单击一格，把红色禁行改成可走');
+    say(state.erase ? '擦除模式：在模型上单击一格，把红色禁行改成可走'
+                    : '增补模式：在模型上单击一格，把可走面标成不可走');
   } else {
-    say('擦除模式已关闭');
+    say('画笔已关闭');
   }
+}
+document.getElementById('erase').onclick = () => setBrush(state.erase ? '' : 'erase');
+document.getElementById('block').onclick = () => setBrush(state.block ? '' : 'block');
+
+// ---- hand edits, saved per model and grid --------------------------------
+function saveKeyFor(name, res, inf){
+  return 'meshnav:' + (name || 'model') + '|' + res + '|' + inf;
+}
+
+function snapshot(){
+  const m = state.map;
+  return {
+    v: 1, name: state.modelName, res: state.res, inf: state.inf,
+    up: document.getElementById('up').value,
+    unit: document.getElementById('unit').value,
+    step: document.getElementById('step').value,
+    grid: m ? [m.nx, m.ny, m.nz] : [0, 0, 0],
+    stairOpen: state.stairOpen, bandSoft: state.bandSoft,
+    erased: Array.from(state.erased),
+    added: Array.from(state.added),
+    ways: state.ways.map(p => p.map(v => +v.toFixed(3))),
+    start: state.start ? state.start.map(v => +v.toFixed(3)) : null,
+    goal: state.goal ? state.goal.map(v => +v.toFixed(3)) : null
+  };
+}
+
+function redrawWays(){
+  for (const b of markWays){ root.remove(b); b.geometry.dispose(); }
+  markWays = [];
+  for (const w of state.ways){
+    const b = makeBall(w, COL_WAY);
+    markWays.push(b);
+    root.add(b);
+  }
+}
+
+function applySnapshot(rec){
+  state.erased = new Set(rec.erased || []);
+  state.added = new Set(rec.added || []);
+  state.ways = (rec.ways || []).slice();
+  if (rec.bandSoft !== undefined){
+    state.bandSoft = rec.bandSoft;
+    document.getElementById('bandSoft').value = String(rec.bandSoft);
+  }
+  if (rec.stairOpen !== undefined){
+    state.stairOpen = rec.stairOpen;
+    document.getElementById('stairOpen').value = String(rec.stairOpen);
+  }
+}
+
+document.getElementById('save').onclick = () => {
+  if (!state.map){ say('先载入模型'); return; }
+  const rec = snapshot();
+  const text = JSON.stringify(rec, null, 1);
+  try { localStorage.setItem(saveKeyFor(rec.name, rec.res, rec.inf), text); }
+  catch (e){ say('本机存储不可用，只下载了 JSON'); }
+  const tag = (rec.name || 'mesh').replace(/[^A-Za-z0-9_.-]+/g, '_') + '.' + rec.res + '.meshnav.json';
+  const blob = new Blob([text], {type: 'application/json'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = tag;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  say('已保存：擦 ' + rec.erased.length + ' 格 · 增 ' + rec.added.length +
+      ' 格 · 途经 ' + rec.ways.length + ' 点 · 同时下载 ' + tag);
 };
+
+document.getElementById('load').onclick = () => {
+  if (!state.map){ say('先载入模型'); return; }
+  let rec = null;
+  try { const raw = localStorage.getItem(saveKeyFor(state.modelName, state.res, state.inf)); rec = raw ? JSON.parse(raw) : null; }
+  catch (e){ rec = null; }
+  if (!rec){ say('这张图（分辨率 ' + state.res + ' m / 膨胀 ' + state.inf + ' m）本机还没有存档'); return; }
+  applySnapshot(rec);
+  loadModel(new Float32Array(state.rawPos), state.rawIdx, state.modelName);
+  redrawWays();
+  say('已载入存档：擦 ' + rec.erased.length + ' 格 · 增 ' + rec.added.length + ' 格 · 途经 ' + (rec.ways || []).length + ' 点');
+};
+
 
 // How far the stairs may open up. Rebuilds the voxel map from the cached mesh,
 // the same way the inflation select does, so the trade-off is testable in place.
@@ -2435,6 +2551,19 @@ function eraseCell(i, j, k){
   return 1;
 }
 
+function blockCell(i, j, k){
+  const m = state.map;
+  if (!m) return 0;
+  if (i < 0 || j < 0 || k < 0 || i >= m.nx || j >= m.ny || k >= m.nz) return 0;
+  const f = ((k*m.ny) + j)*m.nx + i;
+  if (m.data[f] !== FREE) return 0;
+  m.data[f] = INFL;
+  state.added.add(f);
+  state.erased.delete(f);
+  repaintWalk();
+  return 1;
+}
+
 function repaintWalk(){
   if (!state.map) return;
   if (walkMesh){ root.remove(walkMesh); walkMesh.dispose(); }
@@ -2481,7 +2610,7 @@ host.addEventListener('dblclick', ev => {
 });
 
 host.addEventListener('click', ev => {
-  if (state.erase){
+  if (state.erase || state.block){
     const p = pick(ev);
     if (!p){ say('没点到模型上'); return; }
     const c = cellIndexAt(p);
