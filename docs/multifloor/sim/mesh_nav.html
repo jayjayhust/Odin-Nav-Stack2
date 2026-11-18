@@ -2860,6 +2860,26 @@ function spanRuns(m){
   return m._span;
 }
 
+// Why a cell is or is not usable right now, in one line: the same three tests
+// the planner applies, in the order it applies them.
+function cellWhy(id){
+  const m = state.map;
+  if (!m || id < 0 || id >= m.data.length) return '越界';
+  const nx = m.nx, ny = m.ny;
+  const i = id % nx, j = ((id / nx) | 0) % ny, k = (id / (nx*ny)) | 0;
+  const v = m.data[id];
+  const names = {0: '空', 1: '可走', 2: '墙', 3: '红/膨胀'};
+  if (v !== FREE) return '值 ' + (names[v] || v);
+  if (k < 1 || !m.walkable(i, j, k)) return '值可走但不可站（支撑/踏面不足）';
+  if (state.foot > 0 && !state.erased.has(id)){
+    const sp = spanRuns(m);
+    const w = Math.min(sp.ri[id], sp.rj[id]) * m.res;
+    if (w < state.foot * 2)
+      return '开口 ' + w.toFixed(2) + ' m < 机身 ' + (state.foot*2).toFixed(2) + ' m';
+  }
+  return '可用';
+}
+
 function eraseCell(i, j, k){
   const m = state.map;
   if (!m) return 0;
@@ -3073,9 +3093,43 @@ document.getElementById('go').onclick = () => {
   pathLine.renderOrder = 10;
   root.add(pathLine);
   startLocalDemo();
+  // Say whether the hand-opened cells were actually used, and if not, why the
+  // first unused one is refused - otherwise "I erased it and the route still
+  // goes around" is undecidable from the picture alone.
+  let hand = '';
+  if (state.erased.size){
+    const nx = state.map.nx, ny = state.map.ny, r = state.map.res, lo = state.map.lo;
+    let used = 0, firstUnused = -1;
+    for (const f of state.erased){
+      const i = f % nx, j = ((f / nx) | 0) % ny, k = (f / (nx*ny)) | 0;
+      const cx = lo[0] + (i+0.5)*r, cy = lo[1] + (j+0.5)*r, cz = lo[2] + (k+0.5)*r;
+      let near = false;
+      for (const q of all)
+        if (Math.abs(q[0]-cx) < r*0.9 && Math.abs(q[1]-cy) < r*0.9 && Math.abs(q[2]-cz) < r*0.9){
+          near = true; break;
+        }
+      if (near) ++used;
+      else if (firstUnused < 0 || f < firstUnused) firstUnused = f;
+    }
+    hand = ' · 擦除 ' + state.erased.size + ' 格，路线用到 ' + used + ' 格';
+    if (firstUnused >= 0){
+      const nx2 = nx, ny2 = ny;
+      const ii = firstUnused % nx2, jj = ((firstUnused / nx2) | 0) % ny2,
+            kk = (firstUnused / (nx*ny)) | 0;
+      // "usable" alone explains nothing when the cell is an island: count the
+      // neighbouring cells the planner would also take.
+      const open = [[1,0],[-1,0],[0,1],[0,-1]].filter(d => {
+        const i2 = ii + d[0], j2 = jj + d[1];
+        return i2 >= 0 && j2 >= 0 && i2 < nx2 && j2 < ny2 &&
+               cellWhy(((kk*ny2 + j2)*nx2) + i2) === '可用';
+      }).length;
+      hand += '，例如 i' + ii + ' j' + jj + ' → ' + cellWhy(firstUnused) +
+              (cellWhy(firstUnused) === '可用' ? '（四邻可用 ' + open + ' 个）' : '');
+    }
+  }
   say('路径 ' + all.length + ' 点 · ' + len.toFixed(1) + ' m · A* ' +
       Math.round(ms) + ' ms · 展开 ' + expanded + ' 节点' +
-      (state.ways.length ? ' · 途经 ' + state.ways.length + ' 点' : ''));
+      (state.ways.length ? ' · 途经 ' + state.ways.length + ' 点' : '') + hand);
 };
 
 function syncPlace(){
