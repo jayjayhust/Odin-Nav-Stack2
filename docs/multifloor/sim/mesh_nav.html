@@ -2682,6 +2682,33 @@ function cellIndexAt(p){
   return {i, j, k};
 }
 
+// A click at a grazing angle can resolve to the cell next to the one being
+// aimed at. For a brush, the intent is unambiguous - undo or add one cell of
+// clearance - so look one ring around the hit before giving up.
+function nearestCellOfKind(p, want, ring){
+  const m = state.map;
+  if (!m) return null;
+  const ci = Math.floor((p.x - m.lo[0]) / m.res);
+  const cj = Math.floor((p.y - m.lo[1]) / m.res);
+  const ck = Math.max(0, Math.floor((p.z - m.lo[2]) / m.res));
+  let best = null, bd = 1e9;
+  const R = ring || 2;
+  for (let dk = -2; dk <= 2; ++dk)
+    for (let dj = -R; dj <= R; ++dj)
+      for (let di = -R; di <= R; ++di){
+        const i = ci + di, j = cj + dj, k = ck + dk;
+        if (i < 0 || j < 0 || k < 1 || i >= m.nx || j >= m.ny || k >= m.nz) continue;
+        const f = ((k*m.ny) + j)*m.nx + i, v = m.data[f];
+        const ok = want === 'infl' ? v === INFL : (v === FREE && m.support(i, j, k));
+        if (!ok) continue;
+        const cx = m.lo[0] + (i + 0.5)*m.res, cy = m.lo[1] + (j + 0.5)*m.res,
+              cz = m.lo[2] + (k + 0.5)*m.res;
+        const d = (cx-p.x)*(cx-p.x) + (cy-p.y)*(cy-p.y) + (cz-p.z)*(cz-p.z);
+        if (d < bd){ bd = d; best = { i, j, k, d }; }
+      }
+  return best;
+}
+
 function eraseCell(i, j, k){
   const m = state.map;
   if (!m) return 0;
@@ -2719,6 +2746,13 @@ function pick(ev){
   const nx = ((ev.clientX - r.left) / r.width) * 2 - 1;
   const ny = -((ev.clientY - r.top) / r.height) * 2 + 1;
   ray.setFromCamera({x: nx, y: ny}, camera);
+  // The instanced quads sit exactly on the centre of a cell, so hitting them
+  // makes the resulting index exact. The raw triangle mesh is the fallback
+  // for cells that carry no quad (walls, and anything the painter dropped).
+  if (walkMesh){
+    const w = ray.intersectObject(walkMesh, false)[0];
+    if (w) return w.point;
+  }
   const hit = ray.intersectObject(srcMesh, false)[0];
   return hit ? hit.point : null;
 }
@@ -2758,9 +2792,26 @@ host.addEventListener('click', ev => {
     if (!p){ say('没点到模型上'); return; }
     const c = cellIndexAt(p);
     if (!c){ say('先载入模型'); return; }
-    const n = eraseCell(c.i, c.j, c.k);
-    say(n ? ('这一格已改为可走 · i' + c.i + ' j' + c.j + ' k' + c.k + ' · 共擦掉 ' + state.erased.size + ' 格')
-          : ('这一格不是红色禁行 · 值 ' + state.map.data[((c.k*state.map.ny)+c.j)*state.map.nx+c.i]));
+    const m = state.map;
+    const V = (i, j, k) => m.data[((k*m.ny) + j)*m.nx + i];
+    const want = state.block ? 'free' : 'infl';
+    const ok = state.block
+      ? (V(c.i, c.j, c.k) === FREE && m.support(c.i, c.j, c.k))
+      : V(c.i, c.j, c.k) === INFL;
+    let cc = c, snapped = false;
+    if (!ok){
+      const nb = nearestCellOfKind(p, want, 2);
+      if (nb){ cc = nb; snapped = true; }
+    }
+    const n = state.block ? blockCell(cc.i, cc.j, cc.k) : eraseCell(cc.i, cc.j, cc.k);
+    const at = ' i' + cc.i + ' j' + cc.j + ' k' + cc.k;
+    if (state.block)
+      say(n ? ('这一格已标为不可走' + at + (snapped ? '（就近吸附）' : '') + ' · 共增补 ' + state.added.size + ' 格')
+            : ('这一格本来就不是可走面 · 值 ' + V(c.i, c.j, c.k)));
+    else
+      say(n ? ('这一格已改为可走' + at + (snapped ? '（就近吸附）' : '') + ' · 共擦掉 ' + state.erased.size + ' 格')
+            : ('这一格不是红色禁行 · 值 ' + V(c.i, c.j, c.k) +
+               (state.erase ? '；附近两格内也找不到红色格' : '')));
     return;
   }
   if (!state.mode) return;
