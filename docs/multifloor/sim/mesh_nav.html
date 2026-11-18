@@ -90,6 +90,13 @@
       <option value="sru" disabled>SRU（未开放）</option>
     </select>
     <span id="lpNote">点集 5 cm 硬阈值 + 2 s rollout</span></span>
+  <span title="红色净空带怎么算：硬禁行=绕开；软代价=能穿，但要付钱">
+    净空带
+    <select id="bandSoft" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px">
+      <option value="0" selected>硬禁行</option>
+      <option value="2">软代价 ×2</option>
+      <option value="4">软代价 ×4</option>
+    </select></span>
   <span>楼梯口让位
     <select id="stairOpen" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
             title="把楼梯柱附近被净空带涂红的踏面还回可走；调大会连墙和栏杆的禁行带一起让开">
@@ -186,6 +193,10 @@ const state = {
   stairOpen: 1,
   // cells the user painted back to walkable; kept per loaded model
   erased: new Set(),
+  // 0 keeps the clearance band a wall; 2 or 4 let a route cross it at that
+  // price, which is what "prefer the middle of the stair" needs: the middle
+  // stays cheap, the edge is expensive rather than impossible.
+  bandSoft: 0,
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
@@ -1084,8 +1095,12 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
   const walkable = m.walkable;
   const F = (i, j, k) => (k*ny + j)*nx + i;
   const cells = m.cells;
-  const traversable = (i, j, k) =>
-    i >= 0 && j >= 0 && k >= 0 && i < nx && j < ny && k < nz && data[F(i, j, k)] === FREE;
+  const bandSoft = state.bandSoft || 0;
+  const traversable = (i, j, k) => {
+    if (i < 0 || j < 0 || k < 0 || i >= nx || j >= ny || k >= nz) return false;
+    const v = data[F(i, j, k)];
+    return v === FREE || (bandSoft > 0 && v === INFL);
+  };
 
   // nearestWalkable, allow_inflated = false: prefer a genuinely free cell, or
   // every neighbour of the start is inflated and the search expands once.
@@ -1217,7 +1232,8 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           // extra cell climbed so a flight is taken one riser at a time.
           const jump = Math.abs(dk);
           const step = res*Math.hypot(di, dj, dk) + (dk !== 0 ? latd*2.0 : 0) +
-                       (jump > 1 ? 0.4*res*(jump-1) : 0);
+                       (jump > 1 ? 0.4*res*(jump-1) : 0) +
+                       (bandSoft > 0 && data[nf] === INFL ? bandSoft*res : 0);
           // Lateral cost inside a declared stair corridor, same rule as
           // astar3d.cpp: weight * |y - y_centre| paid on entry, so the search
           // pays for sitting off-centre instead of discovering it at the top.
@@ -2333,6 +2349,14 @@ document.addEventListener('keydown', ev => {
     say('擦除清单 ' + list.length + ' 格：' + (list.length ? list.join(',') : '（空）'));
   }
 });
+
+// The band price only changes how a route is chosen, not the map.
+document.getElementById('bandSoft').onchange = (ev) => {
+  state.bandSoft = +ev.target.value;
+  say(state.bandSoft > 0
+    ? ('红色净空带改为软代价 ×' + state.bandSoft + '：路线可以穿过，但要付这个价')
+    : '红色净空带恢复为硬禁行：路线一律绕开');
+};
 
 // Eraser toggle. One click on the model undoes one red cell.
 document.getElementById('erase').onclick = (ev) => {
