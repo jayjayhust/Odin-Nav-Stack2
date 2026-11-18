@@ -75,6 +75,7 @@
   <button class="btn" id="placeStatic">放立柱</button>
   <button class="btn" id="placePed">放行人</button>
   <button class="btn" id="clearObs">清障碍</button>
+  <button class="btn" id="erase" title="点亮后在模型上单击，把那一格红色禁行改成可走；松手即生效">擦禁行</button>
   <span class="lbl" id="obsCount">障碍 0</span>
 </div>
 
@@ -183,6 +184,8 @@ const state = {
   // cells out from a stair column whose tread may take its clearance band back
   // (0 = off, 1 = one cell, 2 = one full band at 0.30 m / 0.15 m)
   stairOpen: 1,
+  // cells the user painted back to walkable; kept per loaded model
+  erased: new Set(),
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
@@ -947,6 +950,36 @@ function buildMap(pos, idx, res, infR){
         }
   }
 
+  // The stair test misses the outer columns of a flight, so a band painted
+  // along the rails on the flight itself never got taken back and A* had to
+  // walk around it. A flight column is not a single up face; it is a column
+  // that carries several wide faces stacked within step reach, which is what
+  // a floor slab and a wall never do.
+  const flightCol = new Uint8Array(nx*ny);
+  {
+    const wideK = [];
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        wideK.length = 0;
+        for (let k = 1; k < nz; ++k){
+          const f = F(i, j, k);
+          if (topFace[f] && capWide[f] >= 4) wideK.push(k);
+        }
+        if (wideK.length < 3) continue;
+        let steps = 0;
+        for (let a = 1; a < wideK.length; ++a)
+          if (wideK[a] - wideK[a-1] <= MAX_STEP_Z + 1) ++steps;
+        if (steps >= 2) flightCol[i + j*nx] = 1;
+      }
+  }
+  const flightNear = new Uint8Array(nx*ny);
+  for (let j = 1; j < ny-1; ++j)
+    for (let i = 1; i < nx-1; ++i){
+      if (!flightCol[i + j*nx]) continue;
+      for (let dj = -1; dj <= 1; ++dj)
+        for (let di = -1; di <= 1; ++di) flightNear[(i+di) + (j+dj)*nx] = 1;
+    }
+
   // Stair columns dilated by one cell, so the band painted along the rails
   // does not eat the treads the narrow stair test missed.
   // How far out from a stair column a tread may take its band back. 0 keeps
@@ -979,7 +1012,8 @@ function buildMap(pos, idx, res, infR){
         for (let i = 0; i < nx; ++i){
           const f = F(i, j, k);
           if (data[f] !== INFL) continue;
-          if (!stairCol[i + j*nx] && !stairNear[i + j*nx]) continue;
+          if (!stairCol[i + j*nx] && !stairNear[i + j*nx] &&
+              !flightCol[i + j*nx] && !flightNear[i + j*nx]) continue;
           // The cell right above a tread is where a foot lands. On a flight
           // the rails and the stringer sit one or two columns beside the
           // treads, and their band reaches across the whole width: the dog
@@ -1785,6 +1819,8 @@ window.__MESH = {
   // script scope, which Runtime.evaluate cannot reach
   get path(){ return state.path; },
   get map(){ return state.map; },
+  get erased(){ return state.erased ? state.erased.size : 0; },
+  eraseCell(i, j, k){ return eraseCell(i, j, k); },
   walk(i, j, k){ return state.map ? state.map.walkable(i, j, k) : null; },
   pathAt(s2){ return pathAt(state.path, s2); },
   flatWin(s2){
@@ -2287,6 +2323,30 @@ document.getElementById('res').onchange = () => {
   loadModel(new Float32Array(pos), new Uint32Array(idx), 'reload');
 };
 
+// Ctrl+E hands the erased cells back as plain indices, so a clearance rule
+// that keeps failing on one mouth can be replaced by the exact list instead
+// of another guess.
+document.addEventListener('keydown', ev => {
+  if (ev.ctrlKey && (ev.key === 'e' || ev.key === 'E')){
+    ev.preventDefault();
+    const list = Array.from(state.erased);
+    say('擦除清单 ' + list.length + ' 格：' + (list.length ? list.join(',') : '（空）'));
+  }
+});
+
+// Eraser toggle. One click on the model undoes one red cell.
+document.getElementById('erase').onclick = (ev) => {
+  state.erase = !state.erase;
+  ev.target.classList.toggle('on', state.erase);
+  if (state.erase){
+    state.mode = '';
+    for (const b of document.querySelectorAll('[data-mode]')) b.classList.remove('on');
+    say('擦除模式：在模型上单击一格，把红色禁行改成可走');
+  } else {
+    say('擦除模式已关闭');
+  }
+};
+
 // How far the stairs may open up. Rebuilds the voxel map from the cached mesh,
 // the same way the inflation select does, so the trade-off is testable in place.
 document.getElementById('stairOpen').onchange = (ev) => {
@@ -2319,6 +2379,45 @@ document.getElementById('inf').onchange = () => {
 
 // ---------- picking -------------------------------------------------------
 const ray = new THREE.Raycaster();
+// The bands this page paints are a clearance model, and a clearance model can
+// be wrong at one mouth without being wrong everywhere. Rather than guess
+// another radius, let the cell be clicked away: the decision lands on the map
+// the route is actually planned on.
+function cellIndexAt(p){
+  const m = state.map;
+  if (!m) return null;
+  const i = Math.floor((p.x - m.lo[0]) / m.res);
+  const j = Math.floor((p.y - m.lo[1]) / m.res);
+  let k = Math.max(0, Math.floor((p.z - m.lo[2]) / m.res));
+  const at = (a, b, c) => (a < 0 || b < 0 || c < 0 || a >= m.nx || b >= m.ny || c >= m.nz)
+    ? -1 : ((c*m.ny + b)*m.nx) + a;
+  for (let t = 0; t < 8 && k < m.nz - 1; ++t){
+    const v = m.data[at(i, j, k)];
+    if (v === FREE || v === INFL || v === UNKNOWN) break;
+    ++k;
+  }
+  return {i, j, k};
+}
+
+function eraseCell(i, j, k){
+  const m = state.map;
+  if (!m) return 0;
+  if (i < 0 || j < 0 || k < 0 || i >= m.nx || j >= m.ny || k >= m.nz) return 0;
+  const f = ((k*m.ny) + j)*m.nx + i;
+  if (m.data[f] !== INFL) return 0;
+  m.data[f] = FREE;
+  state.erased.add(f);
+  repaintWalk();
+  return 1;
+}
+
+function repaintWalk(){
+  if (!state.map) return;
+  if (walkMesh){ root.remove(walkMesh); walkMesh.dispose(); }
+  walkMesh = makePlanes(state.map);
+  root.add(walkMesh);
+}
+
 function pick(ev){
   const r = host.getBoundingClientRect();
   const nx = ((ev.clientX - r.left) / r.width) * 2 - 1;
@@ -2358,6 +2457,16 @@ host.addEventListener('dblclick', ev => {
 });
 
 host.addEventListener('click', ev => {
+  if (state.erase){
+    const p = pick(ev);
+    if (!p){ say('没点到模型上'); return; }
+    const c = cellIndexAt(p);
+    if (!c){ say('先载入模型'); return; }
+    const n = eraseCell(c.i, c.j, c.k);
+    say(n ? ('这一格已改为可走 · i' + c.i + ' j' + c.j + ' k' + c.k + ' · 共擦掉 ' + state.erased.size + ' 格')
+          : ('这一格不是红色禁行 · 值 ' + state.map.data[((c.k*state.map.ny)+c.j)*state.map.nx+c.i]));
+    return;
+  }
   if (!state.mode) return;
   const p = pick(ev);
   if (!p){ say('没点到模型上'); return; }
