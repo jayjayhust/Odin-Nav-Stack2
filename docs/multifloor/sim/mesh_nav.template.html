@@ -117,6 +117,15 @@
       <option value="2">软代价 ×2</option>
       <option value="4">软代价 ×4</option>
     </select></span>
+  <span title="机身占位：机身宽度的一半。规划只走一圈都空着的格子，窄缝进不去">
+    机身
+    <select id="foot" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px">
+      <option value="0">关（按点）</option>
+      <option value="0.15">±0.15 m</option>
+      <option value="0.18" selected>±0.18 m（Go2 宽 0.36）</option>
+      <option value="0.25">±0.25 m</option>
+      <option value="0.35">±0.35 m</option>
+    </select></span>
   <span>楼梯口让位
     <select id="stairOpen" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
             title="把楼梯柱附近被净空带涂红的踏面还回可走；调大会连墙和栏杆的禁行带一起让开">
@@ -213,6 +222,7 @@ const state = {
   // price, which is what "prefer the middle of the stair" needs: the middle
   // stays cheap, the edge is expensive rather than impossible.
   bandSoft: 0,
+  foot: 0.18,
   mode: null,          // 'start' | 'goal' | null
   map: null,           // built map
   start: null, goal: null, path: null,
@@ -1118,6 +1128,23 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
     return v === FREE || (bandSoft > 0 && v === INFL);
   };
 
+  // The dog is not a point, and inflation does not say how wide an opening is:
+  // it pushes the grid away from obstacles, so a slot one cell across between
+  // two inflated bands stays FREE and A* threads a 0.15 m gap with a 0.36 m
+  // body. Gating on a disc of free cells around the path cell is too blunt -
+  // a 0.45 m corridor beside a wall is walkable, yet no cell on it has a 3x3
+  // free disc, and the whole stair route dies. What actually matters is the
+  // width of the opening, so each cell carries the length of the free run it
+  // sits in, along both axes, and a cell is refused when the narrower of the
+  // two runs cannot hold the body across.
+  const foot = state.foot || 0;
+  const bodyWant = Math.ceil((foot * 2) / res);
+  const spans = (bodyWant <= 1) ? null : spanRuns(m);
+  const fits = !spans ? () => true : (i, j, k) => {
+    const id = F(i, j, k);
+    return spans.ri[id] >= bodyWant && spans.rj[id] >= bodyWant;
+  };
+
   // nearestWalkable, allow_inflated = false: prefer a genuinely free cell, or
   // every neighbour of the start is inflated and the search expands once.
   function snap(x, y, z){
@@ -1236,6 +1263,7 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           if (closed[nf]) continue;
           if (!traversable(i, j, k)) continue;
           if (k < 1 || !walkable(i, j, k)) continue;
+          if (!fits(i, j, k)) continue;
           // A riser is climbed straight. Rising while drifting one cell sideways
           // is legal here only because the grid is coarse; chained, it paints a
           // diagonal line across a flight and reads as stepping into air. Do
@@ -2697,6 +2725,13 @@ document.getElementById('load').onclick = () => {
 };
 
 
+document.getElementById('foot').onchange = (ev) => {
+  state.foot = +ev.target.value;
+  say(state.foot > 0
+    ? '机身占位 ' + (state.foot*2).toFixed(2) + ' m 宽：规划只走一圈都空着的格子'
+    : '机身占位已关：按一个点规划，一格宽的缝也会钻');
+};
+
 // How far the stairs may open up. Rebuilds the voxel map from the cached mesh,
 // the same way the inflation select does, so the trade-off is testable in place.
 document.getElementById('stairOpen').onchange = (ev) => {
@@ -2774,6 +2809,43 @@ function nearestCellOfKind(p, want, ring){
         if (d < bd){ bd = d; best = { i, j, k, d }; }
       }
   return best;
+}
+
+// Longest free run through a cell, per axis, at the same level. Cached on the
+// map because a plan is run leg by leg over the same grid.
+function spanRuns(m){
+  if (m._span && m._span.foot === state.foot) return m._span;
+  const {res, nx, ny, nz, data} = m;
+  const ri = new Int16Array(nx*ny*nz), rj = new Int16Array(nx*ny*nz);
+  const V = (i, j, k) => data[((k*ny + j)*nx) + i];
+  for (let k = 0; k < nz; ++k)
+    for (let j = 0; j < ny; ++j){
+      let start = -1;
+      for (let i = 0; i <= nx; ++i){
+        const free = i < nx && V(i, j, k) === FREE;
+        if (free && start < 0) start = i;
+        else if (!free && start >= 0){
+          const len = i - start;
+          for (let t = start; t < i; ++t) ri[((k*ny + j)*nx) + t] = len;
+          start = -1;
+        }
+      }
+    }
+  for (let k = 0; k < nz; ++k)
+    for (let i = 0; i < nx; ++i){
+      let start = -1;
+      for (let j = 0; j <= ny; ++j){
+        const free = j < ny && V(i, j, k) === FREE;
+        if (free && start < 0) start = j;
+        else if (!free && start >= 0){
+          const len = j - start;
+          for (let t = start; t < j; ++t) rj[((k*ny + t)*nx) + i] = len;
+          start = -1;
+        }
+      }
+    }
+  m._span = {foot: state.foot, ri, rj};
+  return m._span;
 }
 
 function eraseCell(i, j, k){
