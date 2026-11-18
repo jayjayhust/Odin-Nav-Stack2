@@ -2780,7 +2780,7 @@ host.addEventListener('dblclick', ev => {
 });
 
 host.addEventListener('click', ev => {
-  if (state.erase || state.block){
+  if ((state.erase || state.block) && !state.mode){
     const p = pick(ev);
     if (!p){ say('没点到模型上'); return; }
     const c = cellIndexAt(p);
@@ -2832,14 +2832,26 @@ host.addEventListener('click', ev => {
     root.add(markGoal);
   }
   state.mode = null;
-  say('起点 (' + state.start.map(v => v.toFixed(2)).join(', ') + ')  终点 ' +
-      (state.goal ? '(' + state.goal.map(v => v.toFixed(2)).join(', ') + ')' : '未设'));
+  // Setting the goal before the start is a normal order of operations, so both
+  // ends must be optional here; state.start.map() threw when it was null.
+  const at = a => a ? '(' + a.map(v => v.toFixed(2)).join(', ') + ')' : '未设';
+  say('起点 ' + at(state.start) + '  终点 ' + at(state.goal));
   document.getElementById('go').disabled = !(state.start && state.goal);
 });
 
-document.getElementById('setStart').onclick = () => { state.mode = 'start'; say('在地板上点一下，设起点'); };
-document.getElementById('setGoal').onclick  = () => { state.mode = 'goal';  say('在目标楼层的地板上点一下，设终点'); };
-document.getElementById('setWay').onclick   = () => { state.mode = 'way';   say('在要经过的位置点一下，加一个途经点'); };
+// Setting a point and holding a brush are two different intents on the same
+// click, so whichever button was pressed last wins; the other is switched off.
+function setMode(which, msg){
+  state.erase = false;
+  state.block = false;
+  document.getElementById('erase').classList.remove('on');
+  document.getElementById('block').classList.remove('on');
+  state.mode = which;
+  say(msg);
+}
+document.getElementById('setStart').onclick = () => setMode('start', '在地板上点一下，设起点');
+document.getElementById('setGoal').onclick  = () => setMode('goal',  '在目标楼层的地板上点一下，设终点');
+document.getElementById('setWay').onclick   = () => setMode('way',   '在要经过的位置点一下，加一个途经点');
 document.getElementById('clearWay').onclick = () => {
   for (const m of markWays){ root.remove(m); m.geometry.dispose(); }
   markWays = []; state.ways = [];
