@@ -28,7 +28,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 catkin_package(
-  CATKIN_DEPENDS geometry_msgs nav_interfaces nav_msgs roscpp rospy sensor_msgs std_msgs tf2_ros tf2_geometry_msgs
+  CATKIN_DEPENDS geometry_msgs nav_interfaces nav_msgs roscpp rospy sensor_msgs std_msgs tf2_ros tf2_geometry_msgs visualization_msgs
 )
 
 include_directories(

@@ -328,3 +328,20 @@ Two export modes:
 The `yaml` matches `map_server`: `image`, `resolution`, `origin` (world coordinate of the grid's lower-left corner, zero orientation), `negate: 0`, `occupied_thresh: 0.65`, `free_thresh: 0.196`. The pgm is binary `P5`, row 0 is the top of the image i.e. world `+y`, and unknown cells are 205, the same grey GIMP uses.
 
 Measured on `ThirdPersonExampleMap.obj` (0.15 m / 0.30 inflation / Y up / 0.45 step): three floors detected (z 1.48-3.35 / 3.43-9.35 / 9.43-12.80 m); floor 1 is 210x210 with 36,800 free, 3,339 occupied and 3,961 unknown cells; after erasing one cell and painting one, the export reports 3,340 occupied and 3,960 unknown, so the hand edits do reach the image. Above 0.10 m the export note recommends `-r 0.05` for the navigation stack.
+
+## Stair prior: let A* climb the tread centre (`.stairs.json` -> `map_planner`)
+
+A pgm knows walkable from not walkable, but not "this is a flight, come up the middle". On a 2 m wide, 2.5 m long stair, A* cuts the corner along one railing: shorter in cells, but it hands the local planner a start pose aimed at the wall. The page now writes the flights it fitted as a prior, and the real global planner reads it.
+
+**In the page**: as soon as the mesh loads, the `梯段` checkbox (on by default) draws every flight as an amber tread ribbon plus a pale centre line. The ribbon follows each step rather than boxing the flight in. `导出梯段` writes `<map>.stairs.json`, same frame and name stem as `<map>.pgm` / `.yaml`.
+
+The file holds, per flight, the footprint centre, the unit axis of the run in the pgm world frame, the half width and length, the height span, and the per-step `spine` (lateral centre offset), `halfAt` (half width) and `along` (position along the run). The per-step data matters: at the foot the first treads merge into the floor, so a single centre leaves those steps outside the charge and the line climbs the side there.
+
+**In the planner** (`ros_ws/src/map_planner`):
+
+- New `include/stair_prior.h`: boost property_tree only, no new dependency; a missing or broken file returns false and planning behaves exactly as before.
+- The A* edge cost gains a `stairCostMultiplier(n_index)` factor. The cell centre is mapped to the world frame; inside a flight (`|along| <= len/2 + 0.35` and `|offset - spine| <= half + 0.30`) the cost is `1 + weight * |offset|`, and exactly 1.0 outside. It is a separate multiplier, so it still applies with `obstacle_cost_weight` off: centring a stair is not obstacle avoidance.
+- Parameters (`config/nav_params.yaml`): `stair_prior_file: ""` (path to `<map>.stairs.json`, empty disables) and `stair_cost_weight: 0.70` (per metre; a cell 0.5 m off centre costs 1.35x the centre cell). A 2D grid has no height, so the mean of `spine` / `halfAt` is used.
+- RViz: a latched `~stair_prior` (`visualization_msgs/MarkerArray`, one orange line per flight at the mid height) is published as soon as the map arrives, so you can see which flights the prior believes in without planning anything.
+
+**Measured** (the page's own `parkinglot.stairs.json`, 2 flights, 898 bytes): fed to a small C++ harness -> `loaded 1 flights 2`; multipliers at 0.00 / 0.60 / 1.20 m lateral offset are 1.009 / 1.42 / 1.85, 1.000 off the flight, and a missing file gives `load=false, factor=1.000`. In the page the same cost already pulls the climb to 0.03-0.14 m off the centre line without any waypoint, where it used to run 0.2-1.0 m along the railing.

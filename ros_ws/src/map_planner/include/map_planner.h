@@ -23,6 +23,7 @@
 #include <tf2_ros/buffer.h>
 
 #include "path_quality.h"
+#include "stair_prior.h"
 #include <tf2_ros/transform_listener.h>
 #include <string>
 #include <vector>
@@ -94,6 +95,11 @@ private:
   //   d >= obstacle_cost_safe_distance_m_  -> 1.0
   //   d == 0                               -> 1 + obstacle_cost_weight_
   double cellCostMultiplier(int index) const;
+  // Lateral cost on a fitted stair: 1.0 off the flight, 1 + weight*offset on it.
+  double stairCostMultiplier(int index) const;
+  // Publish the flight centrelines once a map is in, so RViz shows the stairs
+  // the prior was built from. Latched: it does not depend on the plan.
+  void publishStairPrior();
   // Heading-aware A* bias within start_heading_penalty_radius_m_ of the start cell:
   //   1 + alpha * (1 - cos(diff)) * (1 - d/radius)
   double headingAlignFactor(int n_index, int start_index, double start_yaw) const;
@@ -135,6 +141,12 @@ private:
 
   double obstacle_cost_weight_{3.0};
   double obstacle_cost_safe_distance_m_{0.5};
+
+  // Stair prior (see stair_prior.h). Empty weight or file disables it.
+  StairPrior stair_prior_;
+  double stair_cost_weight_{0.7};
+  std::string stair_prior_file_;
+  ros::Publisher stair_prior_pub_;
   double line_of_sight_safe_distance_m_{0.25};
   std::vector<float> distance_to_blocked_;
 

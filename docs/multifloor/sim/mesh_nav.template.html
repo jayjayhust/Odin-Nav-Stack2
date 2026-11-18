@@ -140,6 +140,7 @@
       <option value="0.60" selected>±0.60 m（默认）</option>
       <option value="0.90">±0.90 m</option>
     </select></span>
+  <label title="导入后直接把拟合出的梯段画出来：橙带是踏面，细线是解析成代价的中线"><input type="checkbox" id="showFlights" checked> 梯段</label>
   <span>让位
     <select id="stairOpen" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
             title="把楼梯柱附近被净空带涂红的踏面还回可走；调大会连墙和栏杆的禁行带一起让开">
@@ -228,7 +229,8 @@ const state = {
   // (0 = off, 1 = one cell, 2 = one full band at 0.30 m / 0.15 m)
   stairOpen: 1,
   climbMid: 0.35,   // cost per riser for each missing cell of room beside a handrail
-  pipe: 0.60,       // half width of the corridor drawn between consecutive stops, 0 = off
+  pipe: 0.60,
+  flightsOn: true,       // half width of the corridor drawn between consecutive stops, 0 = off
   // cells the user painted by hand; kept per loaded model
   erased: new Set(),
   added: new Set(),
@@ -255,7 +257,7 @@ const obsGroup = new THREE.Group();
 let root = new THREE.Group();
 scene.add(root);
 scene.add(obsGroup);
-let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null;
+let srcMesh = null, walkMesh = null, wallMesh = null, pathLine = null, flightMesh = null;
 let localLine = null, winBox = null, dogMesh = null;
 let pathLen = 0, prog = 0, lastLocal = -1, lastBlocked = 0;
 let markStart = null, markGoal = null, markWays = [], rays = 0;
@@ -908,10 +910,20 @@ function buildMap(pos, idx, res, infR){
         const kHi = Math.min(nz - 1, Math.round(rkMax) + 2);
         const spine = new Float32Array(kHi - kLo + 1).fill(NaN);
         const halfK = new Float32Array(kHi - kLo + 1).fill(NaN);
+        const alongAt = new Float32Array(kHi - kLo + 1).fill(NaN);
         {
           const mn = new Float32Array(kHi - kLo + 1).fill(Infinity);
           const mx2 = new Float32Array(kHi - kLo + 1).fill(-Infinity);
+          const alSum = new Float64Array(kHi - kLo + 1);
+          const alNum = new Int32Array(kHi - kLo + 1);
           let cnt = 0;
+          for (const id of mem){
+            const kk = (id / (nx*ny)) | 0, rr = id - kk*nx*ny;
+            const jj = (rr / nx) | 0, ii = rr - jj*nx;
+            if (kk < kLo || kk > kHi) continue;
+            const al = (lo[0] + (ii+0.5)*res - mx)*ux + (lo[1] + (jj+0.5)*res - my)*uy;
+            alSum[kk - kLo] += al; alNum[kk - kLo] += 1;
+          }
           for (let k = kLo; k <= kHi; ++k)
             for (let j = 0; j < ny; ++j)
               for (let i = 0; i < nx; ++i){
@@ -931,12 +943,15 @@ function buildMap(pos, idx, res, infR){
             spine[at] = (mn[at] + mx2[at]) / 2;
             halfK[at] = Math.max((mx2[at] - mn[at]) / 2, 0.10);
             last = spine[at];
+            // one centre of the tread per step; no tread at this height -> interpolate
+            alongAt[at] = alNum[at] ? alSum[at] / alNum[at]
+                                    : -len/2 + (at / Math.max(1, kHi - kLo)) * len;
           }
           for (let at = kHi - kLo; at >= 0; --at){
             if (spine[at] !== spine[at] && at + 1 <= kHi - kLo) spine[at] = spine[at+1];
           }
         }
-        flights.push({cx: mx, cy: my, ux, uy, half, len, rise, kLo, spine, halfK,
+        flights.push({cx: mx, cy: my, ux, uy, half, len, rise, kLo, spine, halfK, alongAt,
                       zmin: lo[2] + rkMin*res - 0.15, zmax: lo[2] + rkMax*res + 0.35,
                       weight: 1.0, n: mem.length});
       }
@@ -2262,7 +2277,7 @@ function clearRoot(){
     const o = root.children.pop();
     o.traverse(c => { if (c.geometry) c.geometry.dispose(); if (c.material && c.material.dispose) c.material.dispose(); });
   }
-  srcMesh = walkMesh = wallMesh = pathLine = null;
+  srcMesh = walkMesh = wallMesh = pathLine = flightMesh = null;
   localLine = winBox = dogMesh = null;
   pathLen = 0; prog = 0; lastLocal = -1;
   markStart = markGoal = null;
@@ -2283,6 +2298,68 @@ function makeSrcMesh(pos, idx){
   const mesh = new THREE.Mesh(g, m);
   mesh.renderOrder = 2;
   return mesh;
+}
+
+// The flights the fit found, drawn after the mesh loads: a ribbon along the
+// tread at every step it spans, plus the centre line the planner is charged
+// against. Seeing them is the difference between trusting the fit and having
+// to guess whether the line is off the stair or off the model.
+function makeFlights(m){
+  const group = new THREE.Group();
+  const {res, lo} = m;
+  const pos = [], idx = [];
+  for (const f of m.flights){
+    const verts = [];
+    for (let at = 0; at < f.spine.length; ++at){
+      const sp = f.spine[at], hw = f.halfK[at];
+      if (sp !== sp || hw !== hw) continue;
+      const half = Math.min(hw, f.half + 0.10);
+      const z = lo[2] + (f.kLo + at + 0.5) * res + 0.012;
+      const al = f.alongAt[at];
+      const alongPos = (al === al) ? al : 0;
+      for (const side of [-1, 1]){
+        const off = sp + side * half;
+        verts.push([f.cx + f.ux*alongPos - f.uy*off, f.cy + f.uy*alongPos + f.ux*off, z]);
+      }
+    }
+    if (verts.length < 4) continue;
+    const base = pos.length / 3;
+    for (const v of verts) pos.push(v[0], v[1], v[2]);
+    for (let q = 0; q + 3 < verts.length; q += 2){
+      const a = base + q, b = a + 1, c = a + 2, d = a + 3;
+      idx.push(a, b, c, b, d, c);
+    }
+  }
+  if (pos.length){
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    geo.setIndex(idx);
+    geo.computeVertexNormals();
+    const mat = new THREE.MeshBasicMaterial({
+      color: 0xffa844, transparent: true, opacity: 0.30, side: THREE.DoubleSide,
+      depthWrite: false});
+    const mesh = new THREE.Mesh(geo, mat);
+    mesh.renderOrder = 4;
+    group.add(mesh);
+  }
+  // the centre line: one polyline per flight, at the mean spine offset
+  for (const f of m.flights){
+    const pts = [];
+    for (let at = 0; at < f.spine.length; ++at){
+      const sp = f.spine[at];
+      if (sp !== sp) continue;
+      const z = lo[2] + (f.kLo + at + 0.5) * res + 0.02;
+      const al = f.alongAt[at], alongPos = (al === al) ? al : 0;
+      pts.push(new THREE.Vector3(f.cx + f.ux*alongPos - f.uy*sp, f.cy + f.uy*alongPos + f.ux*sp, z));
+    }
+    if (pts.length < 2) continue;
+    const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
+      new THREE.LineBasicMaterial({color: 0xffd08a}));
+    line.renderOrder = 5;
+    group.add(line);
+  }
+  group.visible = state.flightsOn;
+  return group;
 }
 
 function makePlanes(m){
@@ -2570,6 +2647,8 @@ function loadModel(pos, idx, name){
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
   walkMesh = makePlanes(m);
   root.add(walkMesh);
+  flightMesh = makeFlights(m);
+  root.add(flightMesh);
 
   // frame
   const cx = m.lo[0] + m.nx * res / 2, cy = m.lo[1] + m.ny * res / 2;
@@ -2654,6 +2733,11 @@ document.addEventListener('keydown', ev => {
 });
 
 // The band price only changes how a route is chosen, not the map.
+document.getElementById('showFlights').onchange = (ev) => {
+  state.flightsOn = ev.target.checked;
+  if (flightMesh) flightMesh.visible = state.flightsOn;
+};
+
 document.getElementById('pipe').onchange = (ev) => {
   state.pipe = +ev.target.value;
   say(state.pipe > 0
@@ -2901,6 +2985,7 @@ function exportFlights(){
       columns: f.n,
       // spine[k] is the lateral offset of the tread centre at height k, so the
       // centre line is centre + spine[k] * perp axis at z = lo_z + k*res
+      along: Array.from(f.alongAt).map(v => (v === v ? +v.toFixed(3) : null)),
       spine: Array.from(f.spine).map(v => (v === v ? +v.toFixed(3) : null)),
       halfAt: Array.from(f.halfK).map(v => (v === v ? +v.toFixed(3) : null)),
       kLo: f.kLo
@@ -3203,6 +3288,7 @@ function blockCell(i, j, k){
 
 function repaintWalk(){
   if (!state.map) return;
+  if (flightMesh){ root.remove(flightMesh); flightMesh.traverse(o => { if (o.geometry) o.geometry.dispose(); }); flightMesh = null; }
   if (walkMesh){ root.remove(walkMesh); walkMesh.dispose(); }
   walkMesh = makePlanes(state.map);
   root.add(walkMesh);

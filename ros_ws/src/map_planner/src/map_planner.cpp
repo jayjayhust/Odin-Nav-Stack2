@@ -13,6 +13,7 @@
 
 #include "map_planner.h"
 #include "ec_trace.h"
+#include "stair_prior.h"
 #include "ros/console.h"
 
 #include <queue>
@@ -23,6 +24,7 @@
 #include <utility>
 
 #include <std_msgs/Bool.h>
+#include <visualization_msgs/MarkerArray.h>
 #include <geometry_msgs/TransformStamped.h>
 #include <tf2_geometry_msgs/tf2_geometry_msgs.h>
 
@@ -59,6 +61,19 @@ MapPlanner::MapPlanner(ros::NodeHandle& nh, ros::NodeHandle& private_nh)
   private_nh_.param("smoothing_iterations", smoothing_iterations_, smoothing_iterations_);
   private_nh_.param("smoothing_max_deviation_m", smoothing_max_deviation_m_, smoothing_max_deviation_m_);
   // Path C: distance-to-obstacle graduated A* cost. See header.
+  // Stair prior: the flights the mesh simulator fitted for this map, used as an
+  // A* cost so the line climbs the tread centre instead of the railing.
+  private_nh_.param("stair_cost_weight", stair_cost_weight_, stair_cost_weight_);
+  private_nh_.param("stair_prior_file", stair_prior_file_, stair_prior_file_);
+  if (stair_cost_weight_ > 0.0 && !stair_prior_file_.empty()) {
+    if (stair_prior_.load(stair_prior_file_)) {
+      ROS_INFO("[map_planner] stair prior: %zu flight(s) from %s (weight %.2f/m)",
+               stair_prior_.size(), stair_prior_file_.c_str(), stair_cost_weight_);
+    } else {
+      ROS_WARN("[map_planner] stair prior: %s could not be read, planning without it",
+               stair_prior_file_.c_str());
+    }
+  }
   private_nh_.param("obstacle_cost_weight", obstacle_cost_weight_, obstacle_cost_weight_);
   private_nh_.param("obstacle_cost_safe_distance", obstacle_cost_safe_distance_m_, obstacle_cost_safe_distance_m_);
   private_nh_.param("line_of_sight_safe_distance", line_of_sight_safe_distance_m_, line_of_sight_safe_distance_m_);
@@ -87,6 +102,8 @@ MapPlanner::MapPlanner(ros::NodeHandle& nh, ros::NodeHandle& private_nh)
   sliding_map_sub_ = nh_.subscribe("/sliding_map", 1, &MapPlanner::slidingMapCallback, this);
   goal_sub_ = nh_.subscribe("/move_base_simple/goal", 1, &MapPlanner::goalCallback, this);
   plan_service_ = private_nh_.advertiseService(plan_service_name_, &MapPlanner::planService, this);
+  // Latched: a late RViz still sees the flights the map was built with.
+  stair_prior_pub_ = private_nh_.advertise<visualization_msgs::MarkerArray>("stair_prior", 1, true);
   plan_sequence_service_ = private_nh_.advertiseService(
       "plan_sequence", &MapPlanner::planSequenceService, this);
 }
@@ -118,6 +135,9 @@ void MapPlanner::mapCallback(const nav_msgs::OccupancyGridConstPtr& msg) {
 
   buildPlanData();
   publishInflatedMap();
+  // The prior does not depend on a plan: publish it as soon as the map is in,
+  // so the flights are visible before anyone asks for a route.
+  publishStairPrior();
   ROS_INFO_ONCE("Inflated map ready for planning.");
 }
 
@@ -611,6 +631,7 @@ bool MapPlanner::plan(const geometry_msgs::PoseStamped& start, const geometry_ms
             g_score[current_local]
             + costs[i]
                   * cellCostMultiplier(n_index)
+                  * stairCostMultiplier(n_index)
                   * headingAlignFactor(n_index, start_index, start_yaw)
             + turn_cost;
         const std::size_t next_local = local_index(nx, ny);
@@ -1036,6 +1057,52 @@ void MapPlanner::computeDistanceTransform() {
       distance_to_blocked_[idx] = d;
     }
   }
+}
+
+void MapPlanner::publishStairPrior() {
+  if (stair_prior_.empty() || !stair_prior_pub_) return;
+  visualization_msgs::MarkerArray arr;
+  int id = 0;
+  for (const StairFlight& f : stair_prior_.flights()) {
+    visualization_msgs::Marker mk;
+    mk.header.frame_id = map_.header.frame_id;
+    mk.header.stamp = ros::Time::now();
+    mk.ns = "stair_prior";
+    mk.id = id++;
+    mk.type = visualization_msgs::Marker::LINE_STRIP;
+    mk.action = visualization_msgs::Marker::ADD;
+    mk.scale.x = 0.06;
+    mk.color.a = 1.0f;
+    mk.color.r = 1.0f;
+    mk.color.g = 0.62f;
+    mk.color.b = 0.20f;
+    mk.pose.orientation.w = 1.0;
+    const double z = 0.5 * (f.zmin + f.zmax);
+    const int samples = 21;
+    for (int n = 0; n <= samples; ++n) {
+      const double t = -f.len * 0.5 + f.len * static_cast<double>(n) / samples;
+      geometry_msgs::Point p;
+      p.x = f.cx + f.ux * t - f.uy * f.spine_mean;
+      p.y = f.cy + f.uy * t + f.ux * f.spine_mean;
+      p.z = z;
+      mk.points.push_back(p);
+    }
+    arr.markers.push_back(mk);
+  }
+  stair_prior_pub_.publish(arr);
+}
+
+double MapPlanner::stairCostMultiplier(int index) const {
+  // No prior, weight off, or no map yet: legacy cost.
+  if (stair_prior_.empty() || stair_cost_weight_ <= 0.0 || !map_ready_) return 1.0;
+  const int width = static_cast<int>(map_.info.width);
+  if (index < 0 || width <= 0) return 1.0;
+  const double res = map_.info.resolution;
+  const double wx = map_.info.origin.position.x
+                    + (static_cast<double>(index % width) + 0.5) * res;
+  const double wy = map_.info.origin.position.y
+                    + (static_cast<double>(index / width) + 0.5) * res;
+  return stair_prior_.costFactor(wx, wy, stair_cost_weight_);
 }
 
 double MapPlanner::cellCostMultiplier(int index) const {

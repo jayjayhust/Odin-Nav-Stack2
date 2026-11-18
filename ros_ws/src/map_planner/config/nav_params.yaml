@@ -20,6 +20,17 @@ line_of_sight_safe_distance: 0.25     # [m] Minimum obstacle clearance during li
 smoothing_iterations: 20              # Iterative path smoothing passes
 smoothing_max_deviation_m: 0.20       # [m] Maximum allowed deviation from raw A* path during smoothing
 
+# --- Stair prior: fly the fitted flights instead of the railing ---
+# The mesh simulator (docs/multifloor/sim/mesh_nav.html) fits each flight of the
+# imported mesh - centre, axis, width and the tread centre per step - and writes
+# it next to the 2D map it exports, as <map>.stairs.json, in the same frame as
+# the .pgm. Point this at that file to make the global A* pay for the lateral
+# distance from the tread centre: 0.7 means a cell 0.5 m off centre costs 1.35
+# times a cell in the middle. Empty or unreadable disables it, and everything
+# else behaves exactly as before.
+stair_prior_file: ""                # [path] <map>.stairs.json; empty = no prior
+stair_cost_weight: 0.70             # [/m] extra cost per metre off the tread centre
+
 # --- Shared A* algorithm parameters (common across all robots) ---
 obstacle_threshold: 50                # OccupancyGrid value [0..100] above which a cell is treated as occupied
 sliding_map_max_age_sec: 2.0             # [s] Max allowed age of /sliding_map before rejecting dynamic planning
