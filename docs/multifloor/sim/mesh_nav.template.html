@@ -2207,7 +2207,10 @@ function makeFlights(m){
       const f = cells[n];
       const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
       const j = (rem / nx) | 0, i = rem - j*nx;
-      dum.position.set(lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res + 0.016);
+      // k is the column that supports the tread, so the surface is its top
+      // face: place the patch on (k+1)*res, not at the cell centre, or it sits
+      // inside the step and shows up as fragments through the gaps.
+      dum.position.set(lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+1)*res + 0.012);
       dum.rotation.set(0, 0, 0);
       dum.scale.set(1, 1, 1);
       dum.updateMatrix();
@@ -2221,7 +2224,7 @@ function makeFlights(m){
     for (let at = 0; at < f.spine.length; ++at){
       const sp = f.spine[at], al = f.alongAt[at];
       if (sp !== sp || al !== al) continue;
-      const z = lo[2] + (f.kLo + at + 0.5) * res + 0.02;
+      const z = lo[2] + (f.kLo + at + 1) * res + 0.015;
       pts.push(new THREE.Vector3(f.cx + f.ux*al - f.uy*sp, f.cy + f.uy*al + f.ux*sp, z));
     }
     if (pts.length < 2) continue;
