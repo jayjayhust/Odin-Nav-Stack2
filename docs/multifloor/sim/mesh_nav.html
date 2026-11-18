@@ -215,6 +215,7 @@ const state = {
   erased: new Set(),
   added: new Set(),
   modelName: '',
+  fileName: '',
   // 0 keeps the clearance band a wall; 2 or 4 let a route cross it at that
   // price, which is what "prefer the middle of the stair" needs: the middle
   // stays cheap, the edge is expensive rather than impossible.
@@ -2229,6 +2230,11 @@ function fitRes(lo, hi, res){
 }
 
 function loadModel(pos, idx, name){
+  // 'reload' is an internal rebuild token, not the identity of the file.
+  // Folding it into the same field the archive key is built from is what lost
+  // the saves: brush a cell after touching a parameter, and the record was
+  // filed under 'reload', which no import will ever look up again.
+  if (name && name !== 'reload') state.fileName = name;
   state.modelName = name;
   let restoredSaved = null;
   // loadModel scales and rotates pos in place, so keep the original around:
@@ -2299,9 +2305,7 @@ function loadModel(pos, idx, name){
   // A model edited by hand comes back with those edits: a rebuild for a
   // parameter change must not silently throw the work away.
   {
-    let rec = null;
-    try { const raw = localStorage.getItem(saveKeyFor(name, res, infR)); rec = raw ? JSON.parse(raw) : null; }
-    catch (e){ rec = null; }
+    const rec = findSavedRecord();
     if (rec && (!rec.grid || !rec.grid[0] ||
         (rec.grid[0] === m.nx && rec.grid[1] === m.ny && rec.grid[2] === m.nz))){
       state.erased = new Set(rec.erased || []);
@@ -2427,13 +2431,43 @@ document.getElementById('block').onclick = () => setBrush(state.block ? '' : 'bl
 
 // ---- hand edits, saved per model and grid --------------------------------
 function saveKeyFor(name, res, inf){
-  return 'meshnav:' + (name || 'model') + '|' + res + '|' + inf;
+  const who = (!name || name === 'reload') ? (state.fileName || 'model') : name;
+  return 'meshnav:' + who + '|' + (res === undefined ? state.res : res) +
+         '|' + (inf === undefined ? state.inf : inf);
+}
+
+// The exact key is a cache hit; a scan is the fallback for everything that has
+// moved underneath it - a rebuild, a changed inflation, an older page version.
+// Grid dimensions are the real fingerprint of a map, so they gate the match.
+function findSavedRecord(){
+  const m = state.map;
+  const pick = (sameNameOnly) => {
+    let best = null, bestScore = -1;
+    for (let n = 0; n < localStorage.length; ++n){
+      const k = localStorage.key(n);
+      if (!k || k.indexOf('meshnav:') !== 0) continue;
+      let rec = null;
+      try { rec = JSON.parse(localStorage.getItem(k)); } catch (e){ continue; }
+      if (!rec || !rec.grid) continue;
+      if (m && rec.grid[0] &&
+          (rec.grid[0] !== m.nx || rec.grid[1] !== m.ny || rec.grid[2] !== m.nz)) continue;
+      if (sameNameOnly && rec.name !== state.fileName) continue;
+      const exact = (k === saveKeyFor(state.fileName, state.res, state.inf)) ? 1e15 : 0;
+      const score = exact + (rec.ts || 0) + (rec.res === state.res ? 1e6 : 0);
+      if (score > bestScore){ bestScore = score; best = rec; }
+    }
+    return best;
+  };
+  // A record filed under this file wins even if it is older: another model with
+  // the same grid is not this map, and adopting its edits would be silent.
+  return pick(true) || pick(false);
 }
 
 function snapshot(){
   const m = state.map;
   return {
-    v: 1, name: state.modelName, res: state.res, inf: state.inf,
+    v: 1, name: state.fileName || state.modelName, res: state.res, inf: state.inf,
+    ts: Date.now(),
     up: document.getElementById('up').value,
     unit: document.getElementById('unit').value,
     step: document.getElementById('step').value,
@@ -2617,16 +2651,56 @@ document.getElementById('expPgm').onclick = () => {
       (m.res > 0.1001 ? ' · 分辨率偏粗，导航栈推荐 -r 0.05' : ''));
 };
 
+// Every 保存 also downloads the record as JSON, so 载入 has a way in that does
+// not depend on this browser's storage still holding it.
+function importSaveFile(){
+  const inp = document.createElement('input');
+  inp.type = 'file';
+  inp.accept = '.json,application/json';
+  inp.onchange = () => {
+    const f = inp.files && inp.files[0];
+    if (!f) return;
+    const rd = new FileReader();
+    rd.onload = () => {
+      let rec = null;
+      try { rec = JSON.parse(rd.result); }
+      catch (e){ say('这个 JSON 读不出来：' + e.message); return; }
+      if (!rec || !Array.isArray(rec.erased)){
+        say('这不是本页导出的存档（缺 erased 字段）');
+        return;
+      }
+      const m = state.map;
+      if (m && rec.grid && rec.grid[0] &&
+          (rec.grid[0] !== m.nx || rec.grid[1] !== m.ny || rec.grid[2] !== m.nz)){
+        say('存档的格数 ' + rec.grid.join('x') + ' 与当前地图 ' + [m.nx, m.ny, m.nz].join('x') +
+            ' 不一致，先按存档的分辨率/膨胀重建再看');
+        return;
+      }
+      applySnapshot(rec);
+      if (state.rawPos) loadModel(new Float32Array(state.rawPos), state.rawIdx, state.fileName || state.modelName);
+      redrawWays();
+      say('已从文件载入：擦 ' + rec.erased.length + ' 格 · 增 ' + (rec.added || []).length +
+          ' 格 · 途经 ' + (rec.ways || []).length + ' 点');
+    };
+    rd.readAsText(f);
+  };
+  inp.click();
+}
+
 document.getElementById('load').onclick = () => {
   if (!state.map){ say('先载入模型'); return; }
-  let rec = null;
-  try { const raw = localStorage.getItem(saveKeyFor(state.modelName, state.res, state.inf)); rec = raw ? JSON.parse(raw) : null; }
-  catch (e){ rec = null; }
-  if (!rec){ say('这张图（分辨率 ' + state.res + ' m / 膨胀 ' + state.inf + ' m）本机还没有存档'); return; }
+  const rec = findSavedRecord();
+  if (!rec){
+    say('本机没找到「' + (state.fileName || state.modelName) + '」的存档，改成选文件：拿之前保存时下载的那个 .meshnav.json');
+    importSaveFile();
+    return;
+  }
   applySnapshot(rec);
-  loadModel(new Float32Array(state.rawPos), state.rawIdx, state.modelName);
+  loadModel(new Float32Array(state.rawPos), state.rawIdx, state.fileName || state.modelName);
   redrawWays();
-  say('已载入存档：擦 ' + rec.erased.length + ' 格 · 增 ' + rec.added.length + ' 格 · 途经 ' + (rec.ways || []).length + ' 点');
+  say('已载入存档：擦 ' + (rec.erased || []).length + ' 格 · 增 ' + (rec.added || []).length +
+      ' 格 · 途经 ' + (rec.ways || []).length + ' 点' +
+      (rec.ts ? ' · 存档时间 ' + new Date(rec.ts).toLocaleString() : ''));
 };
 
 
