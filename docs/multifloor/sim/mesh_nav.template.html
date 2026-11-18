@@ -96,6 +96,7 @@
     <option value="band">几何+净空带</option>
   </select>
   <button class="btn" id="expPgm" title="按 pcd_to_pgm 的切片语义导出 2D 占据栅格：<地图名>.pgm + <地图名>.yaml">导出 pgm</button>
+  <button class="btn" id="expStairs" title="导出梯段中线 JSON：每段的中心、主轴、宽度，以及逐台阶的中线偏移">导出梯段</button>
   <span class="lbl" id="obsCount">障碍 0</span>
 </div>
 
@@ -817,6 +818,129 @@ function buildMap(pos, idx, res, infR){
       }
   }
 
+  // ---- flights, fitted, for the centre-line cost ---------------------------
+  // The corridor boxes below come out empty on a sampled mesh, and a box is the
+  // wrong shape anyway when the flight runs diagonally: what a flight needs is a
+  // centre line and a width, fitted to the columns that actually step.
+  // A column steps when its tread height differs from a neighbour's by one or
+  // two cells and no more - a real riser. A gently sloping slab does not step,
+  // and a wall face has no walkable top at every height, so neither can pass.
+  // Then the fit only keeps a component that climbs: a rising band of treads
+  // with a believable stair slope, which is what "one flight" means.
+  const flights = [];
+  {
+    const stepped = new Float32Array(nx*ny).fill(-1);
+    for (let j = 0; j < ny; ++j)
+      for (let i = 0; i < nx; ++i){
+        const f = i + j*nx, rk = treadTop[f];
+        if (rk < 1) continue;
+        let step = 0;
+        for (const [di, dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+          const i2 = i + di, j2 = j + dj;
+          if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+          const rk2 = treadTop[i2 + j2*nx];
+          if (rk2 < 1) continue;
+          const d = Math.abs(rk2 - rk);
+          if (d >= 1 && d <= 2) step = Math.max(step, d);
+        }
+        if (step) stepped[f] = rk;
+      }
+    const seen = new Uint8Array(nx*ny), stack = [];
+    for (let j0 = 0; j0 < ny; ++j0)
+      for (let i0 = 0; i0 < nx; ++i0){
+        const id0 = i0 + j0*nx;
+        if (stepped[id0] < 0 || seen[id0]) continue;
+        stack.length = 0; stack.push(id0); seen[id0] = 1;
+        const mem = [];
+        let rkMin = 1e9, rkMax = -1e9;
+        while (stack.length){
+          const q = stack.pop(); mem.push(q);
+          const qj = (q / nx) | 0, qi = q - qj*nx;
+          rkMin = Math.min(rkMin, stepped[q]); rkMax = Math.max(rkMax, stepped[q]);
+          for (const [di, dj] of [[1,0],[-1,0],[0,1],[0,-1]]){
+            const i2 = qi + di, j2 = qj + dj;
+            if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny) continue;
+            const nq = i2 + j2*nx;
+            if (stepped[nq] < 0 || seen[nq]) continue;
+            if (Math.abs(stepped[nq] - stepped[q]) > 2.0) continue;
+            seen[nq] = 1; stack.push(nq);
+          }
+        }
+        if (mem.length < 30) continue;
+        if (rkMax - rkMin < 4) continue;               // must actually climb
+        // principal axis of the footprint, so a diagonal flight fits as one run
+        let mx = 0, my = 0;
+        for (const q of mem){ mx += lo[0] + ((q % nx) + 0.5)*res; my += lo[1] + (((q / nx) | 0) % ny + 0.5)*res; }
+        mx /= mem.length; my /= mem.length;
+        let sxx = 0, syy = 0, sxy = 0;
+        for (const q of mem){
+          const wx = lo[0] + ((q % nx) + 0.5)*res - mx;
+          const wy = lo[1] + (((q / nx) | 0) % ny + 0.5)*res - my;
+          sxx += wx*wx; syy += wy*wy; sxy += wx*wy;
+        }
+        sxx /= mem.length; syy /= mem.length; sxy /= mem.length;
+        const ang = 0.5 * Math.atan2(2*sxy, sxx - syy);
+        const ux = Math.cos(ang), uy = Math.sin(ang);
+        let alongMin = 1e9, alongMax = -1e9;
+        const perps = [];
+        for (const q of mem){
+          const wx = lo[0] + ((q % nx) + 0.5)*res - mx;
+          const wy = lo[1] + (((q / nx) | 0) % ny + 0.5)*res - my;
+          const al = wx*ux + wy*uy;
+          alongMin = Math.min(alongMin, al); alongMax = Math.max(alongMax, al);
+          perps.push(Math.abs(-wx*uy + wy*ux));
+        }
+        perps.sort((a, b) => a - b);
+        const half = perps[Math.floor(perps.length * 0.9)];
+        const len = Math.max(alongMax - alongMin, res);
+        const rise = (rkMax - rkMin) * res;
+        const slope = rise / len;
+        if (half < 0.18 || half > 1.10) continue;      // a sliver, or two flights side by side
+        if (slope < 0.12 || slope > 2.2) continue;     // flat band, or a wall climb
+        if (len > 6.5) continue;                       // storey scale, not one flight
+        // A flight is not the same width at every height: at the foot its
+        // first treads merge into the floor and the cluster above misses them,
+        // so one centre and one half width for the whole run leaves the first
+        // steps outside the charge - exactly where the user saw the line climb
+        // at the side. Scan the walkable cross-section at each height instead
+        // and keep a centre per step: a spine, not a centre.
+        const kLo = Math.max(0, Math.round(rkMin) - 2);
+        const kHi = Math.min(nz - 1, Math.round(rkMax) + 2);
+        const spine = new Float32Array(kHi - kLo + 1).fill(NaN);
+        const halfK = new Float32Array(kHi - kLo + 1).fill(NaN);
+        {
+          const mn = new Float32Array(kHi - kLo + 1).fill(Infinity);
+          const mx2 = new Float32Array(kHi - kLo + 1).fill(-Infinity);
+          let cnt = 0;
+          for (let k = kLo; k <= kHi; ++k)
+            for (let j = 0; j < ny; ++j)
+              for (let i = 0; i < nx; ++i){
+                if (!walkable(i, j, k)) continue;
+                const wx = lo[0] + (i+0.5)*res, wy = lo[1] + (j+0.5)*res;
+                const ox = wx - mx, oy = wy - my;
+                if (Math.abs(ox*ux + oy*uy) > len/2 + 0.35) continue;
+                const perp = -ox*uy + oy*ux;
+                if (Math.abs(perp) > half + 0.20) continue;
+                const at = k - kLo;
+                mn[at] = Math.min(mn[at], perp); mx2[at] = Math.max(mx2[at], perp); ++cnt;
+              }
+          // fill gaps with the nearest measured height, so the spine is continuous
+          let last = NaN;
+          for (let at = 0; at <= kHi - kLo; ++at){
+            if (mn[at] > mx2[at]){ spine[at] = last; halfK[at] = NaN; continue; }
+            spine[at] = (mn[at] + mx2[at]) / 2;
+            halfK[at] = Math.max((mx2[at] - mn[at]) / 2, 0.10);
+            last = spine[at];
+          }
+          for (let at = kHi - kLo; at >= 0; --at){
+            if (spine[at] !== spine[at] && at + 1 <= kHi - kLo) spine[at] = spine[at+1];
+          }
+        }
+        flights.push({cx: mx, cy: my, ux, uy, half, len, rise, kLo, spine, halfK,
+                      zmin: lo[2] + rkMin*res - 0.15, zmax: lo[2] + rkMax*res + 0.35,
+                      weight: 1.0, n: mem.length});
+      }
+  }
   // ---- stair corridors, for the lateral cost ------------------------------
   // astar3d charges weight * |offset from the centre line| on entry, so the
   // route prefers the middle of a flight instead of grazing a handrail. The
@@ -1124,7 +1248,7 @@ function buildMap(pos, idx, res, infR){
     }
   const riserTop = [...risers.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
   return {res, infR, lo, nx, ny, nz, data, cells, support, supportOrUnknown, walkable,
-          capWide, stairCol, stairProfile, riseMask, stairRamp, stairCorr, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
+          capWide, stairCol, stairProfile, riseMask, stairRamp, stairCorr, flights, nStair, nStand, nInfl, topFace, riserTop, nStepGaps, nOver,
           zmin: zmin > 1e29 ? 0 : zmin, zmax: zmax < -1e29 ? 0 : zmax,
           tooBig: false};
 }
@@ -1141,6 +1265,8 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
   // r. A point on it costs nothing; the further out, the more it costs per cell.
   // Soft on purpose - a leg that has to go round a wall still finds a way.
   const pipeR = state.pipe || 0;
+  const centreW = (state.climbMid || 0) * 2.0;
+  const flights = m.flights || [];
   const pipeW = 1.6;                        // cost per metre outside the corridor
   let px = 0, py = 0, plen2 = 0;
   if (pipeR > 0){
@@ -1314,10 +1440,37 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           // stair is entered and climbed near its centre. Without this the search
           // has no preference at all and grazes the red band at the edge.
           const room = dk !== 0 ? edgeRoom(m, nf) : 3;
+          // The fitted centre line of a flight, when the cell is inside one:
+          // pay for the offset, so the line runs up the middle. flights is a
+          // short list, and this only bites on a few thousand cells.
+          let centre = 0;
+          if (centreW > 0 && flights.length){
+            const wx = lo[0] + (i+0.5)*res, wy = lo[1] + (j+0.5)*res,
+                  wz = lo[2] + (k+0.5)*res;
+            for (const fl of flights){
+              if (wz < fl.zmin || wz > fl.zmax) continue;
+              const ox = wx - fl.cx, oy = wy - fl.cy;
+              const along = ox*fl.ux + oy*fl.uy;
+              const perp = -ox*fl.uy + oy*fl.ux;
+              // Lengthwise it stops at the ends, so the landing is free; across,
+              // it charges the whole width of that step, measured from the
+              // centre of the walkable run at that height rather than from one
+              // overall centre. A cost that switched off at a fixed edge is a
+              // cost the search escapes by walking beside the tread.
+              if (Math.abs(along) > fl.len/2 + 0.35) continue;
+              const at = k - fl.kLo;
+              if (at < 0 || at >= fl.spine.length) continue;
+              const sp = fl.spine[at], hw = fl.halfK[at];
+              if (sp !== sp || hw !== hw) continue;
+              const d = Math.abs(perp - sp);
+              if (d > hw + 0.30) continue;
+              centre += centreW * d * fl.weight;
+            }
+          }
           const gone = pipeR > 0
             ? Math.max(0, offCorridor(lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res) - pipeR) * pipeW
             : 0;
-          const step = res*Math.hypot(di, dj, dk) + (dk !== 0 ? latd*2.0 : 0) +
+          const step = centre + res*Math.hypot(di, dj, dk) + (dk !== 0 ? latd*2.0 : 0) +
                        (jump > 1 ? 0.4*res*(jump-1) : 0) +
                        (dk !== 0 ? (3 - room) * state.climbMid * res : 0) +
                        (bandSoft > 0 && data[nf] === INFL ? bandSoft*res : 0) +
@@ -2432,7 +2585,8 @@ function loadModel(pos, idx, name){
     '<span class="k">膨胀吃掉</span> <span class="v">' + m.nInfl.toLocaleString() + '</span><br>' +
     '<span class="k">格</span> <span class="v">' + m.nx + '×' + m.ny + '×' + m.nz + '</span> · ' +
     '<span class="k">分辨率</span> <span class="v">' + res + ' m</span> · ' +
-    '<span class="k">楼梯柱</span> <span class="v">' + (m.nStair || 0).toLocaleString() + '</span><br>' +
+    '<span class="k">楼梯柱</span> <span class="v">' + (m.nStair || 0).toLocaleString() + '</span> · ' +
+    '<span class="k">梯段</span> <span class="v">' + m.flights.length + '</span><br>' +
     '<span class="k">膨胀</span> <span class="v">' + infR + ' m</span> · ' +
     '<span class="k">建图</span> <span class="v">' + Math.round(ms) + ' ms</span><br>' +
     (m.nStepGaps ? ('<span class="k">台阶高</span> <span class="v">' +
@@ -2727,6 +2881,36 @@ function downloadBlob(fileName, blob){
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 }
 
+// The flights as JSON: centre, axis, width and the per-step spine. The real
+// pipeline can load this as a prior for its own global planner instead of
+// guessing which side of a stair to keep to.
+function exportFlights(){
+  const m = state.map;
+  if (!m) return say('先导入一个模型');
+  const out = {
+    map: state.fileName || state.modelName || 'map',
+    res: m.res, origin: [m.lo[0], m.lo[1], m.lo[2]],
+    flights: m.flights.map((f, n) => ({
+      id: n,
+      centre: [+f.cx.toFixed(3), +f.cy.toFixed(3)],
+      axis:   [+f.ux.toFixed(4), +f.uy.toFixed(4)],
+      half:   +f.half.toFixed(3),
+      length: +f.len.toFixed(3),
+      rise:   +f.rise.toFixed(3),
+      z:      [+f.zmin.toFixed(3), +f.zmax.toFixed(3)],
+      columns: f.n,
+      // spine[k] is the lateral offset of the tread centre at height k, so the
+      // centre line is centre + spine[k] * perp axis at z = lo_z + k*res
+      spine: Array.from(f.spine).map(v => (v === v ? +v.toFixed(3) : null)),
+      halfAt: Array.from(f.halfK).map(v => (v === v ? +v.toFixed(3) : null)),
+      kLo: f.kLo
+    }))
+  };
+  downloadBlob((state.fileName || 'map').replace(/\.[^.]+$/, '') + '.stairs.json',
+    new Blob([JSON.stringify(out, null, 1)], {type: 'application/json'}));
+  say('导出 ' + out.flights.length + ' 段梯段中线');
+}
+
 function exportOneFloor(name, tag, fl, keepBand){
   const m = state.map;
   const { px, W, H, nFree, nOcc, nUnk } = sliceFloor(m, fl, keepBand);
@@ -2745,6 +2929,8 @@ function exportOneFloor(name, tag, fl, keepBand){
   downloadBlob(tag + '.yaml', new Blob([yaml], {type: 'text/yaml'}));
   return { tag, W, H, nFree, nOcc, nUnk };
 }
+
+document.getElementById('expStairs').onclick = exportFlights;
 
 document.getElementById('expPgm').onclick = () => {
   const m = state.map;
