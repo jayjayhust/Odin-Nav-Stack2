@@ -126,6 +126,12 @@
       <option value="0.25">±0.25 m</option>
       <option value="0.35">±0.35 m</option>
     </select></span>
+  <span>爬升偏中
+    <select id="climbMid" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px">
+      <option value="0">关（纯最短路）</option>
+      <option value="0.35" selected>0.35（默认）</option>
+      <option value="0.8">0.8（更靠中线）</option>
+    </select></span>
   <span>楼梯口让位
     <select id="stairOpen" style="height:24px;padding:0 6px;font-size:12px;border-radius:6px;margin:0 4px"
             title="把楼梯柱附近被净空带涂红的踏面还回可走；调大会连墙和栏杆的禁行带一起让开">
@@ -213,6 +219,7 @@ const state = {
   // cells out from a stair column whose tread may take its clearance band back
   // (0 = off, 1 = one cell, 2 = one full band at 0.30 m / 0.15 m)
   stairOpen: 1,
+  climbMid: 0.35,   // cost per riser for each missing cell of room beside a handrail
   // cells the user painted by hand; kept per loaded model
   erased: new Set(),
   added: new Set(),
@@ -1279,8 +1286,14 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
           // look like it floats up the flight. Charge a comfort margin per
           // extra cell climbed so a flight is taken one riser at a time.
           const jump = Math.abs(dk);
+          // Rising beside a handrail is not the same as rising up the middle of
+          // a flight: pay for the missing lateral room on every riser, so a wide
+          // stair is entered and climbed near its centre. Without this the search
+          // has no preference at all and grazes the red band at the edge.
+          const room = dk !== 0 ? edgeRoom(m, nf) : 3;
           const step = res*Math.hypot(di, dj, dk) + (dk !== 0 ? latd*2.0 : 0) +
                        (jump > 1 ? 0.4*res*(jump-1) : 0) +
+                       (dk !== 0 ? (3 - room) * state.climbMid * res : 0) +
                        (bandSoft > 0 && data[nf] === INFL ? bandSoft*res : 0);
           // Lateral cost inside a declared stair corridor, same rule as
           // astar3d.cpp: weight * |y - y_centre| paid on entry, so the search
@@ -2342,7 +2355,7 @@ function loadModel(pos, idx, name){
     if (f < m.data.length && m.data[f] === INFL) m.data[f] = FREE;
   for (const f of state.added)
     if (f < m.data.length && m.data[f] === FREE) m.data[f] = INFL;
-  m._span = null;             // replays edit the cells too
+  m._span = null; m._edge = null;             // replays edit the cells too
   refreshFloorList();
   if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
@@ -2431,6 +2444,13 @@ document.addEventListener('keydown', ev => {
 });
 
 // The band price only changes how a route is chosen, not the map.
+document.getElementById('climbMid').onchange = (ev) => {
+  state.climbMid = +ev.target.value;
+  say(state.climbMid > 0
+    ? ('爬升时每缺一格侧向余量加价 ' + state.climbMid + ' × 格长：楼梯会从中间上，不再贴栏杆')
+    : '爬升偏中关掉：按纯最短路爬，贴边也算同等代价');
+};
+
 document.getElementById('bandSoft').onchange = (ev) => {
   state.bandSoft = +ev.target.value;
   say(state.bandSoft > 0
@@ -2498,7 +2518,7 @@ function snapshot(){
     unit: document.getElementById('unit').value,
     step: document.getElementById('step').value,
     grid: m ? [m.nx, m.ny, m.nz] : [0, 0, 0],
-    stairOpen: state.stairOpen, bandSoft: state.bandSoft,
+    stairOpen: state.stairOpen, bandSoft: state.bandSoft, climbMid: state.climbMid,
     erased: Array.from(state.erased),
     added: Array.from(state.added),
     ways: state.ways.map(p => p.map(v => +v.toFixed(3))),
@@ -2524,6 +2544,10 @@ function applySnapshot(rec){
   if (rec.bandSoft !== undefined){
     state.bandSoft = rec.bandSoft;
     document.getElementById('bandSoft').value = String(rec.bandSoft);
+  }
+  if (rec.climbMid !== undefined){
+    state.climbMid = rec.climbMid;
+    document.getElementById('climbMid').value = String(rec.climbMid);
   }
   if (rec.stairOpen !== undefined){
     state.stairOpen = rec.stairOpen;
@@ -2818,6 +2842,29 @@ function nearestCellOfKind(p, want, ring){
 
 // Longest free run through a cell, per axis, at the same level. Cached on the
 // map because a plan is run leg by leg over the same grid.
+// How many cells of lateral room a cell has, up to three: a dog climbing a
+// wide flight should go up near its middle, not graze the red band at the edge.
+// Cached on the map like the run lengths, and dropped by the same edits.
+function edgeRoom(m, id){
+  if (!m._edge || m._edge.length !== m.data.length) m._edge = new Uint8Array(m.data.length);
+  const hit = m._edge[id];
+  if (hit) return hit - 1;
+  const nx = m.nx, ny = m.ny, k = (id / (nx*ny)) | 0;
+  const i = id % nx, j = ((id / nx) | 0) % ny;
+  let best = 3;
+  for (const d of [[-1, 0], [1, 0], [0, -1], [0, 1]]){
+    for (let n = 1; n <= 3; ++n){
+      const i2 = i + d[0]*n, j2 = j + d[1]*n;
+      if (i2 < 0 || j2 < 0 || i2 >= nx || j2 >= ny || !m.walkable(i2, j2, k)){
+        best = Math.min(best, n);
+        break;
+      }
+    }
+  }
+  m._edge[id] = best + 1;
+  return best;
+}
+
 function spanRuns(m){
   if (m._span && m._span.foot === state.foot) return m._span;
   const {res, nx, ny, nz, data} = m;
@@ -2881,7 +2928,7 @@ function eraseCell(i, j, k){
   if (m.data[f] !== INFL) return 0;
   m.data[f] = FREE;
   state.erased.add(f);
-  m._span = null;             // the run lengths just changed under the cache
+  m._span = null; m._edge = null;             // the run lengths just changed under the cache
   repaintWalk();
   return 1;
 }
@@ -2893,7 +2940,7 @@ function blockCell(i, j, k){
   const f = ((k*m.ny) + j)*m.nx + i;
   if (m.data[f] !== FREE) return 0;
   m.data[f] = INFL;
-  m._span = null;
+  m._span = null; m._edge = null;
   state.added.add(f);
   state.erased.delete(f);
   repaintWalk();
