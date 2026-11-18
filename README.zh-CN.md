@@ -62,6 +62,14 @@
 - **[fork] 离线规划仿真**  
   自包含的测试程序直接编译同一份 C++ 规划代码，不依赖 ROS，把七个合成场景回放到一个 HTML 页面
   里（俯视、侧视切片、可旋转 3D 点云），并逐条断言结果。不需要机器人、桌面环境或 PCL。
+- **[fork] mesh 仿真器与真机三件套同口径**  
+  浏览器里直接导入自己的 OBJ / STL（UE、Revit 导出），页面自己分出地板、墙与梯段，全局 3D A\*
+  与局部 NeuPAN/DWA 用的是仓库同一套算法；红色净空带可切「硬禁行 / 软代价」，格子可擦可补、可存档。
+  **「导出 pgm」一次给出二进制 `P5` 的 `<地图名>.pgm` 与 `map_server` 的 `<地图名>.yaml`**
+  （`resolution` / `origin` / `occupied_thresh` / `free_thresh` 全对齐），楼层按楼板峰自动分带，
+  等价于 `pcd_to_pgm.py` 的高度切片；产物直接落进 `map_planner/maps/`，与 Q9000/Odin1 导出的
+  `<地图名>.bin` 同名即可 `--map=<地图名>` 启动。  
+  详见 [mesh 导入与栅格导出](docs/multifloor/mesh-nav-import.zh-CN.md)。
 
 ## 1.2 新增内容
 
@@ -361,6 +369,7 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | **向 VLM 提问场景理解问题** | [VLM 场景理解](#54-vlm-场景理解) |
 | **了解架构与模块数据流** | [系统架构](docs/architecture/ONS2_ARCHITECTURE.md) · [模块数据流](docs/architecture/MODULE_DATAFLOW.md) |
 | **扫描现场并建导航地图**（Q9000 / Odin1） | [建图教程](docs/map-tutorial/map-tutorial.zh-CN.md) · [`pcd_to_pgm.py`](scripts/map_processing/pcd_to_pgm.py) |
+| **用自建 3D 模型仿真建图，并导出 `pgm`/`yaml`** —— 与 `pcd_to_pgm.py` 同口径 | [mesh 导入与栅格导出](docs/multifloor/mesh-nav-import.zh-CN.md) · [打开 mesh 仿真页](docs/multifloor/sim/mesh_nav.html) |
 | **在仿真中复现场景**（Real2Sim） | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
 | **跨楼层跑任务** —— 电梯、楼梯或坡道（ROS 1，Go2） | [跨层总览](docs/multifloor/README.zh-CN.md) · [设计方案](docs/multifloor/design.zh-CN.md) |
 | **离线看 3D 规划器怎么走** —— 七个场景、HTML 回放 | [3D 规划器与楼梯](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [打开回放页面](docs/multifloor/sim/planner_sim.html) |

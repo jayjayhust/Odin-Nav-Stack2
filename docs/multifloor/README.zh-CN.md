@@ -332,4 +332,5 @@ rosservice call /floor_manager/arrived_at_floor "floor: '3F'"
 | [**4G 远程调试**](remote-debug.zh-CN.md) | 车身交换机 + 4G 路由的拓扑、IP 规划、隧道、带宽与供电 |
 | [**局域网调试**](lan-debug.zh-CN.md) | 网线接交换机 / 路由本地 WiFi 两条路，静态 IP、ROS_IP 切换与丢包排查 |
 | [**点云转 mesh 视图**](mesh-viewer.zh-CN.md) | 把点云抽成表面网格再实体渲染，可调透明度看跨层结构 |
+| [**mesh 导入与 2D 栅格导出**](mesh-nav-import.zh-CN.md) | 导入 OBJ/STL、楼梯语义、净空带硬/软、擦与增禁行、存档，以及导出 `pgm`+`yaml` 与 `--map=` 的衔接 |
 | [**局部规划器切换：NeuPAN / SRU**](local-planner-sru.zh-CN.md) | 开关接在哪、SRU 还缺什么、为什么跨层任务别选它 |

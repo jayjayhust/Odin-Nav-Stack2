@@ -65,6 +65,15 @@
   A self-contained harness compiles the same C++ planning code with no ROS, replays seven synthetic
   scenes in a single HTML page (top view, elevation slice, rotatable 3D cloud) and asserts each
   result. No robot, no desktop, no PCL.
+- **[fork] Mesh simulator that speaks the robot's map format**  
+  Import your own OBJ / STL (UE or Revit exports) in the browser: the page separates floors, walls
+  and flights on its own, and the global 3D A\* plus local NeuPAN/DWA are the repository's own
+  algorithms. The clearance band switches between hard and soft cost, cells can be erased or painted
+  by hand and saved. **"导出 pgm" writes a binary `P5` `<name>.pgm` together with the `map_server`
+  `<name>.yaml`** (`resolution` / `origin` / `occupied_thresh` / `free_thresh` all matching), splits
+  floors at slab peaks instead of handing you a height slice, and the pair drops straight into
+  `map_planner/maps/` so that `--map=<name>` works next to the `.bin` from Q9000 / Odin1.  
+  See [mesh import and grid export](docs/multifloor/mesh-nav-import.md).
 
 ## 1.2 What's New
 
@@ -370,6 +379,7 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | **Ask a VLM questions about the scene** | [VLM Scene Understanding](#54-vlm-scene-understanding) |
 | **Understand the architecture / module dataflow** | [Architecture](docs/architecture/ONS2_ARCHITECTURE.md) · [Module Dataflow](docs/architecture/MODULE_DATAFLOW.md) |
 | **Scan a site and build a navigation map** (Q9000 / Odin1) | [Map Tutorial](docs/map-tutorial/map-tutorial.md) · [`pcd_to_pgm.py`](scripts/map_processing/pcd_to_pgm.py) |
+| **Build a map from your own 3D model, then export `pgm`/`yaml`** — same contract as `pcd_to_pgm.py` | [Mesh import and grid export](docs/multifloor/mesh-nav-import.md) · [Open the mesh simulator](docs/multifloor/sim/mesh_nav.html) |
 | **Reproduce a scenario in simulation** (Real2Sim) | [MT-Real2Sim-Tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial) |
 | **Run a mission across floors** — lift, stairs or ramp (ROS 1, Go2) | [Multi-floor overview](docs/multifloor/README.zh-CN.md) · [Design](docs/multifloor/design.zh-CN.md) |
 | **Watch the 3D planner offline** — seven scenes, HTML replay | [3D planner and stairs](docs/multifloor/3d-planner-and-stairs.zh-CN.md) · [Open the replay](docs/multifloor/sim/planner_sim.html) |
