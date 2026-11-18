@@ -303,3 +303,28 @@ Two further changes bring an arbitrary import closer to the voxel grid in the re
 - **Step limit 0.45 / 0.25 m**: 0.45 is the simulator allowance, 0.25 the Go2 airframe limit; at 0.25 anything above a 0.30 m riser is refused.
 
 Measured on `ThirdPersonExampleMap.obj` (36,472 v / 54,644 f): 53,633 standable cells, 4,776 stair columns, 7,488 riser gaps (mostly 0.15 / 0.30 / 0.45), 95 gaps over 0.45 m, 295 ms build.
+
+
+## Aligning with the real map pipeline: exporting `.pgm` + `.yaml`
+
+On the robot the chain is **Q9000 / Odin1 -> MindCloud Studio (.lx project) -> export `.pcd` + `.bin` -> `pcd_to_pgm.py` height slice -> `<name>.pgm` + `<name>.yaml` -> start with `--map=<name>`**. This page now closes the loop for the parts of that chain a simulator can own, and emits the same file pair under the same rules:
+
+| Real step | Here |
+|---|---|
+| `.lx` project, MindCloud adjustment and dynamic-object removal | Not simulated: the model comes straight from OBJ / STL (UE, Revit exports) |
+| `.pcd` 3D cloud | The voxel grid (0.15 m by default, 0.05 m available) |
+| `pcd_to_pgm.py` height slice `--slice-above` / `--slice-below` | 导出层: floors are split by slab peaks and only geometry inside the band is projected, which is the same operation as one slice along z |
+| `-r` resolution | The 分辨率 selector, written into `resolution:` verbatim |
+| GIMP cleanup (white free, black occupied, grey unknown) | 擦禁行 / 增禁行 brushes: hand edits go straight into the pgm (erased becomes free, painted becomes occupied) and are replayed after a rebuild |
+| `.pgm` + `.yaml` must share a name | 导出 pgm produces `<name>.pgm` and `<name>.yaml`; multi-floor models split into `<name>_f1`, `_f2`, ... |
+| `.bin` relocalisation map | **Cannot be simulated**: Odin's private format, only produced on the robot |
+| `--map=<name>` startup | Drop the two files into `ros_ws/src/map_planner/maps/`, the `.bin` into `customer_file/`, keep all three names equal, then `--map=<name>` |
+
+Two export modes:
+
+- **几何 (default)**: only walls and obstacles are written as `occupied`; the 0.30 m clearance is left out, exactly like the real pgm, because inflation belongs to the planner costmap.
+- **几何+净空带**: bakes the computed clearance into the image, useful only as a safety-boundary demo.
+
+The `yaml` matches `map_server`: `image`, `resolution`, `origin` (world coordinate of the grid's lower-left corner, zero orientation), `negate: 0`, `occupied_thresh: 0.65`, `free_thresh: 0.196`. The pgm is binary `P5`, row 0 is the top of the image i.e. world `+y`, and unknown cells are 205, the same grey GIMP uses.
+
+Measured on `ThirdPersonExampleMap.obj` (0.15 m / 0.30 inflation / Y up / 0.45 step): three floors detected (z 1.48-3.35 / 3.43-9.35 / 9.43-12.80 m); floor 1 is 210x210 with 36,800 free, 3,339 occupied and 3,961 unknown cells; after erasing one cell and painting one, the export reports 3,340 occupied and 3,960 unknown, so the hand edits do reach the image. Above 0.10 m the export note recommends `-r 0.05` for the navigation stack.

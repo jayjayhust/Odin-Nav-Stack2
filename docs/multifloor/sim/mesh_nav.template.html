@@ -83,6 +83,19 @@
   <span class="lbl">|</span>
   <button class="btn" id="save" title="把这一版起终点、途经点、擦除与增补的格子存到本机，同时下载一份 JSON">保存</button>
   <button class="btn" id="load" title="恢复这张图上一次保存的改动">载入</button>
+  <span class="lbl">|</span>
+  <span class="lbl" title="三件套 <地图名>.pgm / <地图名>.yaml / <地图名>.bin 必须同名">地图名</span>
+  <input id="mapName" value="parkinglot" spellcheck="false"
+         style="height:30px;width:118px;padding:0 8px;font-size:12px;border-radius:6px;
+                border:1px solid var(--line);background:#0c151f;color:var(--fg);font-family:inherit">
+  <span class="lbl">导出层</span>
+  <select id="expFloor" style="max-width:230px;width:230px"><option value="auto">自动</option></select>
+  <span class="lbl">导出口径</span>
+  <select id="expMode" title="几何=只把墙体按障碍导出，膨胀留给规划器；含净空带=把 0.30 m 膨胀固化进图">
+    <option value="geo" selected>几何</option>
+    <option value="band">几何+净空带</option>
+  </select>
+  <button class="btn" id="expPgm" title="按 pcd_to_pgm 的切片语义导出 2D 占据栅格：<地图名>.pgm + <地图名>.yaml">导出 pgm</button>
   <span class="lbl" id="obsCount">障碍 0</span>
 </div>
 
@@ -2293,6 +2306,7 @@ function loadModel(pos, idx, name){
     if (f < m.data.length && m.data[f] === INFL) m.data[f] = FREE;
   for (const f of state.added)
     if (f < m.data.length && m.data[f] === FREE) m.data[f] = INFL;
+  refreshFloorList();
   if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
   walkMesh = makePlanes(m);
@@ -2465,6 +2479,135 @@ document.getElementById('save').onclick = () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
   say('已保存：擦 ' + rec.erased.length + ' 格 · 增 ' + rec.added.length +
       ' 格 · 途经 ' + rec.ways.length + ' 点 · 同时下载 ' + tag);
+};
+
+// ---- 2D occupancy export, the pcd_to_pgm equivalent ----------------------
+// The real pipeline slices a 3D cloud at the sensor height and drops it onto a
+// 0.05 m grid. Here the voxel grid is already sliced, so a floor band plays the
+// role of --slice-below / --slice-above: only geometry inside the band counts.
+function detectFloors(m){
+  const hist = new Int32Array(m.nz);
+  for (let k = 0; k < m.nz; k++)
+    for (let j = 0; j < m.ny; j++)
+      for (let i = 0; i < m.nx; i++){
+        const f = ((k*m.ny) + j)*m.nx + i;
+        if (m.data[f] === FREE && m.support(i, j, k)) hist[k]++;
+      }
+  // A floor is a slab: one k where tens of thousands of cells are standable.
+  // Stair columns only ever contribute a few dozen, so peaks separate cleanly
+  // even though the treads bridge the gap between storeys.
+  let hmax = 0;
+  for (let k = 0; k < m.nz; k++) if (hist[k] > hmax) hmax = hist[k];
+  const cut = Math.max(300, hmax*0.05);
+  const peaks = [];
+  for (let k = 0; k < m.nz; k++){
+    if (hist[k] < cut) continue;
+    let local = true;
+    for (let d = -2; d <= 2; d++){
+      if (d && hist[k + d] > hist[k]) { local = false; break; }
+    }
+    if (!local) continue;
+    if (peaks.length && k - peaks[peaks.length - 1].k <= 8){
+      if (hist[k] > peaks[peaks.length - 1].n) peaks[peaks.length - 1] = { k, n: hist[k] };
+    } else peaks.push({ k, n: hist[k] });
+  }
+  return peaks.map((pk, idx) => {
+    const next = idx + 1 < peaks.length ? peaks[idx + 1].k : m.nz;
+    return { kLo: pk.k, kHi: next - 1, n: pk.n };
+  });
+}
+
+function refreshFloorList(){
+  const el = document.getElementById('expFloor');
+  const m = state.map;
+  const keep = el.value;
+  el.innerHTML = '<option value="auto">自动</option>';
+  if (!m) return;
+  const floors = detectFloors(m);
+  state.floors = floors;
+  floors.forEach((fl, n) => {
+    const zlo = m.lo[2] + (fl.kLo + 0.5)*m.res, zhi = m.lo[2] + (fl.kHi + 1)*m.res;
+    const o = document.createElement('option');
+    o.value = String(n);
+    o.textContent = '第 ' + (n + 1) + ' 层 · k' + fl.kLo + '–' + fl.kHi +
+                    ' · z ' + zlo.toFixed(2) + '–' + zhi.toFixed(2) + ' m';
+    el.appendChild(o);
+  });
+  if (keep && keep !== 'auto') el.value = keep;
+}
+
+function sliceFloor(m, fl, keepBand){
+  const W = m.nx, H = m.ny;
+  const px = new Uint8Array(W*H).fill(205);   // 205 = unknown, what map_server calls -1
+  let nFree = 0, nOcc = 0, nUnk = 0;
+  for (let j = 0; j < H; j++)
+    for (let i = 0; i < W; i++){
+      let stand = false, occ = false;
+      for (let k = fl.kLo; k <= fl.kHi; k++){
+        const f = ((k*m.ny) + j)*m.nx + i, v = m.data[f];
+        // a cell painted by hand wins over the geometry either way, which is
+        // this page's stand-in for the GIMP pass in the real pipeline
+        if (state.erased.has(f)) { stand = true; continue; }
+        if (state.added.has(f)) { occ = true; continue; }
+        if (!stand && v === FREE && m.support(i, j, k)) stand = true;
+        if (v === OCC || (keepBand && v === INFL)) occ = true;
+      }
+      const val = stand ? 254 : (occ ? 0 : 205);
+      // pgm row 0 is the top of the image, so the world's +y goes first
+      px[(H - 1 - j)*W + i] = val;
+      if (val === 254) nFree++; else if (val === 0) nOcc++; else nUnk++;
+    }
+  return { px, W, H, nFree, nOcc, nUnk };
+}
+
+function downloadBlob(fileName, blob){
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = fileName;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+}
+
+function exportOneFloor(name, tag, fl, keepBand){
+  const m = state.map;
+  const { px, W, H, nFree, nOcc, nUnk } = sliceFloor(m, fl, keepBand);
+  // binary PGM (P5)
+  const header = 'P5\n' + W + ' ' + H + '\n255\n';
+  const body = new Uint8Array(header.length + px.length);
+  for (let t = 0; t < header.length; t++) body[t] = header.charCodeAt(t);
+  body.set(px, header.length);
+  downloadBlob(tag + '.pgm', new Blob([body], {type: 'image/x-portable-graymap'}));
+  const yaml = 'image: ' + tag + '.pgm\n' +
+    'resolution: ' + m.res + '\n' +
+    'origin: [' + (m.lo[0]).toFixed(4) + ', ' + (m.lo[1]).toFixed(4) + ', 0.0]\n' +
+    'negate: 0\n' +
+    'occupied_thresh: 0.65\n' +
+    'free_thresh: 0.196\n';
+  downloadBlob(tag + '.yaml', new Blob([yaml], {type: 'text/yaml'}));
+  return { tag, W, H, nFree, nOcc, nUnk };
+}
+
+document.getElementById('expPgm').onclick = () => {
+  const m = state.map;
+  if (!m){ say('先载入模型'); return; }
+  const raw = (document.getElementById('mapName').value || 'map').trim();
+  const name = raw.replace(/[^A-Za-z0-9_.-]+/g, '_') || 'map';
+  const keepBand = document.getElementById('expMode').value === 'band';
+  const floors = state.floors && state.floors.length ? state.floors : detectFloors(m);
+  if (!floors.length){ say('这张图没有识别出任何楼层'); return; }
+  const sel = document.getElementById('expFloor').value;
+  const picked = sel === 'auto' ? floors : [floors[+sel] || floors[0]];
+  const one = floors.length === 1;
+  const tags = picked.map((fl, n) => {
+    const idx = floors.indexOf(fl);
+    return one ? name : name + '_f' + (idx + 1);
+  });
+  const out = picked.map((fl, n) => exportOneFloor(name, tags[n], fl, keepBand));
+  const o = out[0];
+  say('导出 ' + out.map(r => r.tag + '.pgm').join(' · ') + '（同名 .yaml 一并下载）：' +
+      o.W + '×' + o.H + ' · 可走 ' + o.nFree.toLocaleString() +
+      ' · 障碍 ' + o.nOcc.toLocaleString() + ' · 未知 ' + o.nUnk.toLocaleString() +
+      (m.res > 0.1001 ? ' · 分辨率偏粗，导航栈推荐 -r 0.05' : ''));
 };
 
 document.getElementById('load').onclick = () => {
