@@ -1149,6 +1149,10 @@ function planPath(m, sx, sy, sz, gx, gy, gz, corridors){
   const spans = (bodyWant <= 1) ? null : spanRuns(m);
   const fits = !spans ? () => true : (i, j, k) => {
     const id = F(i, j, k);
+    // A cell the operator erased by hand is an override, the same gesture as
+    // painting a corridor white in GIMP: the width test is a guess about the
+    // build, not about the building, and the person who scanned it wins.
+    if (state.erased.has(id)) return true;
     return spans.ri[id] >= bodyWant && spans.rj[id] >= bodyWant;
   };
 
@@ -2345,6 +2349,7 @@ function loadModel(pos, idx, name){
     if (f < m.data.length && m.data[f] === INFL) m.data[f] = FREE;
   for (const f of state.added)
     if (f < m.data.length && m.data[f] === FREE) m.data[f] = INFL;
+  m._span = null;             // replays edit the cells too
   refreshFloorList();
   if (location.hash.indexOf('diag') >= 0 && location.hash.indexOf('stair') >= 0)
     probeRow(m, m.lo[1] + 1.60, m.lo[0] + 2.00, m.lo[0] + 4.00, 'up-lane');
@@ -2863,6 +2868,7 @@ function eraseCell(i, j, k){
   if (m.data[f] !== INFL) return 0;
   m.data[f] = FREE;
   state.erased.add(f);
+  m._span = null;             // the run lengths just changed under the cache
   repaintWalk();
   return 1;
 }
@@ -2874,6 +2880,7 @@ function blockCell(i, j, k){
   const f = ((k*m.ny) + j)*m.nx + i;
   if (m.data[f] !== FREE) return 0;
   m.data[f] = INFL;
+  m._span = null;
   state.added.add(f);
   state.erased.delete(f);
   repaintWalk();
@@ -2921,6 +2928,7 @@ host.addEventListener('dblclick', ev => {
     ++k;
   }
   const v = V(i, j, k), kb = k - 1;
+  const span = spanRuns(m);
   const fid = i + j*m.nx, fb = ((kb*m.ny + j)*m.nx) + i;
   const names = {[-1]: '界外', 0: '空', 1: '可走', 2: '墙', 3: '红/膨胀'};
   say('格 x' + p.x.toFixed(2) + ' y' + p.y.toFixed(2) + ' z' + p.z.toFixed(2) +
@@ -2929,7 +2937,18 @@ host.addEventListener('dblclick', ev => {
       ' · 支撑 ' + (m.support(i, j, k) ? 1 : 0) +
       ' · 可站 ' + (m.walkable(i, j, k) ? 1 : 0) +
       ' · 下方 ' + (V(i, j, kb) === OCC ? '墙(踏面?)' : V(i, j, kb)) +
-      ' topFace ' + (m.topFace[fb] ? 1 : 0) + ' 宽 ' + m.capWide[fb]);
+      ' topFace ' + (m.topFace[fb] ? 1 : 0) + ' 宽 ' + m.capWide[fb] +
+      // what the body test would say about this cell, so a route that avoids
+      // an erased opening can be explained instead of guessed at
+      ' · 开口 x' + (span.ri[((k*m.ny + j)*m.nx) + i] || 0) + '/y' +
+      (span.rj[((k*m.ny + j)*m.nx) + i] || 0) +
+      ' 格·×' + (m.res * Math.min(span.ri[((k*m.ny + j)*m.nx) + i] || 0,
+                                 span.rj[((k*m.ny + j)*m.nx) + i] || 0)).toFixed(2) + ' m' +
+      ' · 机身' + state.foot + ' m ' +
+      (state.erased.has(((k*m.ny + j)*m.nx) + i) ? '（人工擦除·放行）' : '') +
+      ' · 机身放得下 ' + ((!state.foot || state.erased.has(((k*m.ny + j)*m.nx) + i) ||
+        (Math.min(span.ri[((k*m.ny + j)*m.nx) + i] || 0,
+                  span.rj[((k*m.ny + j)*m.nx) + i] || 0) * m.res) >= state.foot*2) ? 1 : 0));
 });
 
 host.addEventListener('click', ev => {
