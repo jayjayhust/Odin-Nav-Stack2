@@ -284,12 +284,12 @@
 (function () {
   'use strict';
 
-  const MIN_CELLS = 30;            // a flight covers more than a corner
+  const MIN_CELLS = 20;            // a short flight is still a flight
   const MIN_RISE = 4;              // cells; flatter than this is a floor
   const MIN_HALF = 0.18, MAX_HALF = 1.10;
   const MIN_SLOPE = 0.12, MAX_SLOPE = 2.2;
   const MAX_LEN = 6.5;             // storey scale, not one flight
-  const MIN_HEIGHTS = 6;           // fewer steps than a stair
+  const MIN_HEIGHTS = 3;           // three steps and a rise is a stair
   const MIN_TRAVEL_RISE = 0.30;    // |travel| >= this * rise
   const MIN_R2 = 0.35;             // and the centre must move in a straight line
   const MIN_COVER = 0.45;          // claimed tread / band area, rejects slivers
