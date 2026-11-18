@@ -836,6 +836,7 @@ function buildMap(pos, idx, res, infR){
   // Then the fit only keeps a component that climbs: a rising band of treads
   // with a believable stair slope, which is what "one flight" means.
   const flights = [];
+  if (window.__FITDBG) flights._dbg = [];
   {
     const stepped = new Float32Array(nx*ny).fill(-1);
     for (let j = 0; j < ny; ++j)
@@ -917,15 +918,15 @@ function buildMap(pos, idx, res, infR){
         const spine = new Float32Array(kHi - kLo + 1).fill(NaN);
         const halfK = new Float32Array(kHi - kLo + 1).fill(NaN);
         const alongAt = new Float32Array(kHi - kLo + 1).fill(NaN);
+        const alSum = new Float64Array(kHi - kLo + 1);
+        const alNum = new Int32Array(kHi - kLo + 1);
         {
           const mn = new Float32Array(kHi - kLo + 1).fill(Infinity);
           const mx2 = new Float32Array(kHi - kLo + 1).fill(-Infinity);
-          const alSum = new Float64Array(kHi - kLo + 1);
-          const alNum = new Int32Array(kHi - kLo + 1);
           let cnt = 0;
           for (const id of mem){
-            const kk = (id / (nx*ny)) | 0, rr = id - kk*nx*ny;
-            const jj = (rr / nx) | 0, ii = rr - jj*nx;
+            const jj = (id / nx) | 0, ii = id - jj*nx;
+            const kk = stepped[id];                    // a column's tread height
             if (kk < kLo || kk > kHi) continue;
             const al = (lo[0] + (ii+0.5)*res - mx)*ux + (lo[1] + (jj+0.5)*res - my)*uy;
             alSum[kk - kLo] += al; alNum[kk - kLo] += 1;
@@ -949,17 +950,42 @@ function buildMap(pos, idx, res, infR){
             spine[at] = (mn[at] + mx2[at]) / 2;
             halfK[at] = Math.max((mx2[at] - mn[at]) / 2, 0.10);
             last = spine[at];
-            // one centre of the tread per step; no tread at this height -> interpolate
-            alongAt[at] = alNum[at] ? alSum[at] / alNum[at]
-                                    : -len/2 + (at / Math.max(1, kHi - kLo)) * len;
+            // placeholder; the regression below replaces it with one straight line
+            alongAt[at] = alNum[at] ? alSum[at] / alNum[at] : 0;
           }
           for (let at = kHi - kLo; at >= 0; --at){
             if (spine[at] !== spine[at] && at + 1 <= kHi - kLo) spine[at] = spine[at+1];
           }
         }
+        // A cluster of stepped columns is not a flight unless it advances along
+        // its own run as it rises: the tread centre has to travel, otherwise it
+        // is a step-edged slab or a landing edge, and charging it would tilt the
+        // plan at a place that is flat.
+        let nH = 0, nP = 0, sA = 0, sL = 0, sAA = 0, sLL = 0, sAL = 0;
+        for (let at = 0; at <= kHi - kLo; ++at){
+          if (alNum[at] === 0) continue;
+          const A = at, L = alSum[at] / alNum[at];
+          ++nH; ++nP; sA += A; sL += L; sAA += A*A; sLL += L*L; sAL += A*L;
+        }
+        if (nH < 6) continue;                          // fewer steps than a stair
+        const vA = sAA - sA*sA/nP, vL = sLL - sL*sL/nP, cov = sAL - sA*sL/nP;
+        const r2 = (vA > 1e-9 && vL > 1e-9) ? (cov*cov)/(vA*vL) : 0;
+        const travel = Math.abs(cov) / Math.max(1e-9, vA) * (nH - 1);
+        if (flights._dbg) flights._dbg.push({n: mem.length, rise: +rise.toFixed(2), len: +len.toFixed(2),
+                     half: +half.toFixed(2), nH: nH, travel: +travel.toFixed(2), r2: +r2.toFixed(2)});
+        // It climbs and it moves along, in a straight line: a flight's tread
+        // centre advances linearly with height. Per-height averages zig-zag
+        // where a step edge shares a column height with the tread behind it,
+        // and a zig-zag centre line is a zig-zag plan, so keep the fit.
+        if (travel < 0.30 * rise || r2 < 0.35) continue;
+        const slopeA = cov / vA, iceptA = (sL - slopeA * sA) / nP;
+        for (let at = 0; at <= kHi - kLo; ++at)
+          alongAt[at] = Math.max(-len/2, Math.min(len/2, iceptA + slopeA * at));
         flights.push({cx: mx, cy: my, ux, uy, half, len, rise, kLo, spine, halfK, alongAt,
                       zmin: lo[2] + rkMin*res - 0.15, zmax: lo[2] + rkMax*res + 0.35,
-                      weight: 1.0, n: mem.length});
+                      weight: 1.0, n: mem.length,
+                      // packed (i,j,k) cells: mem holds columns, the height is stepped[id]
+                      cells: mem.map(id => id + stepped[id]*nx*ny)});
       }
   }
   // ---- stair corridors, for the lateral cost ------------------------------
@@ -2306,57 +2332,43 @@ function makeSrcMesh(pos, idx){
   return mesh;
 }
 
-// The flights the fit found, drawn after the mesh loads: a ribbon along the
-// tread at every step it spans, plus the centre line the planner is charged
-// against. Seeing them is the difference between trusting the fit and having
-// to guess whether the line is off the stair or off the model.
+// The flights the fit found, drawn after the mesh loads. Paint the very cells
+// the fit used rather than a ribbon rebuilt from centre + axis + width: the
+// ribbon was a second approximation of the same geometry and could drift off
+// the treads, while these cells are what the planner is charged for. A short
+// centre line per flight shows the line the cost is measured against.
 function makeFlights(m){
   const group = new THREE.Group();
-  const {res, lo} = m;
-  const pos = [], idx = [];
-  for (const f of m.flights){
-    const verts = [];
-    for (let at = 0; at < f.spine.length; ++at){
-      const sp = f.spine[at], hw = f.halfK[at];
-      if (sp !== sp || hw !== hw) continue;
-      const half = Math.min(hw, f.half + 0.10);
-      const z = lo[2] + (f.kLo + at + 0.5) * res + 0.012;
-      const al = f.alongAt[at];
-      const alongPos = (al === al) ? al : 0;
-      for (const side of [-1, 1]){
-        const off = sp + side * half;
-        verts.push([f.cx + f.ux*alongPos - f.uy*off, f.cy + f.uy*alongPos + f.ux*off, z]);
-      }
-    }
-    if (verts.length < 4) continue;
-    const base = pos.length / 3;
-    for (const v of verts) pos.push(v[0], v[1], v[2]);
-    for (let q = 0; q + 3 < verts.length; q += 2){
-      const a = base + q, b = a + 1, c = a + 2, d = a + 3;
-      idx.push(a, b, c, b, d, c);
-    }
-  }
-  if (pos.length){
-    const geo = new THREE.BufferGeometry();
-    geo.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
-    geo.setIndex(idx);
-    geo.computeVertexNormals();
+  const {res, lo, nx, ny} = m;
+  const cells = [];
+  for (const f of m.flights) for (const id of (f.cells || [])) cells.push(id);
+  if (cells.length){
+    const quad = new THREE.PlaneGeometry(res*0.92, res*0.92);
     const mat = new THREE.MeshBasicMaterial({
-      color: 0xffa844, transparent: true, opacity: 0.30, side: THREE.DoubleSide,
-      depthWrite: false});
-    const mesh = new THREE.Mesh(geo, mat);
+      color: 0xffa844, transparent: true, opacity: 0.42, depthWrite: false});
+    const mesh = new THREE.InstancedMesh(quad, mat, cells.length);
     mesh.renderOrder = 4;
+    const dum = new THREE.Object3D();
+    for (let n = 0; n < cells.length; ++n){
+      const f = cells[n];
+      const k = (f / (nx*ny)) | 0, rem = f - k*nx*ny;
+      const j = (rem / nx) | 0, i = rem - j*nx;
+      dum.position.set(lo[0] + (i+0.5)*res, lo[1] + (j+0.5)*res, lo[2] + (k+0.5)*res + 0.016);
+      dum.rotation.set(0, 0, 0);
+      dum.scale.set(1, 1, 1);
+      dum.updateMatrix();
+      mesh.setMatrixAt(n, dum.matrix);
+    }
     group.add(mesh);
   }
-  // the centre line: one polyline per flight, at the mean spine offset
+  // centre line: one polyline per flight, at the per-step tread centre
   for (const f of m.flights){
     const pts = [];
     for (let at = 0; at < f.spine.length; ++at){
-      const sp = f.spine[at];
-      if (sp !== sp) continue;
+      const sp = f.spine[at], al = f.alongAt[at];
+      if (sp !== sp || al !== al) continue;
       const z = lo[2] + (f.kLo + at + 0.5) * res + 0.02;
-      const al = f.alongAt[at], alongPos = (al === al) ? al : 0;
-      pts.push(new THREE.Vector3(f.cx + f.ux*alongPos - f.uy*sp, f.cy + f.uy*alongPos + f.ux*sp, z));
+      pts.push(new THREE.Vector3(f.cx + f.ux*al - f.uy*sp, f.cy + f.uy*al + f.ux*sp, z));
     }
     if (pts.length < 2) continue;
     const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),
