@@ -29,6 +29,8 @@ geometry:
     yaw: 0.0
   supports_strafe: true
 
+# Bridge launch arguments merge common -> native -> ros2 (later wins); package/launch only select
+# the launch file. Every scalar key below becomes a sw01_cmd_vel_bridge parameter.
 bridge:
   common:
     cmd_vel_topic: /cmd_vel
@@ -39,24 +41,32 @@ bridge:
     package: sw01_ros_control
     launch: sw01_control.launch.py
     cmd_vel_topic: /cmd_vel
-    auto_enter_move_mode: true
+    auto_enter_move_mode: false     # Never stand up / enter MOVE on its own
   native:
     control_rate: 50.0
     heartbeat_rate: 10.0
     cmd_vel_decay_window: 0.0
     sdk_timeout: 10000
-    auth_timeout: 2000
+    auth_timeout: 200               # [ms] Heartbeats stall while waiting; capped at 400
     move_timeout: 20
     heartbeat_timeout: 20
     request_control_authority: true
     require_move_mode: true
     publish_status: true
+    require_enable: true            # Motion needs /sw01_cmd_vel_bridge/enable (std_srvs/SetBool)
+    blocking_error_mask: 0          # errorCode bits that also block motion; sysStatus ERROR always does
 
 navigation:
   inflation_radius: 0.35
-  obstacle_cost_safe_distance: 0.80
-  obstacle_cost_weight: 8.0
-  line_of_sight_safe_distance: 0.35
+  obstacle_cost_safe_distance: 0.50
+  obstacle_cost_weight: 3.5
+  dynamic_obstacle_cost_safe_distance: 0.35
+  dynamic_obstacle_cost_weight: 3.2
+  sliding_map_start_exempt_radius_m: 0.48
+  start_heading_penalty_weight: 4.0
+  start_heading_penalty_radius_m: 1.5
+  path_protect_initial_m: 0.25
+  line_of_sight_safe_distance: 0.20
   smoothing_iterations: 40
   smoothing_max_deviation_m: 0.35
   min_height: -0.3
@@ -67,7 +77,7 @@ navigation:
 
 mission:
   enable_alignment: true
-  angular_tolerance: 0.3491
+  angular_tolerance: 0.0873
   route_segment_enable: true
   route_segment_length_m: 10.0
   route_segment_overlap_m: 3.0
@@ -92,3 +102,16 @@ local_planner:
         stop_topic: /neupan/stop
       config: neupan/config.yaml
       planner: neupan/planner.yaml
+    sru:
+      interface:
+        mode: goal_pose
+        goal_topic: /sru/goal_pose
+        cmd_vel_topic: /sru/cmd_vel
+        enable_topic: /sru/cmd_vel_enable
+        relay_output: /cmd_vel
+        odom_topic: /odin1/odometry
+      package: sru_nav
+      launch: sru_nav.launch.py
+      # Robot-specific overrides (conservative policy_scale), passed to the
+      # planner launch as params_file; same pattern as neupan.config above.
+      config: sru/config.yaml

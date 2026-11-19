@@ -65,6 +65,10 @@ MissionManager::MissionManager(const rclcpp::Node::SharedPtr &node) : node_(node
   replan_cooldown_sec_ = node_->declare_parameter("replan_cooldown_sec", replan_cooldown_sec_);
   navigation_mode_ = node_->declare_parameter("navigation_mode", navigation_mode_);
   periodic_replan_sec_ = node_->declare_parameter("periodic_replan_sec", periodic_replan_sec_);
+  path_block_replan_enable_ =
+      node_->declare_parameter("path_block_replan_enable", path_block_replan_enable_);
+  path_block_replan_cooldown_sec_ =
+      node_->declare_parameter("path_block_replan_cooldown_sec", path_block_replan_cooldown_sec_);
   route_segment_enable_ = node_->declare_parameter("route_segment_enable", route_segment_enable_);
   route_segment_length_m_ =
       node_->declare_parameter("route_segment_length_m", route_segment_length_m_);
@@ -200,6 +204,12 @@ MissionManager::MissionManager(const rclcpp::Node::SharedPtr &node) : node_(node
     }
   }
   if (periodic_replan_sec_ <= 0.0) periodic_replan_sec_ = 2.0;
+  if (path_block_replan_enable_ && !install_gate_enable_ && !install_gate_shadow_) {
+    RCLCPP_WARN(node_->get_logger(),
+                "[path_block_watchdog] enabled but install_gate is disabled; "
+                "blocked detection is inactive so the watchdog will not fire. "
+                "Set install_gate_enable:=true (or install_gate_shadow:=true).");
+  }
   if (route_segment_length_m_ <= 0.0) route_segment_length_m_ = 10.0;
   route_segment_overlap_m_ = std::max(
       0.0, std::min(route_segment_overlap_m_, route_segment_length_m_ * 0.5));
@@ -422,6 +432,16 @@ MissionManager::~MissionManager() {
 void MissionManager::sendPathGoal(const nav_msgs::msg::Path &path,
                                  const RouteTarget *target) {
   if (!path_client_) return;
+  if (stop_latched_.load() ||
+      (state_ != State::NAVIGATING && state_ != State::RETURNING_HOME &&
+       state_ != State::DYNAMIC)) {
+    RCLCPP_WARN(node_->get_logger(),
+                "[mission_manager] suppressed sendPathGoal while stopped/inactive "
+                "(state=%s latched=%d)",
+                stateName(state_).c_str(), stop_latched_.load() ? 1 : 0);
+    return;
+  }
+  navigation_stopped_.store(false);
   NavPathAction::Goal goal;
   goal.path = path;
   const std::uint64_t generation = path_goal_generation_.fetch_add(1) + 1;
@@ -431,8 +451,13 @@ void MissionManager::sendPathGoal(const nav_msgs::msg::Path &path,
   NavPathClient::SendGoalOptions options;
   options.goal_response_callback =
       [this, generation](const rclcpp_action::ClientGoalHandle<NavPathAction>::SharedPtr &handle) {
-        if (generation != path_goal_generation_.load()) {
+        if (handle) {
+          live_action_goals_.fetch_add(1);
+        }
+        if (stop_latched_.load() || navigation_stopped_.load() ||
+            generation != path_goal_generation_.load()) {
           if (handle && rclcpp::ok()) path_client_->async_cancel_goal(handle);
+          if (stop_pub_) stop_pub_->publish(std_msgs::msg::Empty());
           return;
         }
         if (!handle) {
@@ -449,6 +474,10 @@ void MissionManager::sendPathGoal(const nav_msgs::msg::Path &path,
   options.result_callback =
       [this, generation](
           const rclcpp_action::ClientGoalHandle<NavPathAction>::WrappedResult &result) {
+        const int prev = live_action_goals_.fetch_sub(1);
+        if (prev <= 1) {
+          live_action_goals_.store(0);
+        }
         pathDoneCb(generation, result);
       };
   path_client_->async_send_goal(goal, options);
@@ -465,6 +494,10 @@ bool MissionManager::waitPathDone(double timeout_sec) {
 }
 
 void MissionManager::process() {
+  if (navigation_stopped_.load() && live_action_goals_.load() > 0) {
+    if (path_client_) path_client_->async_cancel_all_goals();
+    if (stop_pub_) stop_pub_->publish(std_msgs::msg::Empty());
+  }
   {
     const rclcpp::Time now = node_->now();
     const double silent = (now - last_odom_rx_at_).seconds();
@@ -507,17 +540,11 @@ void MissionManager::process() {
   }
 
   if (replan_requested_.exchange(false) && !recovery_episode_active_ &&
+      !stop_latched_.load() &&
       (state_ == State::NAVIGATING || state_ == State::RETURNING_HOME)) {
     RCLCPP_WARN(node_->get_logger(), "NeuPAN requested a new global path for waypoint %d",
                 current_index_);
-    if (path_client_) {
-      path_client_->async_cancel_all_goals();
-      waitPathDone(plan_timeout_sec_);
-    }
-    stop_pub_->publish(std_msgs::msg::Empty());
-    path_done_.store(false);
-    path_succeeded_.store(false);
-    distance_remaining_.store(-1.0);
+    stopNavigation();
     publishEvent("REPLANNING", "NeuPAN requested a fresh path");
     if (!startCurrentWaypoint()) {
       stopNavigation();
@@ -686,6 +713,7 @@ void MissionManager::startMissionCb(
     captureHomePoseIfNeeded();
   }
 
+  stop_latched_.store(false);
   res->success = startCurrentWaypoint();
   res->mission_id = mission_id_;
   res->message = res->success ? (temporary ? "Temporary mission started" : "Mission started")
@@ -718,6 +746,7 @@ void MissionManager::pauseCb(
   }
   clearRecoveryCandidate(true);
   paused_from_ = state_;
+  stop_latched_.store(true);
   stopNavigation();
   transitionTo(State::PAUSED, "Paused by request");
   res->success = true;
@@ -742,6 +771,7 @@ void MissionManager::resumeCb(
     publishOperatorCommand(command_id, "RESUME", "REJECTED", "{}", false, res->message);
     return;
   }
+  stop_latched_.store(false);
   if (paused_from_ == State::DWELLING) {
     dwell_start_ = node_->now();
     transitionTo(State::DWELLING, "Resumed dwell");
@@ -789,6 +819,7 @@ void MissionManager::returnHomeCb(
   if (mission_id_.empty()) {
     mission_id_ = newMissionId();
   }
+  stop_latched_.store(false);
   res->success = startCurrentWaypoint();
   res->message = res->success ? "Returning home" : "Unable to plan home path";
   publishOperatorCommand(command_id, "RETURN_HOME",
@@ -801,6 +832,7 @@ void MissionManager::cancelCb(
     std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
   const std::string command_id = newCommandId();
   publishOperatorCommand(command_id, "CANCEL", "REQUESTED", "{}", false, "");
+  stop_latched_.store(true);
   clearRecoveryCandidate(true);
   active_path_.poses.clear();
   clearRouteSegment();
@@ -837,6 +869,7 @@ void MissionManager::resetCb(
     std::shared_ptr<std_srvs::srv::Trigger::Response> res) {
   const std::string command_id = newCommandId();
   publishOperatorCommand(command_id, "RESET", "REQUESTED", "{}", false, "");
+  stop_latched_.store(true);
   clearRecoveryCandidate(true);
   active_path_.poses.clear();
   clearRouteSegment();
@@ -900,6 +933,7 @@ void MissionManager::goalCb(const geometry_msgs::msg::PoseStamped::ConstSharedPt
   current_index_ = 0;
   completed_waypoints_ = 0;
   mission_id_ = newMissionId();
+  stop_latched_.store(false);
   startCurrentWaypoint();
 }
 
@@ -931,6 +965,7 @@ void MissionManager::setDynamicModeCb(
     paused_loop_ = false;
     paused_mission_id_.clear();
     dynamic_mode_ = true;
+    stop_latched_.store(false);
     dynamic_goal_pending_ = false;
     dynamic_goal_valid_ = false;
     dynamic_nav_active_ = false;
@@ -1692,12 +1727,32 @@ void MissionManager::processPeriodicReplan() {
   }
   if (!pathScanFresh() || (route_segment_enable_ && global_route_.poses.empty())) return;
   const rclcpp::Time now = node_->now();
-  if (last_periodic_replan_at_.nanoseconds() != 0 &&
-      (now - last_periodic_replan_at_).seconds() < periodic_replan_sec_) {
-    return;
+  const bool periodic_due =
+      last_periodic_replan_at_.nanoseconds() == 0 ||
+      (now - last_periodic_replan_at_).seconds() >= periodic_replan_sec_;
+  // Path-validity watchdog: when the active path corridor is blocked (install
+  // gate blocked hysteresis), replan immediately instead of waiting the periodic
+  // interval; cooldown avoids a replan storm while stuck. Direction stability is
+  // handled by the install gate (heading_worsen / side-lock). Requires gate on.
+  bool watchdog_due = false;
+  if (path_block_replan_enable_ && install_gate_blocked_gated_.load()) {
+    if (last_path_block_replan_at_.nanoseconds() == 0 ||
+        (now - last_path_block_replan_at_).seconds() >= path_block_replan_cooldown_sec_) {
+      watchdog_due = true;
+    }
   }
+  if (!periodic_due && !watchdog_due) return;
   last_periodic_replan_at_ = now;
-  EC_TRACE(ec::REPLAN_TRIGGER, "periodic_replan", "wp=%d", current_index_);
+  if (watchdog_due) {
+    last_path_block_replan_at_ = now;
+    RCLCPP_INFO_THROTTLE(node_->get_logger(), *node_->get_clock(), 1000,
+                         "[path_block_watchdog] active path corridor blocked -> "
+                         "immediate replan (wp=%d min_lat=%.2fm)",
+                         current_index_, install_gate_min_lateral_m_.load());
+    EC_TRACE(ec::REPLAN_TRIGGER, "path_block_watchdog", "wp=%d", current_index_);
+  } else {
+    EC_TRACE(ec::REPLAN_TRIGGER, "periodic_replan", "wp=%d", current_index_);
+  }
   std::vector<RouteTarget> targets;
   if (route_segment_enable_ && !global_route_.poses.empty()) {
     geometry_msgs::msg::PoseStamped pose;
@@ -1815,7 +1870,7 @@ void MissionManager::pathFeedbackCb(
 }
 
 void MissionManager::replanCb(const std_msgs::msg::Empty::ConstSharedPtr &) {
-  if (recovery_episode_active_) return;
+  if (recovery_episode_active_ || stop_latched_.load()) return;
   if (state_ == State::NAVIGATING || state_ == State::RETURNING_HOME) {
     const rclcpp::Time now = node_->now();
     if (replan_cooldown_sec_ > 0.0 && last_replan_at_.nanoseconds() != 0 &&
@@ -2364,8 +2419,8 @@ bool MissionManager::startCurrentWaypoint() {
     if (navigation_mode_ == "replan_periodic") {
       last_periodic_replan_at_ = node_->now();
     }
-    sendPathGoal(path, initial_target.route ? &initial_target : nullptr);
     transitionTo(returning_home_ ? State::RETURNING_HOME : State::NAVIGATING);
+    sendPathGoal(path, initial_target.route ? &initial_target : nullptr);
     return true;
   }
 
@@ -2635,6 +2690,10 @@ bool MissionManager::performAlignment(const nav_interfaces::msg::Waypoint &targe
 
 void MissionManager::startAlignment() {
   joinAlignmentThread();
+  if (stop_latched_.load() || state_ != State::ALIGNING) {
+    return;
+  }
+  navigation_stopped_.store(false);
   alignment_cancel_requested_.store(false);
   alignment_result_pending_.store(false);
   alignment_result_.store(false);
@@ -2764,6 +2823,8 @@ void MissionManager::restorePausedMission(const std::string &message) {
 }
 
 void MissionManager::stopNavigation() {
+  navigation_stopped_.store(true);
+  replan_requested_.store(false);
   alignment_generation_.fetch_add(1);
   path_goal_generation_.fetch_add(1);
   initial_plan_requested_ = false;
@@ -2788,6 +2849,7 @@ void MissionManager::stopNavigation() {
     sru_stall_ref_distance_ = -1.0;
     sru_stall_ref_at_ = rclcpp::Time(0, 0, RCL_ROS_TIME);
   }
+  path_goal_active_.store(false);
   path_done_.store(false);
   path_succeeded_.store(false);
   distance_remaining_.store(-1.0);
@@ -2798,6 +2860,11 @@ void MissionManager::stopNavigation() {
 }
 
 void MissionManager::transitionTo(State state, const std::string &message) {
+  if (state == State::IDLE || state == State::PAUSED ||
+      state == State::CANCELLED || state == State::COMPLETED ||
+      state == State::FAILED) {
+    stop_latched_.store(true);
+  }
   state_ = state;
   publishEvent(stateName(state), message);
   publishStatus();

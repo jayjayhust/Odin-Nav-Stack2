@@ -13,9 +13,18 @@ def load_profile(path) -> dict:
     return data
 
 
-def neupan_config_path(profile: dict) -> str:
-    rel = profile.get('local_planner', {}).get('backends', {}).get('neupan', {}).get('config', '')
+def local_planner_config_path(profile: dict, backend: str) -> str:
+    """Optional per-robot config file of a local-planner backend.
+
+    Relative paths are resolved against the profile directory, e.g.
+    robots/sw01/sru/config.yaml for backends.sru.config: sru/config.yaml.
+    """
+    rel = profile.get('local_planner', {}).get('backends', {}).get(backend, {}).get('config', '')
     return str((Path(profile['_profile_dir']) / rel).resolve()) if rel else ''
+
+
+def neupan_config_path(profile: dict) -> str:
+    return local_planner_config_path(profile, 'neupan')
 
 
 def local_planner_backend(profile: dict, override: str = '') -> str:
@@ -82,6 +91,12 @@ def map_planner_parameters(profile: dict) -> dict:
         'inflation_radius': float,
         'obstacle_cost_safe_distance': float,
         'obstacle_cost_weight': float,
+        'dynamic_obstacle_cost_safe_distance': float,
+        'dynamic_obstacle_cost_weight': float,
+        'sliding_map_start_exempt_radius_m': float,
+        'start_heading_penalty_weight': float,
+        'start_heading_penalty_radius_m': float,
+        'path_protect_initial_m': float,
         'line_of_sight_safe_distance': float,
         'smoothing_iterations': int,
         'smoothing_max_deviation_m': float,
@@ -94,11 +109,28 @@ def bridge_launch_file(profile: dict, runtime: str = 'ros2') -> tuple:
     return str(cfg.get('package', '')).strip(), str(cfg.get('launch', '')).strip()
 
 
+_BRIDGE_LAUNCH_SELECTORS = ('package', 'launch')
+
+
+def _launch_value(value) -> str:
+    if isinstance(value, bool):
+        return 'true' if value else 'false'
+    return str(value)
+
+
 def bridge_launch_arguments(profile: dict, runtime: str = 'ros2') -> dict:
+    """Merge bridge.common -> bridge.native -> bridge.<runtime> (later wins) into launch arguments.
+
+    Only scalar values are passed; `package`/`launch` select the launch file and are skipped.
+    """
     bridge = profile.get('bridge', {})
-    topic = bridge.get(runtime, {}).get(
-        'cmd_vel_topic', bridge.get('common', {}).get('cmd_vel_topic'))
-    return {'cmd_vel_topic': str(topic)} if topic else {}
+    merged = {}
+    for section in (bridge.get('common'), bridge.get('native'), bridge.get(runtime)):
+        for key, value in (section or {}).items():
+            if key in _BRIDGE_LAUNCH_SELECTORS or value is None or isinstance(value, (dict, list)):
+                continue
+            merged[key] = _launch_value(value)
+    return merged
 
 
 def mission_interface_arguments(profile: dict, lp_backend: str = '', gp_backend: str = '') -> dict:

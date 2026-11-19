@@ -85,7 +85,7 @@
   See the [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception) tutorial for web links and documentation.
 - **Built for industrial inspection**  
   Extensive optimizations tuned to real industrial inspection scenarios and long patrol routes.  
-  See the [remote web monitor](docs/remote_monitoring.md) (**ASTRALL SW01 + ROS 2 only**) — browser-based control console with on-demand camera and intercom (requires your own 4G module, NAT traversal or a public server).
+  See the [ONS2 Web Console](docs/web_console.md) — an all-in-one browser control terminal (`:18090`) that starts/stops the navigation stack, switches between NeuPAN and SRU policies, displays the global map and robot pose, edits and dispatches waypoint missions, enables the chassis, handles latched e-stop and teleop, records diagnostic bags with presets, and provides on-demand camera and intercom. Verified on ROS 2 (SW01) and supported on ROS 1 (Go2, Dobot Lumo). Remote access needs your own 4G module, NAT traversal or a public server.
 - **End-to-end, fully open source**  
   A complete inspection workflow — simulation to real robots, algorithms to the monitoring platform, real world to simulated world. See the [Real2Sim tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial).
 - **Odin RTK fusion navigation**  
@@ -124,7 +124,7 @@ Unitree Go2 is supported by the ROS1 stack only.
 # 3. Local Planner: NeuPAN or SRU
 
 > [!NOTE]
-> The SRU training code is already published. SRU integrated into the navigation stack will be released soon. Please stay tuned!
+> The SRU training code is published in [SRU-Odin](https://github.com/ManifoldTechLtd/SRU-Odin). The SRU inference backend is now part of this repository: shared core in `sru/`, ROS2 package `ros2_ws/src/sru_nav`, ROS1 package `ros_ws/src/sru_nav`. Trained ONNX models are **not bundled**.
 
 By default the stack uses **NeuPAN** on a global A\* path. ONS2 can also replace NeuPAN with the **SRU** end-to-end policy, which maps the depth image and the goal directly to velocity commands.
 
@@ -163,7 +163,7 @@ For parameter tuning (speed, footprint, safety clearance, stuck escape), see [02
 
 ## 3.2 Running SRU
 
-> **SRU requires training.** Obtain the locomotion controller from your robot's manufacturer — it is not provided by us. The trained ONNX models (policy and VAE encoder) are **not included** in this repository. Train the policy in the SRU repository, then deploy the exported models to the SRU workspace on the robot:
+> **SRU requires training.** Obtain the locomotion controller from your robot's manufacturer — it is not provided by us. The trained ONNX models (policy and VAE encoder) are **not included** in this repository. Train the policy in the SRU repository, then place the exported models in `<repo>/sru/models/` (default names `vae_encoder.onnx` and `nav_policy.onnx`), or point `SRU_VAE_MODEL` / `SRU_POLICY_MODEL` at them:
 >
 > **[ManifoldTechLtd/SRU-Odin](https://github.com/ManifoldTechLtd/SRU-Odin)** — training (`Train/`), deployment (`Deployment/`), and the porting guide.
 
@@ -173,29 +173,24 @@ Pass `--local-planner=sru` to any platform launcher to switch from NeuPAN to the
 
 - **Unitree Go2 (ROS1):**
   ``` shell
-  export SRU_WS=/path/to/sru_ros1_workspace
   bash scripts/ons2_go2.sh --local-planner=sru --map=NAME
-  # Optional: select a specific policy file with --sru-policy=FILE
   ```
 - **ASTRALL SW01 (ROS2 or ROS1):**
   ``` shell
   # ROS2 (default)
-  export SRU_WS_ROS2=/path/to/sru_ros2_workspace
   bash scripts/ons2_sw01.sh --local-planner=sru --map=NAME
 
   # ROS1
-  export SRU_WS=/path/to/sru_ros1_workspace
   bash scripts/ons2_sw01.sh --ros1 --local-planner=sru --map=NAME
   ```
 - **Dobot Lumo (ROS1):**
   ``` shell
-  export SRU_WS=/path/to/sru_ros1_workspace
   bash scripts/ons2_dobot_lumo.sh --local-planner=sru --map=NAME
   ```
 
 Common notes:
-- On ROS2, the launcher starts the SRU policy node and velocity relay via `ros2_ws/scripts/sru/start_sru_ros2.sh` and `ros2_ws/scripts/sru/sru_cmd_vel_relay.py` (models default to `$SRU_WS_ROS2/Deployment/models`, overridable via `SRU_MODELS_DIR`).
-- On ROS1, the SRU helper defaults to `sru_nav_go2_ros1`; set `SRU_PKG` and `SRU_LAUNCH` (or configure `planner.local` in `robots/<robot>/robot.yaml`) to point to your robot's SRU package and launch file.
+- The platform launchers include the in-repo `sru_nav` package via the `sru` backend in `robots/<robot>/robot.yaml`. The velocity gate relay is **not** auto-started: run `python3 ros2_ws/scripts/sru_cmd_vel_relay.py` (ROS2) or `python3 ros_ws/scripts/sru_cmd_vel_relay.py` (ROS1) alongside the stack. It forwards `/sru/cmd_vel` to `/cmd_vel` only while `/sru/cmd_vel_enable` is true (default false).
+- Standalone helpers: `ros2_ws/scripts/start_sru_ros2.sh` (ROS2) and `ros_ws/scripts/start_sru.sh` (ROS1). Models default to `<repo>/sru/models`, overridable via `SRU_MODELS_DIR` / `SRU_VAE_MODEL` / `SRU_POLICY_MODEL`. See [`sru/README.md`](sru/README.md).
 - `--navigation-mode` has no effect in SRU mode.
 - SRU outputs a body-frame `Twist`, so any robot with a `/cmd_vel` bridge can use it. See [03 · Integrate Your Own Robot](docs/usage/03_integrate_your_robot.md).
 
@@ -368,8 +363,7 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | I want to… | Read |
 |---|---|
 | **Run a patrol mission** on an existing robot | [01 · Quick Start](docs/usage/01_quick_start.md) |
-| **Drive it from a browser** (Foxglove, or the optional 3DGS console) | [Quick Start § 5 · Web Control Frontend](docs/usage/01_quick_start.md#5-web-control-frontend) |
-| **Operate it remotely over 4G / NAT** — *ROS 2 (SW01) only; ROS 1 not supported yet* | [Remote Web Monitor](docs/remote_monitoring.md) |
+| **Control the entire navigation workflow from a browser** — start/stop stack, map, waypoint missions, e-stop, teleop, bag recording, camera, intercom | [ONS2 Web Console Guide](docs/web_console.md) · [Quick Start § 5 · Web Control Frontend](docs/usage/01_quick_start.md#5-web-control-frontend) |
 | **Understand or retune the local planner** — what was optimised and why | [NeuPAN Optimisation Notes](docs/neuPAN_optimisation.md) |
 | **Look up the default values for my platform** — measured per-robot values plus a recommended tuning order | [02 · Parameter Tuning](docs/usage/02_parameter_tuning.md) |
 | **Look up what a specific parameter does**, or debug a symptom | [Advanced Tuning & Troubleshooting](docs/TUNING_GUIDE.md) — full parameter dictionary (MPC/DUNE, scan pre-processing, adaptive safety band, global planner) plus a symptom→parameter table |
@@ -406,9 +400,9 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | Capability | ROS 1 (Noetic) | ROS 2 (Jazzy) |
 |---|---|---|
 | Patrol navigation, local/global planning | ✅ | ✅ |
-| Web control console (Foxglove) | ✅ | ✅ |
+| ONS2 Web Console (stack start/stop, map, missions, bag recording, e-stop, teleop, camera, intercom) | ✅ (mission/map/teleop; untested on hardware) | ✅ SW01 |
+| 3D visualization bridge (Foxglove WebSocket) | ✅ | ✅ |
 | Inspection perception (Florence-2, separate repo) | ✅ | ✅ |
-| Remote web monitor (camera / intercom / e-stop) | ❌ not yet | ✅ SW01 |
 | 3DGS navigation console *(optional, contact us)* | ✅ | ✅ |
 | Multi-floor missions (lift / stairs / ramp) — *fork, Go2* | ✅ | ❌ not yet |
 | 3D occupancy planner (`octo_planner_ros1`) — *fork* | ✅ | ❌ not yet |
@@ -522,9 +516,11 @@ Odin-Nav-Stack2/
 │       ├── sw01_ros_control/      # ASTRALL SW01 SDK velocity bridge
 │       └── odin_vlm_terminal/     # ROS 2 VLM scene question-answering node
 ├── NeuPAN/                        # Shared MPC + analytic DUNE local planner core (Python)
+├── web_console/                   # Built-in browser control console (stack, map, missions, teleop, bags, camera, intercom)
 ├── perception/                    # Guide & clone instructions for ManifoldTechLtd/Odin-perception
 ├── docker/                        # Docker setup for Jetson (ROS 1)
 └── docs/                          # Documentation
+    ├── web_console.md             # ONS2 Web Console end-to-end user guide (+ web_console.zh-CN.md)
     ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
     ├── TUNING_GUIDE.md            # Detailed parameter dictionary & troubleshooting reference

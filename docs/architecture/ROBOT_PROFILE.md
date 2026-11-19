@@ -201,9 +201,15 @@ local_planner:
         enable_topic: /sru/cmd_vel_enable
         relay_output: /cmd_vel
         odom_topic: /odin1/odometry
-      package: sru_nav_go2_ros1
-      launch: sru_nav_go2.launch
+      package: sru_nav
+      launch: sru_nav.launch
 ```
+
+Any backend may declare an optional `config:` file (relative to the profile
+directory), e.g. `config: sru/config.yaml` under `sru:`. The ROS2 bringup
+passes it to the planner launch as `params_file`; this is how robot-specific
+overrides (such as the conservative SW01 `policy_scale`) stay out of the
+shared planner package. NeuPAN's `config:`/`planner:` follow the same rule.
 
 NeuPAN and SRU have different control contracts (verified in the repository):
 
@@ -228,6 +234,7 @@ Because the contracts differ, `interface` is per-backend. `mode: action` and
     - `local_planner.backends.<backend>.interface.enable_topic` (default: `/sru/cmd_vel_enable`)
     - `local_planner.backends.<backend>.interface.cmd_vel_topic` (default: `/sru/cmd_vel`)
     - `bridge.{ros1,ros2,common}.cmd_vel_topic` (default: `/cmd_vel`, passed to the chassis bridge launch)
+    - ROS 2: every scalar key of `bridge.common`, `bridge.native`, and `bridge.ros2` is passed to the bridge launch file as a launch argument (see Merge rules)
 
 ## Merge rules
 
@@ -237,6 +244,11 @@ Because the contracts differ, `interface` is per-backend. `mode: action` and
   section replaces the `common` key.
 - `bridge.native` is not merged into `common`; it is consumed by the
   robot-specific bridge.
+- ROS 2 bridge launch arguments are built in the order `bridge.common` →
+  `bridge.native` → `bridge.ros2` (a later section wins). `package` / `launch`
+  only select the launch file; nested maps and lists are not passed. Booleans
+  are passed as `true` / `false`; the bridge launch file converts every
+  argument to the type its node declares.
 
 ## NeuPAN configuration
 
@@ -252,7 +264,8 @@ contains the robot geometry and MPC/planner weights.
 
 Current loader behavior (`NeuPAN/neupan/ros/neupan_ros.py`):
 
-- `NEUPAN_ROS_CONFIG` is resolved relative to `NeuPAN/neupan/ros/configs/`.
+- `NEUPAN_ROS_CONFIG` is resolved relative to `NeuPAN/neupan/ros/configs/`. A path that
+  does not exist is a start-up error; there is no fallback to the package default config.
 - `planner_config_file` is resolved relative to `NeuPAN/neupan/ros/`, not the
   directory of the config file.
 - `dune_checkpoint` is passed through to the DUNE layer.
@@ -278,8 +291,10 @@ copies the files and leaves the running stack untouched.
   network auto-detection, `/unitree/sport_mode_state`, and startup
   `StandUp` / `FreeWalk` / `FreeAvoid(false)`. Profile values are descriptive
   only.
-- `sw01_control.launch.py` hardcodes most bridge parameters; only
-  `cmd_vel_topic` is exposed as a launch argument.
+- `sw01_control.launch.py` exposes every bridge parameter as a launch argument
+  and receives them from `robots/sw01/robot.yaml`. The bridge starts with
+  motion disabled; enable it through `/sw01_cmd_vel_bridge/enable`
+  (`std_srvs/SetBool`) once the area is clear.
 - `dobot_vel_bridge.py` hardcodes `/cmd_vel`; `dobot_control_py.launch` exposes
   the original parameters. Profile values beyond `dry_run` /
   `allow_walk_switch` are descriptive only.
@@ -304,9 +319,9 @@ copies the files and leaves the running stack untouched.
   navigation, mission, waypoint, rosbridge, Foxglove, health, and control in
   tmux dashboards.
 - `geometry.sensor_mount`, `geometry.footprint`, `navigation.*`,
-  `robots/<robot>/neupan/`, and SW01 ROS2 `cmd_vel_topic` are wired from the
-  profiles; remaining vendor-specific `bridge.native` values stay in the
-  individual bridge launch defaults.
+  `robots/<robot>/neupan/`, and all SW01 ROS2 bridge parameters are wired from
+  the profiles; remaining vendor-specific `bridge.native` values of the ROS 1
+  bridges stay in the individual bridge launch defaults.
 
 ## Safety
 

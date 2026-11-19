@@ -76,6 +76,7 @@ tmux send-keys -t "${SESSION}:sw01" \
   "${ENV_PREFIX} && ros2 launch ons2_bringup bringup.launch.py profile:=${ROBOT_PROFILE} global_planner:=${GLOBAL_PLANNER} local_planner:=${LOCAL_PLANNER} neupan_config:=${NEUPAN_CONFIG} navigation_mode:=${NAVIGATION_MODE} periodic_replan_sec:=${PERIODIC_REPLAN_SEC} 2>&1 | tee ${LOG_DIR}/sw01.log" C-m
 ons2_log "w3 starting SW01 navigation stack (global_planner=${GLOBAL_PLANNER}, local_planner=${LOCAL_PLANNER}, mode=${LOCAL_PLANNER_MODE})..."
 sleep 15
+ons2_wait_for "ros2 topic list" '/odin1/cloud_filtered$' 30 "cloud_filter"
 ons2_wait_for "ros2 topic list" '/scan$' 30 "pc_to_scan"
 ons2_wait_for "ros2 topic list" '/scan_360$' 30 "sliding_map"
 ons2_wait_for "ros2 node list" '/sw01_cmd_vel_bridge$' 30 "sw01 bridge"
@@ -97,14 +98,6 @@ ons2_start_window "${SESSION}" foxglove "${ENV_PREFIX} && ros2 run foxglove_brid
 ons2_start_window "${SESSION}" health "${ENV_PREFIX} && python3 ${REPO_ROOT}/ros2_ws/scripts/node_health_monitor.py 2>&1 | tee ${LOG_DIR}/health.log"
 ons2_start_window "${SESSION}" control "${ENV_PREFIX} && python3 ${REPO_ROOT}/ros2_ws/scripts/test_nav_control_ros2.py --allow-motion"
 
-# Optional web control console (off by default).
-#   ENABLE_REMOTE_MONITOR=1 bash scripts/ons2_sw01.sh [--remote-monitor-port=18088]
-# Exposes a single port serving both HTTP and HTTPS, so a NAT tunnel only needs one port.
-# See docs/remote_monitoring.md for the network prerequisites (4G / tunnel / VPS).
-if [ "${ENABLE_REMOTE_MONITOR:-0}" = "1" ]; then
-  REMOTE_MONITOR_PORT="${REMOTE_MONITOR_PORT:-18088}"
-  ons2_start_window "${SESSION}" monitor "${ENV_PREFIX} && python3 ${REPO_ROOT}/ros2_ws/scripts/remote_monitor.py --port ${REMOTE_MONITOR_PORT} 2>&1 | tee ${LOG_DIR}/remote_monitor.log"
-fi
 
 ons2_log "=================================================="
 ons2_log "SW01 stack started"
@@ -112,8 +105,7 @@ ons2_log "  Local planner : ${LOCAL_PLANNER}"
 ons2_log "  Navigation    : ${NAVIGATION_MODE}"
 ons2_log "  Map           : ${MAP_FILE_NAME}"
 ons2_log "  Attach        : tmux attach -t ${SESSION}"
-if [ "${ENABLE_REMOTE_MONITOR:-0}" = "1" ]; then
-  ons2_log "  Remote monitor: http://<robot-ip>:${REMOTE_MONITOR_PORT:-18088}  (ENABLE_REMOTE_MONITOR=1)"
-fi
 ons2_log "  Stop          : bash ${SCRIPT_DIR}/ons2_sw01_stop.sh"
+ons2_log "  Chassis       : motion DISABLED until enabled (control window [c], or:"
+ons2_log "                  ros2 service call /sw01_cmd_vel_bridge/enable std_srvs/srv/SetBool \"{data: true}\")"
 ons2_log "=================================================="

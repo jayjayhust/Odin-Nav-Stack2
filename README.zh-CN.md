@@ -81,7 +81,7 @@
   参见 [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception) 教程，内有网页链接与文档说明。
 - **专为工业巡检打造**  
   针对真实工业巡检场景与长距离巡逻路线进行了大量专项优化。  
-  远程 Web 监控界面见 [remote_monitoring.zh-CN.md](docs/remote_monitoring.zh-CN.md)（**仅璇玑SW01+ROS 2适配**）—— 浏览器控制台，按需开相机与语音喊话（需自备 4G 模块、内网穿透或公网服务器）。
+  内置 **[ONS2 Web 控制端](docs/web_console.zh-CN.md)**（端口 `:18090`）—— 在浏览器中直接一键启停整套导航栈、切换 NeuPAN / SRU 策略、查看全局地图与实时位姿、点选编排航点任务、使能底盘、锁存急停与键盘遥控、按预设在线录包，以及按需开相机与语音喊话。已在璇玑 SW01（ROS 2）实机验证，并适配 Go2 / Dobot Lumo（ROS 1）。远程访问需自备 4G 模块、内网穿透或公网服务器。
 - **端到端，完全开源**  
   完整的巡检工作流——从仿真到实机、从算法到监控平台。真实世界到仿真世界，参见 [Real2Sim 教程](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial)。
 - **Odin RTK融合导航**
@@ -119,7 +119,7 @@ Unitree Go2 仅由 ROS1 栈支持。
 # 3. 局部规划器：NeuPAN 或 SRU
 
 > [!NOTE]
-> SRU 训练代码已发布。融入导航的 SRU 将在近期发布。敬请期待！
+> SRU 训练代码已发布于 [SRU-Odin](https://github.com/ManifoldTechLtd/SRU-Odin)。SRU 推理后端现已并入本仓库：共享核心在 `sru/`，ROS2 包 `ros2_ws/src/sru_nav`，ROS1 包 `ros_ws/src/sru_nav`。训练好的 ONNX 模型**不随仓库分发**。
 
 默认情况下，该栈在全局 A\* 路径上使用 **NeuPAN**。ONS2 也可以用 **SRU** 端到端策略替代 NeuPAN，后者直接将深度图像和目标映射为速度指令。
 
@@ -158,7 +158,7 @@ NeuPAN 是默认的局部规划器（`--local-planner=neupan`），适配新机�
 
 ## 3.2 运行 SRU
 
-> **SRU 需要训练。** 请联系厂家获得机器人的运控。训练好的 ONNX 模型（策略和 VAE 编码器）**不包含**在本仓库中。请在 SRU 仓库中训练策略，然后将导出的模型部署到机器人上的 SRU 工作空间：
+> **SRU 需要训练。** 请联系厂家获得机器人的运控。训练好的 ONNX 模型（策略和 VAE 编码器）**不包含**在本仓库中。请在 SRU 仓库中训练策略，然后将导出的模型放到 `<repo>/sru/models/`（默认文件名 `vae_encoder.onnx` 与 `nav_policy.onnx`），或用 `SRU_VAE_MODEL` / `SRU_POLICY_MODEL` 指向它们：
 >
 > **[ManifoldTechLtd/SRU-Odin](https://github.com/ManifoldTechLtd/SRU-Odin)** —— 训练（`Train/`）、部署（`Deployment/`）与移植指南。
 
@@ -168,24 +168,20 @@ NeuPAN 是默认的局部规划器（`--local-planner=neupan`），适配新机�
 
 - **Unitree Go2（ROS1）：**
   ``` shell
-  export SRU_WS=/path/to/sru_ros1_workspace
   bash scripts/ons2_go2.sh --local-planner=sru --map=NAME
-  # 可选：通过 --sru-policy=FILE 指定策略模型文件
   ```
 - **ASTRALL SW01（ROS2 或 ROS1）：**
   ``` shell
   # ROS2（默认）
-  export SRU_WS_ROS2=/path/to/sru_ros2_workspace
   bash scripts/ons2_sw01.sh --local-planner=sru --map=NAME
 
   # ROS1
-  export SRU_WS=/path/to/sru_ros1_workspace
   bash scripts/ons2_sw01.sh --ros1 --local-planner=sru --map=NAME
   ```
 
 通用说明：
-- 在 ROS2 下，启动脚本通过 `ros2_ws/scripts/sru/start_sru_ros2.sh` 与 `ros2_ws/scripts/sru/sru_cmd_vel_relay.py` 启动 SRU 策略节点与速度门控 relay（模型默认从 `$SRU_WS_ROS2/Deployment/models` 读取，可通过 `SRU_MODELS_DIR` 覆盖）。
-- 在 ROS1 下，SRU 启动脚本默认使用 `sru_nav_go2_ros1`；可通过设置 `SRU_PKG` 和 `SRU_LAUNCH`（或在 `robots/<robot>/robot.yaml` 的 `planner.local` 中配置）指定对应机器人的 SRU 包和 launch 文件。
+- 平台启动脚本经 `robots/<robot>/robot.yaml` 的 sru 后端配置直接 include 仓库内的 `sru_nav` 包。速度门控 relay **不会自动启动**：需随栈另跑 `python3 ros2_ws/scripts/sru_cmd_vel_relay.py`（ROS2）或 `python3 ros_ws/scripts/sru_cmd_vel_relay.py`（ROS1）。它仅在 `/sru/cmd_vel_enable` 为 true（默认 false）时把 `/sru/cmd_vel` 转发到 `/cmd_vel`。
+- 单独启动脚本：`ros2_ws/scripts/start_sru_ros2.sh`（ROS2）与 `ros_ws/scripts/start_sru.sh`（ROS1）。模型默认从 `<repo>/sru/models` 读取，可用 `SRU_MODELS_DIR` / `SRU_VAE_MODEL` / `SRU_POLICY_MODEL` 覆盖。详见 [`sru/README.md`](sru/README.md)。
 - `--navigation-mode` 在 SRU 模式下无效。
 - SRU 输出机体坐标系下的 `Twist`，因此任何具备 `/cmd_vel` 桥接的机器人都可以使用。详见 [03 · 接入你自己的机器人](docs/usage/03_integrate_your_robot.md)。
 
@@ -357,9 +353,8 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 
 | 我想… | 看这篇 |
 |---|---|
-| **在现有机器人上跑巡检任务** | [01 · 快速开始](docs/usage/01_quick_start.md) |
-| **用浏览器驱动机器人**（Foxglove，或可选的 3DGS 控制台） | [快速开始 § 5 · Web 控制前端](docs/usage/01_quick_start.md#5-web-control-frontend) |
-| **通过 4G / 内网穿透远程操作** —— *仅 ROS 2（SW01），ROS 1 暂不支持* | [远程 Web 监控](docs/remote_monitoring.zh-CN.md) |
+| **在现有机器人上跑巡检任务** | [01 · 快速开始](docs/usage/01_quick_start.zh-CN.md) |
+| **用浏览器控制整个导航流程** —— 一键启停导航、地图选点、任务管理、急停遥控、在线录包、相机与喊话 | [ONS2 Web 控制端使用指南](docs/web_console.zh-CN.md) · [快速开始 § 5 · Web 控制前端](docs/usage/01_quick_start.zh-CN.md#5-web-控制前端) |
 | **搞懂或重调局部规划器** —— 优化了什么、为什么 | [NeuPAN 优化说明](docs/neuPAN_optimisation.zh-CN.md) |
 | **查我这台平台的默认参数值** —— 各机器人实测取值 + 推荐调参顺序 | [02 · 参数调优](docs/usage/02_parameter_tuning.zh-CN.md) |
 | **按名字查某个参数是什么**，或按症状排障 | [高级调参与排障指南](docs/TUNING_GUIDE.zh-CN.md) —— 全参数词典（MPC/DUNE/扫描预处理/自适应安全带/全局规划）+ 症状→改哪个参数的对照表 |
@@ -392,9 +387,9 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | 能力 | ROS 1（Noetic） | ROS 2（Jazzy） |
 |---|---|---|
 | 巡检导航、全局/局部规划 | ✅ | ✅ |
-| Web 控制台（Foxglove） | ✅ | ✅ |
+| ONS2 Web 控制端（启停导航 / 地图 / 任务 / 录包 / 急停 / 遥控 / 相机 / 喊话） | ✅（地图/任务/遥控，尚未实机验证） | ✅ SW01 |
+| 3D 可视化桥接（Foxglove WebSocket） | ✅ | ✅ |
 | 巡检感知（Florence-2，独立仓） | ✅ | ✅ |
-| 远程 Web 监控（相机 / 喊话 / 急停） | ❌ 暂不支持 | ✅ SW01 |
 | 3DGS 导航控制台 *（可选，联系我们获取）* | ✅ | ✅ |
 | 跨层任务（电梯 / 楼梯 / 坡道）—— *fork，Go2* | ✅ | ❌ 暂不支持 |
 | 3D 占据栅格规划器（`octo_planner_ros1`）—— *fork* | ✅ | ❌ 暂不支持 |
@@ -497,9 +492,11 @@ Odin-Nav-Stack2/
 │       ├── sw01_ros_control/      # ASTRALL SW01 SDK 底盘速度桥
 │       └── odin_vlm_terminal/     # ROS 2 VLM 场景问答节点
 ├── NeuPAN/                        # 共享 MPC + 解析式 DUNE 局部规划器核心库 (Python)
+├── web_console/                   # 内置浏览器控制端 (导航启停、地图、航点任务、遥控、录包、相机、喊话)
 ├── perception/                    # ManifoldTechLtd/Odin-perception 巡检感知仓库说明与拉取指南
 ├── docker/                        # Jetson (ROS 1) Docker 部署配置
 └── docs/                          # 文档体系
+    ├── web_console.zh-CN.md       # ONS2 Web 控制端全流程使用指南 (含英文版 web_console.md)
     ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
     ├── TUNING_GUIDE.md            # 完整参数字典与症状排障手册

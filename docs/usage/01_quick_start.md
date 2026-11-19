@@ -50,13 +50,31 @@ bash scripts/ons2_sw01.sh --map=NAME
 - Readiness gates are printed in the main terminal; long-running nodes run in the `ons2_sw01` tmux session (`odin / map_server / sw01 / mission / atomic / waypoint / rosbridge / foxglove / health / control`).
 - Attach with `tmux attach -t ons2_sw01`.
 - `ROS_DOMAIN_ID=98` is set by the script. Set it yourself in any terminal you open by hand.
-- Robot-specific geometry, global planner parameters, bridge topic, and NeuPAN configs are loaded from `robots/sw01/robot.yaml` and `robots/sw01/neupan/`.
+- Robot-specific geometry, global planner parameters, chassis bridge parameters, and NeuPAN configs are loaded from `robots/sw01/robot.yaml` and `robots/sw01/neupan/`.
+- **Chassis motion starts disabled.** Stand the robot up and switch it to MOVE with the remote controller, release the remote controller, make sure the area is clear, then enable motion from the `control` window (`[c]`, requires `--allow-motion`) or with:
+
+  ```bash
+  ros2 service call /sw01_cmd_vel_bridge/enable std_srvs/srv/SetBool "{data: true}"
+  ```
+
+  The bridge disables motion again on start-up/respawn, control-authority loss (e.g. remote-controller takeover), SDK link loss, or a robot fault, and only executes velocity commands received after the last enable. The bridge never stands the robot up on its own (`auto_enter_move_mode: false`). `/sw01_cmd_vel_bridge/motion_enabled` reports the current state.
 
 Stop:
 
 ```bash
 bash scripts/ons2_sw01_stop.sh
 ```
+
+Mapless navigation (no prior map, e.g. at a new site before any relocalization map exists):
+
+```bash
+bash scripts/ons2_sw01_mapless.sh
+```
+
+- Odin runs in SLAM mode (`custom_map_mode: 1`). The navigation map is the blank `empty` map (100 m × 100 m, centred on the start pose), and a static identity `map → odom` TF replaces relocalization, so Gate 2 is skipped.
+- Global paths on a blank map are straight lines, and obstacles not yet scanned are not on the global path. Send goals in short steps and keep the remote control ready to take over.
+- `--map` is not accepted in this mode. `--navigation-mode`, `--periodic-replan-sec`, `--neupan-config` and `--mock-odin` work as in `ons2_sw01.sh`.
+- Goals are given in the `map` frame, which equals `odom` with its origin at the start pose. Stop with `bash scripts/ons2_sw01_stop.sh`.
 
 Useful options across `ons2_go2.sh`, `ons2_sw01.sh`, and `ons2_dobot_lumo.sh`:
 
@@ -150,12 +168,18 @@ ros2 topic echo /waypoint_manager/status --once
 
 ## 5. Web Control Frontend
 
-Beyond the terminal console, ONS2 exposes the robot over a WebSocket bridge, so you can
-drive and watch it from a browser.
+Beyond the terminal console, ONS2 ships with a built-in browser control console as the primary web frontend, alongside optional 3D visualization tools.
 
-### 5.1 Open-source frontend (Foxglove) — included
+### 5.1 Built-in ONS2 Web Console (`:18090`) — recommended
 
-The launcher already starts `foxglove_bridge`; nothing extra to install.
+`web_console/` provides single-page browser control over the entire navigation workflow: start/stop the navigation stack (with map, NeuPAN/SRU planner, and mode selection), view the live map and robot pose, pick and edit waypoint missions, enable the chassis, trigger latched e-stop or `W/A/S/D/Q/E` teleop, record ROS 2 bags with presets, and use the on-demand camera and speaker intercom.
+
+- Open `http://<robot-ip>:18090` (or `https://<robot-ip>:18090` for microphone access; autostarted on SW01 via `scripts/systemd/web-console.service`, or run `python3 -m web_console.run --port 18090`).
+- Full walkthrough: **[ONS2 Web Console User Guide](../web_console.md)**.
+
+### 5.2 3D Debugging Visualization (Foxglove) — included
+
+The launcher also starts `foxglove_bridge` on port `8765` when you need 3D point-cloud and TF inspection:
 
 1. Open [Foxglove Studio](https://foxglove.dev/) in a browser (or the desktop app).
 2. Connect to **Foxglove WebSocket** → `ws://<robot-ip>:8765`
@@ -166,20 +190,9 @@ The launcher already starts `foxglove_bridge`; nothing extra to install.
    (the dedicated capture channel) — **not** `/move_base_simple/goal`, or the robot starts
    moving on every drag.
 
-### 5.2 3DGS navigation console — optional, contact us
+### 5.3 3DGS navigation console — optional, contact us
 
-For production inspection we provide a **separate, actively maintained control terminal**
-with a 3D Gaussian Splatting scene view: much richer visualisation, mission editing, and
-fleet-ready dashboards. **It supports both ROS 1 and ROS 2**, so it also covers the platforms
-where the open-source monitor above is not available yet (Go2, Dobot Lumo). It is not part of
-this open-source release — **please contact us to obtain it**.
-
-> 📹 **Video demos of both frontends** are on the
-> [ONS2 project page](https://manifoldtechltd.github.io/Odin-Nav-Stack2-Webpage/), in the
-> **"Navigation in 3DGS Reconstructed Scenes"** section.
->
-> If you are evaluating which frontend to start with: begin with Foxglove (free, zero setup),
-> and move to the 3DGS console when you need production-grade mission management.
+For 3D Gaussian Splatting scene views and multi-robot fleet dashboards, we also offer a separate **3DGS navigation console** supporting both ROS 1 and ROS 2. It is not part of this open-source release — **please contact us to obtain it** (video demos on the [ONS2 project page](https://manifoldtechltd.github.io/Odin-Nav-Stack2-Webpage/)).
 
 ## 6. Check Before Trusting the Robot
 

@@ -50,13 +50,31 @@ bash scripts/ons2_sw01.sh --map=NAME
 - 就绪闸门在主终端打印；长驻节点跑在 `ons2_sw01` 这个 tmux 会话里（`odin / map_server / sw01 / mission / atomic / waypoint / rosbridge / foxglove / health / control`）。
 - 进入会话：`tmux attach -t ons2_sw01`。
 - 脚本里设了 `ROS_DOMAIN_ID=98`。你手动开的终端要自己 export 同样的值。
-- 机器人的几何参数、全局规划参数、桥接话题与 NeuPAN 配置从 `robots/sw01/robot.yaml` 和 `robots/sw01/neupan/` 加载。
+- 机器人的几何参数、全局规划参数、底盘桥参数与 NeuPAN 配置从 `robots/sw01/robot.yaml` 和 `robots/sw01/neupan/` 加载。
+- **底盘运动启动时处于禁止（未使能）状态。** 先用遥控器将机器人站立并切换到 MOVE 模式，释放遥控器控制权，确认周围清场后，在 `control` 窗口按 `[c]`（需 `--allow-motion`）或执行以下命令手动使能：
+
+  ```bash
+  ros2 service call /sw01_cmd_vel_bridge/enable std_srvs/srv/SetBool "{data: true}"
+  ```
+
+  桥节点在启动/重启、丢失控制权（例如遥控器接管）、SDK 链路断开或底盘报错时会自动解除使能，且只执行最近一次使能之后收到的速度指令。桥默认不会自行站立或切换姿态（`auto_enter_move_mode: false`）；当前使能状态通过 `/sw01_cmd_vel_bridge/motion_enabled` 发布。
 
 停止：
 
 ```bash
 bash scripts/ons2_sw01_stop.sh
 ```
+
+无图导航（没有先验地图，例如新场地在建立重定位地图之前）：
+
+```bash
+bash scripts/ons2_sw01_mapless.sh
+```
+
+- Odin 以 SLAM 模式运行（`custom_map_mode: 1`）。导航地图为空白的 `empty`（100 m × 100 m，以启动位姿为中心），用静态恒等变换 `map → odom` 代替重定位，因此跳过闸门 2。
+- 空白图上的全局路径只是直线，尚未扫描到的障碍不在全局路径上。请分小步下发目标，并随时准备用遥控器接管。
+- 该模式不接受 `--map`。`--navigation-mode`、`--periodic-replan-sec`、`--neupan-config`、`--mock-odin` 的用法与 `ons2_sw01.sh` 相同。
+- 目标在 `map` 坐标系下下发，`map` 与 `odom` 重合，原点为启动位姿。停止：`bash scripts/ons2_sw01_stop.sh`。
 
 `ons2_go2.sh`、`ons2_sw01.sh`、`ons2_dobot_lumo.sh` 共通的常用参数：
 
@@ -150,26 +168,27 @@ ros2 topic echo /waypoint_manager/status --once
 
 ## 5. Web 控制前端
 
-除了终端控制台，ONS2 还通过 WebSocket 桥把机器人暴露出来，你可以用浏览器驱动与观察它。
+除了终端交互脚本，ONS2 内置了一套开箱即用的浏览器控制端作为首选 Web 操作入口，并保留 3D 可视化调试桥。
 
-### 5.1 开源前端（Foxglove）—— 已随启动脚本拉起
+### 5.1 内置 ONS2 Web 控制端（`:18090`）—— 推荐首选
 
-启动编排已经起了 `foxglove_bridge`，不需要额外安装。
+`web_console/` 在单个网页中集成了完整的导航控制能力：一键启停导航栈（支持选地图、切换 NeuPAN / SRU 策略与导航模式）、实时查看全局地图与机器人位姿、左键点选编排航点任务、使能底盘、锁存急停与 `W/A/S/D/Q/E` 键盘遥控、按预设在线录包，以及按需相机与扬声器喊话。
+
+- 浏览器直接打开 `http://<机器人IP>:18090`（如需使用麦克风对讲则用 `https://<机器人IP>:18090`；SW01 主机通过 `scripts/systemd/web-console.service` 开机自启，也可手动执行 `python3 -m web_console.run --port 18090`）。
+- 详细操作流程见：**[ONS2 Web 控制端全流程使用指南](../web_console.zh-CN.md)**。
+
+### 5.2 3D 调试可视化（Foxglove）—— 已随启动脚本拉起
+
+需要查看三维点云与 TF 树排障时，启动编排已同步拉起 `foxglove_bridge`（端口 `8765`）：
 
 1. 浏览器或桌面版打开 [Foxglove Studio](https://foxglove.dev/)。
 2. 连接 **Foxglove WebSocket** → `ws://<机器人IP>:8765`（桥监听 `0.0.0.0`，有线与 WiFi 地址都能连）。
 3. 添加面板：**3D**（点云 + TF）、**Image**（`/odin1/image/undistorted`）、**Plot**，以及 `/waypoint_manager/status` 的 **Raw Message**。
 4. 从 Foxglove 发点：把 *2D Pose* 的发布话题改成 `/waypoint_pick`（专用采点通道）——**不要**用 `/move_base_simple/goal`，否则每拖一下机器人都会立刻动。
 
-### 5.2 3DGS 导航控制台 —— 可选，联系获取
+### 5.3 3DGS 导航控制台 —— 可选，联系获取
 
-面向生产巡检，我们另外提供一套**独立维护的控制终端**，带 3D Gaussian Splatting 场景视图：可视化更丰富、任务编辑、可直接做车队看板。**它同时支持 ROS 1 与 ROS 2**，所以上面的开源监控还覆盖不到的平台（Go2、Dobot Lumo）也能用它。它不在本次开源范围内 —— **请联系我们获取**。
-
-> 📹 **两个前端的演示视频**都在
-> [ONS2 项目主页](https://manifoldtechltd.github.io/Odin-Nav-Stack2-Webpage/)的
-> **"Navigation in 3DGS Reconstructed Scenes"** 章节里。
->
-> 如果你在纠结先上哪个前端：从 Foxglove 开始（免费、零配置），需要生产级任务管理时再上 3DGS 控制台。
+如需 3D Gaussian Splatting 实景重建视图与多机车队看板，我们还提供独立维护的 **3DGS 导航控制台**（同时支持 ROS 1 与 ROS 2，不在开源仓库内，请联系我们获取；演示视频见 [ONS2 项目主页](https://manifoldtechltd.github.io/Odin-Nav-Stack2-Webpage/)）。
 
 ## 6. 信任机器人之前的检查
 

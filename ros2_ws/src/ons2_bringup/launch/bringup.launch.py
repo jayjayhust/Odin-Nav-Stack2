@@ -21,6 +21,7 @@ from robot_profile import (
     local_planner_launch,
     map_planner_parameters,
     neupan_config_path,
+    local_planner_config_path,
     pc_to_scan_parameters,
     sensor_mount_config,
 )
@@ -52,6 +53,35 @@ def _include_profile_nodes(context, *args, **kwargs):
     qz = math.sin(half_yaw)
     qw = math.cos(half_yaw)
 
+    map_planner_share = get_package_share_directory('map_planner')
+    cloud_filter_mode = (
+        LaunchConfiguration('cloud_filter').perform(context).strip().lower() or 'on'
+    )
+    if cloud_filter_mode not in ('off', 'shadow', 'on'):
+        raise RuntimeError(f"cloud_filter must be 'off', 'shadow', or 'on' (got {cloud_filter_mode!r})")
+
+    cloud_filter_nodes = []
+    pc_additional_env = None
+    nav_cloud_topic = '/odin1/cloud_slam'
+    if cloud_filter_mode in ('shadow', 'on'):
+        cloud_filter_params_file = os.path.join(
+            map_planner_share, 'config', 'odin_cloud_filter.yaml')
+        cloud_filter_fastdds_file = os.path.join(
+            map_planner_share, 'config', 'odin_cloud_filter_fastdds.xml')
+        pc_additional_env = {'FASTRTPS_DEFAULT_PROFILES_FILE': cloud_filter_fastdds_file}
+        cloud_filter_nodes.append(Node(
+            package='map_planner',
+            executable='odin_slam_temporal_filter.py',
+            name='odin_cloud_temporal_filter',
+            output='screen',
+            respawn=True,
+            respawn_delay=3.0,
+            additional_env=pc_additional_env,
+            parameters=[cloud_filter_params_file],
+        ))
+        if cloud_filter_mode == 'on':
+            nav_cloud_topic = '/odin1/cloud_filtered'
+
     pc_params = {
         'target_frame': 'odin1_base_link',
         'qos_overrides./tf.subscription.reliability': 'best_effort',
@@ -71,9 +101,10 @@ def _include_profile_nodes(context, *args, **kwargs):
         output='screen',
         respawn=True,
         respawn_delay=3.0,
+        additional_env=pc_additional_env,
         parameters=[pc_params],
         remappings=[
-            ('cloud_in', '/odin1/cloud_slam'),
+            ('cloud_in', nav_cloud_topic),
             ('scan', '/scan_raw'),
         ],
     )
@@ -136,9 +167,16 @@ def _include_profile_nodes(context, *args, **kwargs):
     elif lp_backend != 'neupan':
         lp_pkg, lp_launch = local_planner_launch(profile, lp_backend)
         if lp_pkg and lp_launch:
+            # Optional per-robot overrides (backends.<name>.config in
+            # robot.yaml), e.g. robots/sw01/sru/config.yaml -> params_file.
+            lp_args = {}
+            lp_cfg = local_planner_config_path(profile, lp_backend)
+            if lp_cfg:
+                lp_args['params_file'] = lp_cfg
             planner_actions.append(IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(os.path.join(
                     get_package_share_directory(lp_pkg), 'launch', lp_launch)),
+                launch_arguments=lp_args.items(),
             ))
 
     bridge_pkg, bridge_launch = bridge_launch_file(profile, 'ros2')
@@ -181,6 +219,7 @@ def _include_profile_nodes(context, *args, **kwargs):
             qz=0.499,
             qw=0.504,
         ),
+        *cloud_filter_nodes,
         pc_to_scan,
         sliding_map_node,
         *planner_actions,
@@ -191,6 +230,9 @@ def generate_launch_description():
     declare_profile = DeclareLaunchArgument(
         'profile',
         description='Path to robots/<robot>/robot.yaml')
+    declare_cloud_filter = DeclareLaunchArgument(
+        'cloud_filter', default_value='on',
+        description='Odin SLAM point-cloud persistence filter mode: on (default) | shadow | off')
     declare_global_planner = DeclareLaunchArgument(
         'global_planner', default_value='',
         description='Optional override for global_planner.backend in robot.yaml')
@@ -221,6 +263,7 @@ def generate_launch_description():
 
     return LaunchDescription([
         declare_profile,
+        declare_cloud_filter,
         declare_global_planner,
         declare_local_planner,
         declare_neupan_config,
