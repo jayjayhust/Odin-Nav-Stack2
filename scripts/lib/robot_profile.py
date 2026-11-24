@@ -82,7 +82,7 @@ def footprint_parameters(profile: dict) -> dict:
 
 def pc_to_scan_parameters(profile: dict) -> dict:
     nav = profile.get('navigation', {})
-    return {k: float(nav[k]) for k in ('min_height', 'max_height') if k in nav}
+    return {k: float(nav[k]) for k in ('min_height', 'max_height', 'range_min', 'range_max') if k in nav}
 
 
 def map_planner_parameters(profile: dict) -> dict:
@@ -100,6 +100,9 @@ def map_planner_parameters(profile: dict) -> dict:
         'line_of_sight_safe_distance': float,
         'smoothing_iterations': int,
         'smoothing_max_deviation_m': float,
+        'goal_relocate_enable': bool,
+        'goal_relocate_clearance_m': float,
+        'goal_relocate_max_radius_m': float,
     }
     return {k: fn(nav[k]) for k, fn in cast.items() if k in nav}
 

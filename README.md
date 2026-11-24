@@ -77,20 +77,21 @@
 
 ## 1.2 What's New
 
-- **Dramatically faster planning**  
+- **[2026-11-20] Built-in ONS2 Web Control Console (`:18090`)**  
+  Start/stop the stack, switch `NeuPAN` / `SRU` policies, pick waypoints on the live PGM map, teleop, stream compressed video, and record preset bags directly in the browser. See the [ONS2 Web Console Guide](docs/web_console.md).
+- **[2026-11-20] Blocked-Goal Adaptive Arrival & Smooth Dynamic Avoidance**  
+  Occupied waypoints automatically relocate to the nearest reachable spot outside the obstacle's inflation shell and count as arrived, paired with smoother close-range dynamic obstacle bypassing.
+- **[2026-11-10] Dramatically faster planning**  
   Plans substantially faster even on low-compute platforms, with smoother execution and nimbler obstacle avoidance.  
   See the [NeuPAN optimisation notes](docs/neuPAN_optimisation.md) for what was changed and the measured gains.
-- **Upgraded VLM, bring your own model**  
+- **[2026-11-09] Upgraded VLM, bring your own model**  
   Connect a more capable vision-language model to your own workstation for richer scene understanding.  
   See the [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception) tutorial for web links and documentation.
-- **Built for industrial inspection**  
-  Extensive optimizations tuned to real industrial inspection scenarios and long patrol routes.  
-  See the [ONS2 Web Console](docs/web_console.md) — an all-in-one browser control terminal (`:18090`) that starts/stops the navigation stack, switches between NeuPAN and SRU policies, displays the global map and robot pose, edits and dispatches waypoint missions, enables the chassis, handles latched e-stop and teleop, records diagnostic bags with presets, and provides on-demand camera and intercom. Verified on ROS 2 (SW01) and supported on ROS 1 (Go2, Dobot Lumo). Remote access needs your own 4G module, NAT traversal or a public server.
-- **End-to-end, fully open source**  
+- **[2026-11-09] End-to-end, fully open source**  
   A complete inspection workflow — simulation to real robots, algorithms to the monitoring platform, real world to simulated world. See the [Real2Sim tutorial](https://github.com/ManifoldTechLtd/MT-Real2Sim-Tutorial).
-- **Odin RTK fusion navigation**  
+- **[2026-11-09] Odin RTK fusion navigation**  
   Configure Odin with RTK in minutes to get full latitude/longitude-based navigation and open up further use cases.
-- **Plugin architecture**  
+- **[2026-11-09] Plugin architecture**  
   The stack is built around a plugin-based design, making it straightforward to integrate custom planners.
 - **[fork] Cross-floor missions on Go2 + Odin1**  
   Four-storey office navigation with stair semantics rather than a lift-only abstraction, plus an

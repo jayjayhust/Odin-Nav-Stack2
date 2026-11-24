@@ -1,13 +1,14 @@
 """ROS 2 adapter: wires the map, pose, mission, safety and camera topics/services to MonitorStateHub."""
 
+import signal
+import subprocess
 import threading
 import time
 from array import array
 
 from web_console.core import yaw_from_quaternion
 
-CHASSIS_ENABLE_SERVICE = "/sw01_cmd_vel_bridge/enable"
-CHASSIS_MOTION_TOPIC = "/sw01_cmd_vel_bridge/motion_enabled"
+MAP_SERVER_GET_MAP = "/map_server/map"
 TRIGGER_SERVICES = (
     "/waypoint_manager/pause", "/waypoint_manager/resume", "/waypoint_manager/cancel",
     "/waypoint_manager/skip", "/waypoint_manager/return_home", "/waypoint_manager/reset",
@@ -16,12 +17,28 @@ TRIGGER_SERVICES = (
 START_MISSION_SERVICE = "/waypoint_manager/start_mission"
 
 
+def _non_loopback_ipv4s():
+    try:
+        res = subprocess.run(["ip", "-4", "-o", "addr", "show", "up"],
+                             capture_output=True, text=True, timeout=2)
+        ips = set()
+        for line in (res.stdout or "").splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[1] != "lo":
+                ips.add(parts[3].split("/")[0])
+        return frozenset(ips)
+    except Exception:
+        return frozenset()
+
+
 def run(args, hub):
     import rclpy
     import tf2_ros
     from geometry_msgs.msg import Twist
     from nav_msgs.msg import Odometry, OccupancyGrid
+    from nav_msgs.srv import GetMap
     from rclpy.callback_groups import ReentrantCallbackGroup
+    from rclpy.context import Context
     from rclpy.duration import Duration
     from rclpy.executors import MultiThreadedExecutor
     from rclpy.node import Node
@@ -29,7 +46,7 @@ def run(args, hub):
     from rclpy.time import Time
     from sensor_msgs.msg import CompressedImage
     from std_msgs.msg import Bool, Empty, String
-    from std_srvs.srv import SetBool, Trigger
+    from std_srvs.srv import Trigger
 
     try:
         from nav_interfaces.msg import MissionStatus, Waypoint
@@ -38,11 +55,12 @@ def run(args, hub):
         MissionStatus = Waypoint = StartMission = None
 
     class WebConsoleNode(Node):
-        def __init__(self):
-            super().__init__("web_console")
+        def __init__(self, context):
+            super().__init__("web_console", context=context)
             self._cb = ReentrantCallbackGroup()
             self._img_sub = None
             self._img_lock = threading.Lock()
+            self._map_req_inflight = False
             self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -53,7 +71,6 @@ def run(args, hub):
             self.create_subscription(Twist, args.cmd_vel_topic, self._on_cmd, qos_profile_sensor_data)
             self.create_subscription(String, "/waypoint_manager/system_health", self._on_health,
                                      qos_profile_sensor_data)
-            self.create_subscription(Bool, CHASSIS_MOTION_TOPIC, self._on_chassis, latched)
             if MissionStatus is not None:
                 self.create_subscription(MissionStatus, "/waypoint_manager/status", self._on_status,
                                          qos_profile_sensor_data)
@@ -63,16 +80,37 @@ def run(args, hub):
             self._estop_pub = self.create_publisher(Bool, "/emergency_stop", 10)
 
             self._triggers = {n: self.create_client(Trigger, n, callback_group=self._cb) for n in TRIGGER_SERVICES}
-            self._chassis_client = self.create_client(SetBool, CHASSIS_ENABLE_SERVICE, callback_group=self._cb)
+            self._map_client = self.create_client(GetMap, MAP_SERVER_GET_MAP, callback_group=self._cb)
             self._start_client = (self.create_client(StartMission, START_MISSION_SERVICE, callback_group=self._cb)
                                   if StartMission is not None else None)
             self.create_timer(1.0 / args.pose_hz, self._on_pose_tick)
+            self.create_timer(2.0, self._poll_map_service, callback_group=self._cb)
             self.create_timer(0.04, lambda: hub.nav.tick())
 
         def _on_map(self, msg):
             info = msg.info
-            hub.console.set_map(info.width, info.height, info.resolution,
-                                info.origin.position.x, info.origin.position.y, array("b", msg.data))
+            if info.width > 0 and info.height > 0 and len(msg.data) >= info.width * info.height:
+                hub.console.set_map(info.width, info.height, info.resolution,
+                                    info.origin.position.x, info.origin.position.y, array("b", msg.data))
+
+        def _poll_map_service(self):
+            if hub.console.snapshot()["map"] is not None or self._map_req_inflight:
+                return
+            if not self._map_client.service_is_ready():
+                return
+            self._map_req_inflight = True
+            fut = self._map_client.call_async(GetMap.Request())
+
+            def _done(f):
+                self._map_req_inflight = False
+                try:
+                    res = f.result()
+                    if res is not None:
+                        self._on_map(res.map)
+                except Exception:
+                    pass
+
+            fut.add_done_callback(_done)
 
         def _on_pose_tick(self):
             try:
@@ -92,9 +130,6 @@ def run(args, hub):
 
         def _on_health(self, msg):
             hub.update_system_health_json(msg.data)
-
-        def _on_chassis(self, msg):
-            hub.mission.update_chassis(msg.data)
 
         def _on_status(self, msg):
             tgt = msg.current_target
@@ -176,27 +211,73 @@ def run(args, hub):
                 return False, err, ""
             return bool(res.success), str(res.message), str(res.mission_id)
 
-        def set_chassis(self, enabled):
-            req = SetBool.Request()
-            req.data = bool(enabled)
-            res, err = self._call(CHASSIS_ENABLE_SERVICE, self._chassis_client, req, timeout=5.0)
-            if err:
-                return False, "底盘使能服务不可用：{}".format(err)
-            return bool(res.success), str(res.message)
+    stop_all = False
 
-    rclpy.init()
-    node = WebConsoleNode()
-    hub.bind(call_trigger=node.call_trigger, publish_cmd_vel=node.publish_cmd_vel,
-             publish_neupan_stop=node.publish_neupan_stop, publish_estop=node.publish_estop,
-             subscribe_image=node.subscribe_image, unsubscribe_image=node.unsubscribe_image,
-             start_mission=node.start_mission, set_chassis=node.set_chassis, list_topics=node.list_topics)
-    executor = MultiThreadedExecutor(num_threads=4)
-    executor.add_node(node)
+    def _on_sigterm(_signum, _frame):
+        nonlocal stop_all
+        stop_all = True
+
     try:
-        executor.spin()
-    except KeyboardInterrupt:
+        signal.signal(signal.SIGTERM, _on_sigterm)
+    except ValueError:
         pass
-    finally:
-        executor.shutdown()
-        node.destroy_node()
-        rclpy.shutdown()
+    while not stop_all:
+        ctx = Context()
+        rclpy.init(context=ctx)
+        boot_ips = _non_loopback_ipv4s()
+        node = WebConsoleNode(ctx)
+        hub.bind(call_trigger=node.call_trigger, publish_cmd_vel=node.publish_cmd_vel,
+                 publish_neupan_stop=node.publish_neupan_stop, publish_estop=node.publish_estop,
+                 subscribe_image=node.subscribe_image, unsubscribe_image=node.unsubscribe_image,
+                 start_mission=node.start_mission, list_topics=node.list_topics)
+        if hub.camera.enabled:
+            node.subscribe_image()
+        executor = MultiThreadedExecutor(num_threads=4, context=ctx)
+        executor.add_node(node)
+        rebind = threading.Event()
+
+        def _watch_dds():
+            no_pose_since = None
+            while ctx.ok() and not rebind.is_set():
+                time.sleep(3.0)
+                cur_ips = _non_loopback_ipv4s()
+                if not boot_ips and cur_ips:
+                    rebind.set()
+                    break
+                st_active = hub.stack.status().get("session_active", False)
+                has_pose = hub.console.snapshot()["pose"] is not None
+                if st_active and not has_pose:
+                    if no_pose_since is None:
+                        no_pose_since = time.monotonic()
+                    elif time.monotonic() - no_pose_since > 12.0:
+                        rebind.set()
+                        break
+                else:
+                    no_pose_since = None
+
+        threading.Thread(target=_watch_dds, daemon=True).start()
+        spin_thread = threading.Thread(target=executor.spin, daemon=True)
+        spin_thread.start()
+        try:
+            while ctx.ok() and not rebind.is_set() and not stop_all:
+                time.sleep(0.2)
+            if not rebind.is_set():
+                stop_all = True
+        except KeyboardInterrupt:
+            stop_all = True
+        finally:
+            rebind.set()
+            try:
+                executor.shutdown(timeout_sec=1.0)
+            except Exception:
+                pass
+            try:
+                node.destroy_node()
+            except Exception:
+                pass
+            if ctx.ok():
+                try:
+                    rclpy.shutdown(context=ctx)
+                except Exception:
+                    pass
+            spin_thread.join(timeout=2.0)
