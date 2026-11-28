@@ -1,0 +1,9 @@
+# dino_v3 backend: prototype placeholder (roadmap phase 5).
+#
+# The node loads these parameters, logs one warning and publishes no verdict.
+# They describe the interface a real encoder implementation is expected to use,
+# so the configuration surface does not change when the model lands.
+model_path: ""                    # exported model / ONNX / TorchScript path
+image_topic: "/odin1/image"        # Odin1 camera stream used as the visual input
+device: "cpu"                      # cpu | cuda:0 (must match the built runtime)
+input_size: 518                    # square encoder input in pixels

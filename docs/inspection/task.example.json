@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "task_id": "night-1f-20261123",
+  "name": "夜间巡检 · 一层",
+  "priority": 10,
+  "map": "1F",
+  "start_at": "2026-11-23T22:00:00+08:00",
+  "deadline_at": "2026-11-23T23:30:00+08:00",
+  "on_step_failure": "continue",
+  "metadata": {
+    "ticket": "INS-2026-1131",
+    "operator": "ops-2"
+  },
+  "steps": [
+    {
+      "step_id": "lobby",
+      "name": "大厅",
+      "target": {"point_id": "lobby_door"},
+      "timeout_sec": 180,
+      "retries": 1,
+      "sensors": ["camera", "lidar_scan"],
+      "actions": [
+        {"type": "speak", "params": {"text": "夜间巡检，请勿靠近", "volume": 80}},
+        {"type": "capture_burst", "params": {"count": 3, "interval_sec": 0.5}}
+      ]
+    },
+    {
+      "step_id": "pump",
+      "name": "泵房",
+      "target": {"point_id": "pump_room", "yaw": 1.57},
+      "timeout_sec": 240,
+      "sensors": ["camera"],
+      "actions": [
+        {"type": "measure_scan", "params": {"samples": 5, "interval_sec": 0.2}},
+        {"type": "wait", "params": {"sec": 3}}
+      ]
+    },
+    {
+      "step_id": "corridor",
+      "name": "走廊尽头（临时点位）",
+      "target": {"x": 18.2, "y": 6.4, "yaw": 3.14, "floor": "1F"},
+      "timeout_sec": 180,
+      "sensors": ["lidar_scan"],
+      "actions": [{"type": "capture_image"}]
+    }
+  ]
+}

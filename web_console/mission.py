@@ -24,6 +24,7 @@ def parse_waypoints(raw):
                 "yaw": float(item.get("yaw", 0.0)),
                 "dwell_sec": max(0.0, float(item.get("dwell_sec", 0.0))),
                 "name": str(item.get("name") or "P{}".format(idx)),
+                "floor": str(item.get("floor") or ""),
             })
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("第 {} 个点无效: {}".format(idx, exc))
@@ -36,16 +37,28 @@ class MissionController:
         self._status = None
         self._start_fn: Optional[Callable] = None
         self._trigger_fn: Optional[Callable[[str], tuple]] = None
+        self._guard_fn: Optional[Callable[[], tuple]] = None
 
     def bind(self, start_fn, trigger_fn):
         self._start_fn = start_fn
         self._trigger_fn = trigger_fn
 
+    def set_guard(self, guard_fn: Optional[Callable[[], tuple]]) -> None:
+        """Guard consulted before operator missions (inspection tasks own the robot)."""
+        self._guard_fn = guard_fn
+
     def update_status(self, status):
         with self._lock:
             self._status = status
 
-    def start(self, raw_waypoints, loop=False, temporary=False):
+    def start(self, raw_waypoints, loop=False, temporary=False, source="operator"):
+        if source != "inspection" and self._guard_fn is not None:
+            try:
+                blocked, reason = self._guard_fn()
+            except Exception:
+                blocked, reason = False, ""
+            if blocked:
+                return {"ok": False, "message": reason}
         try:
             points = parse_waypoints(raw_waypoints)
         except ValueError as exc:

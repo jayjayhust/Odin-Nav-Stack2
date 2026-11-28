@@ -38,8 +38,8 @@
 
 ## 1.1 核心特性
 
-- **高精度 SLAM 与持久重定位**（位于 Odin1 内部，未开源）  
-  实时建图，并利用紧凑的二进制地图进行长期重定位。
+- **高精度 SLAM 与持久重定位**（Odin1 内置 MindSLAM，未开源）  
+  实时建图，并利用紧凑的二进制地图进行长期重定位。MindSLAM 是整套栈唯一的全局位姿（TF `map → odom`）与配准点云来源——ONS2 本身不运行任何 SLAM 算法。
 - **动态障碍物感知导航**（完全开源）  
   带盲区障碍物记忆（`sliding_map`）的全局规划，结合 NeuPAN/SRU 局部规划器，在杂乱环境中也能安全运动。
 - **任务管理**（完全开源）  
@@ -65,7 +65,7 @@
 - **[fork] mesh 仿真器与真机三件套同口径**  
   浏览器里直接导入自己的 OBJ / STL（UE、Revit 导出），页面自己分出地板、墙与梯段，全局 3D A\*
   与局部 NeuPAN/DWA 用的是仓库同一套算法；红色净空带可切「硬禁行 / 软代价」，格子可擦可补、可存档。
-  **「导出 pgm」一次给出二进制 `P5` 的 `<地图名>.pgm` 与 `map_server` 的 `<地图名>.yaml`**
+  **「导出」组里的 `pgm` 一次给出二进制 `P5` 的 `<地图名>.pgm` 与 `map_server` 的 `<地图名>.yaml`**
   （`resolution` / `origin` / `occupied_thresh` / `free_thresh` 全对齐），楼层按楼板峰自动分带，
   等价于 `pcd_to_pgm.py` 的高度切片；产物直接落进 `map_planner/maps/`，与 Q9000/Odin1 导出的
   `<地图名>.bin` 同名即可 `--map=<地图名>` 启动。  
@@ -355,10 +355,13 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | 我想… | 看这篇 |
 |---|---|
 | **在现有机器人上跑巡检任务** | [01 · 快速开始](docs/usage/01_quick_start.zh-CN.md) |
+| **接收巡检后台下发的结构化巡检任务** —— 什么时候、去哪些点位、用什么传感器、执行什么操作，并把结果回传 | [巡检任务模块](docs/inspection.zh-CN.md) |
 | **用浏览器控制整个导航流程** —— 一键启停导航、地图选点、任务管理、急停遥控、在线录包、相机与喊话 | [ONS2 Web 控制端使用指南](docs/web_console.zh-CN.md) · [快速开始 § 5 · Web 控制前端](docs/usage/01_quick_start.zh-CN.md#5-web-控制前端) |
 | **搞懂或重调局部规划器** —— 优化了什么、为什么 | [NeuPAN 优化说明](docs/neuPAN_optimisation.zh-CN.md) |
 | **查我这台平台的默认参数值** —— 各机器人实测取值 + 推荐调参顺序 | [02 · 参数调优](docs/usage/02_parameter_tuning.zh-CN.md) |
 | **按名字查某个参数是什么**，或按症状排障 | [高级调参与排障指南](docs/TUNING_GUIDE.zh-CN.md) —— 全参数词典（MPC/DUNE/扫描预处理/自适应安全带/全局规划）+ 症状→改哪个参数的对照表 |
+| **自己写一个地形识别后端** —— 契约、可编译骨架、构建与配置接线、离线测试 | [04 · 增加自定义地形识别器](docs/usage/04_custom_terrain_backend.zh-CN.md) |
+| **替换地形识别后端或脱困策略** | [路线图：地形与脱困槽](docs/ROADMAP.zh-CN.md) |
 | **选用或编写平台档案** | [机器人档案规范](docs/architecture/ROBOT_PROFILE.md) |
 | **加入自动巡检** —— 清单结论、标注图像 | [感知指南](perception/README.zh-CN.md) → [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception) |
 | **接入一台新机器人** —— 接口契约、底盘桥、TF、启动 | [03 · 接入你自己的机器人](docs/usage/03_integrate_your_robot.md) |
@@ -382,6 +385,7 @@ bash scripts/ons2_sw01.sh --map=NAME  # ASTRALL SW01 (ROS2，或你自己的机�
 | 1 | [现有机器人快速开始](docs/usage/01_quick_start.md) | 在 Go2、SW01 或 Dobot Lumo 上启动该栈，并发送任务 |
 | 2 | [参数调优](docs/usage/02_parameter_tuning.md) | 为各平台调整速度、底盘尺寸、间隙和跟踪参数 |
 | 3 | [接入你自己的机器人](docs/usage/03_integrate_your_robot.md) | 接入新机器人：接口契约、底盘桥接、TF、启动 |
+| 4 | [增加自定义地形识别器](docs/usage/04_custom_terrain_backend.zh-CN.md) | 把学习型模型接进地形槽：契约、骨架、构建与配置接线、离线测试 |
 
 ## 5.3 功能在哪个版本可用
 
@@ -448,6 +452,10 @@ odin driver ──► /odin1/image/undistorted
 
 该栈采用分层结构：Odin1 感知与 TF → `pointcloud_to_laserscan` → `sliding_map` 障碍物记忆 → A\* 全局规划（`map_planner`）→ NeuPAN 局部控制（`neupan_ros`）→ 底盘桥接，由 `mission_manager` 协调。同一时刻只允许一个节点发布 `/cmd_vel`。控制权通过 `/neupan/stop` 从 NeuPAN 移交给 `atomic_move`。
 
+软硬件分界位于 Odin1 边界：**MindSLAM** 是 Odin1 内置的闭源 SLAM 引擎，承担全部建图与定位——建图阶段（SLAM 模式，`custom_map_mode: 1`）产出 `.bin` 重定位地图和 `.pcd` 点云（后者转换为 `.pgm` 规划地图）；导航阶段（重定位模式，`custom_map_mode: 2`）基于 `.bin` 实时定位，发布 TF 链 `map → odom → imu`、`/odin1/odometry` 与配准后的 `/odin1/cloud_slam`。本仓库开源的全部内容都是构建在这些输出之上的编排与规划层；启动闸门甚至会等待 MindSLAM 的 `relocalization success` 才放行下游导航节点。完整原理及其对跨楼层换图流程的约束见 [系统架构 § 5.1](docs/architecture/ONS2_ARCHITECTURE.md)。
+
+在这个位姿之上，导航是一个三层决策闭环。**全局导航**（`map_planner`）：在静态 `.pgm` 地图与 `sliding_map` 动态障碍记忆合并后的栅格上跑 8 邻域 A\*，代价由硬膨胀与基于距离变换的邻近代价共同塑造，再经拉绳简化、平滑与质量校验；`mission_manager` 周期性或在路径被堵时重规划，并用安装闸门拒绝退步的候选路径。**局部避障**（NeuPAN）：点机器人 MPC，把 `/scan_360` 中的每个障碍点直接作为碰撞约束——DUNE 将点云编码到隐式距离空间（解析式，无需按底盘训练），NRMP 把滚动时域问题解为锥规划 QP，并配窄走廊自适应安全带与基于曲率的限速。**脱困**（`stuck_escape`）：当前方被堵且沿参考路径的弧长进展停滞时，带护栏的状态机接管 `/cmd_vel`，执行后退、朝更大间隙旋转、请求全局重规划，再经宽限期交还控制权。原理详见 [系统架构 §§ 5.3–5.4](docs/architecture/ONS2_ARCHITECTURE.md)；逐帧管线与脱困闸门参数表见 [模块数据流 §§ 3–4](docs/architecture/MODULE_DATAFLOW.md)。
+
 # 7. 仓库结构 (Repository Structure)
 
 ```text
@@ -498,9 +506,11 @@ Odin-Nav-Stack2/
 ├── docker/                        # Jetson (ROS 1) Docker 部署配置
 └── docs/                          # 文档体系
     ├── web_console.zh-CN.md       # ONS2 Web 控制端全流程使用指南 (含英文版 web_console.md)
-    ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
+    ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot,
+    │                              #   04_custom_terrain_backend
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
     ├── TUNING_GUIDE.md            # 完整参数字典与症状排障手册
+    ├── ROADMAP.md                 # 地形识别与脱困策略槽路线图 (+ ROADMAP.zh-CN.md)
     └── multifloor/                # [fork] 跨层设计、3D 规划器与楼梯、离线仿真回放
 ```
 

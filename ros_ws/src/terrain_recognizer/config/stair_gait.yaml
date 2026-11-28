@@ -1,0 +1,34 @@
+# stair_gait backend: geometry of the detector.
+#
+# These are exactly the ROI / threshold keys of the stair_gait package (see
+# ros_ws/src/stair_gait/config/stair_gait.yaml). The actuation keys
+# (enable_actuation, api ids, gait ids) stay with the legacy stair_gait node -
+# terrain_recognizer detects, it never actuates.
+#
+# The detector builds a height profile along +x in `base_frame` inside this box
+# and counts same-sign tread edges:
+#   x  : how far ahead the ground is inspected (m)
+#   y  : lateral half-width of the corridor that votes (m)
+#   z  : heights accepted, relative to base_link; keep z_min below the lowest
+#        stair the robot can descend so a down-stair is not cut off
+roi_x_min: 0.80
+roi_x_max: 3.20
+roi_y_half: 0.60
+roi_z_min: -0.75
+roi_z_max: 0.60
+
+# Profile resolution: one bin every bin_m metres, bins with fewer than
+# min_bin_points returns are ignored (sparse far returns).
+bin_m: 0.05
+min_bin_points: 3
+
+# One tread must be at least min_rise_m and at most max_rise_m high; a jump
+# above max_rise_m is treated as a wall and resets the run count.
+min_rise_m: 0.08
+max_rise_m: 0.30
+
+# A staircase needs at least min_steps consecutive treads, and the treads must
+# not differ by more than max_rise_spread_m (otherwise the verdict is "unknown"
+# rather than a guessed gait).
+min_steps: 2
+max_rise_spread_m: 0.06

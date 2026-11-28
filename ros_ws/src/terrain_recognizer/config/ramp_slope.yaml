@@ -1,0 +1,47 @@
+# ramp_slope backend defaults: continuous slopes (ramps, dock levellers).
+#
+# The backend builds a height profile along +x in `base_frame` and fits a
+# straight line through it. |slope| below min_slope_deg is reported as `flat`,
+# a plane within [min_slope_deg, max_slope_deg] as `ramp_up` / `ramp_down`, and
+# anything that does not fit a plane (treads, kerbs, dock edges) as `unknown`.
+#
+# Keys are prefixed with the backend name: every instance shares the node's
+# private namespace with stair_gait and any other backend, so bare names such as
+# `x_min` would collide. Because of the prefix this file is loaded
+# unconditionally - instances of this backend get their defaults even when the
+# node-level `backend` argument is empty.
+#
+# x  : how far ahead the slope is measured (m)
+# y  : lateral half-width of the corridor that votes (m)
+# z  : heights accepted, relative to base_link; keep z_min below the lowest
+#      down-ramp you need to see, and z_max above the highest up-ramp
+ramp_slope/x_min: 0.60
+ramp_slope/x_max: 3.00
+ramp_slope/y_half: 0.50
+ramp_slope/z_min: -0.80
+ramp_slope/z_max: 0.80
+
+# Profile resolution: one bin every bin_m metres; bins with fewer than
+# min_bin_points returns are ignored (sparse far returns).
+ramp_slope/bin_m: 0.10
+ramp_slope/min_bin_points: 5
+
+# Evidence gates. min_bins / min_span_m decide when there is enough surface to
+# judge at all (below them the backend publishes nothing and consumers hold
+# their previous verdict); max_rms_m is the "is this one plane?" test that keeps
+# a staircase out of this backend - stair_gait owns those.
+ramp_slope/min_bins: 8
+ramp_slope/min_span_m: 1.00
+ramp_slope/max_rms_m: 0.05
+
+# Largest height jump tolerated between neighbouring bins. A continuous slope
+# cannot jump; a kerb, a dock edge or a tread can. Tripping this yields
+# `unknown` instead of a slightly tilted "flat", which is how a single 12 cm
+# step stays out of the ramp vocabulary.
+ramp_slope/max_step_m: 0.06
+
+# Drivable pitch band. Below min_slope_deg the ground is flat (a 2 deg apron is
+# not a ramp); above max_slope_deg it is a wall, a chassis-high step or a stair
+# pitch, and guessing "ramp_up" there would scale speed up a staircase.
+ramp_slope/min_slope_deg: 4.0
+ramp_slope/max_slope_deg: 22.0

@@ -46,3 +46,19 @@ if(BUILD_REPLAN_GATE_TEST)
   add_executable(replan_install_gate_test test/replan_install_gate_test.cpp)
   target_include_directories(replan_install_gate_test PRIVATE include)
 endif()
+
+# Stuck-escape route-rotation parity gate. Standalone (no ROS, no gtest) like
+# the replan gate test, because escape_route_gate.h is deliberately ROS-free.
+# It runs the SAME docs/multifloor/sim/escape_contract.fixture.json that the
+# simulator's probe_escape_contract.js runs, so the two runtimes are checked
+# against one another rather than each asserting its own behaviour.
+option(BUILD_ESCAPE_GATE_TEST "Build stuck-escape route-rotation parity test" OFF)
+if(BUILD_ESCAPE_GATE_TEST)
+  add_executable(test_escape_route_gate test/test_escape_route_gate.cpp)
+  target_include_directories(test_escape_route_gate PRIVATE include)
+  set(ESCAPE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/multifloor/sim/escape_contract.fixture.json")
+  get_filename_component(ESCAPE_FIXTURE "${ESCAPE_FIXTURE}" ABSOLUTE)
+  target_compile_definitions(test_escape_route_gate PRIVATE ESCAPE_FIXTURE_PATH="${ESCAPE_FIXTURE}")
+  enable_testing()
+  add_test(NAME test_escape_route_gate COMMAND test_escape_route_gate)
+endif()

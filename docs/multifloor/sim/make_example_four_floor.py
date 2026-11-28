@@ -99,13 +99,73 @@ for n in range(3):
         box(x0, x1, BY1, BY1 + RAIL_T, zt, zt + RAIL_H, "rail_b")
 
 # ---- guard rails round the opening on each upper floor -------------------
+# The opening is a hole in the slab, so its rim gets a rail - but the west lip
+# is not only rim, it is where the flights meet the floor. Flight B lands on it
+# (BY0..BY1), and flight A leaves from it: its first riser is the lip itself
+# (x = SX0, y = AY0..AY1). A rail across that lane walls the stairs off, which
+# is why 2->3 and 3->4 had a slab of solid in front of their first step while
+# 1->2 was clear - floor 1's rim carries no rail at all. The top floor has no
+# flight climbing above it, so its lip is closed end to end.
 for n in range(1, 4):
     z = n * H
-    # the west edge is open only where flight B arrives (y 3.50..4.60)
-    box(SX0 - RAIL_T, SX0, SY0, BY0, z, z + RAIL_H, "rail_hole")
-    box(SX0 - RAIL_T, SX0, BY1, SY1, z, z + RAIL_H, "rail_hole")
+    if n < 3:                      # flight A climbs out of this floor here
+        west = [(SY0, AY0), (AY1, BY0), (BY1, SY1)]
+    else:                          # top floor: nothing leaves, rail it all
+        west = [(SY0, BY0), (BY1, SY1)]
+    for y0, y1 in west:
+        box(SX0 - RAIL_T, SX0, y0, y1, z, z + RAIL_H, "rail_hole")
     box(SX0, SX1, SY0 - RAIL_T, SY0, z, z + RAIL_H, "rail_hole")
     box(SX0, SX1, SY1, SY1 + RAIL_T, z, z + RAIL_H, "rail_hole")
+
+
+# ---- lane check -----------------------------------------------------------
+# Both obstructions found so far were guard rails: 0.06 m thick, invisible to
+# a 0.15 m voxel map, and drawn straight across a flight's throat. The map
+# planned happily through them, so nothing in the sim ever complained - only
+# the opaque model showed the wall. Hence a geometry check, not a map check.
+
+def blockers(x0, x1, y0, y1, z0, z1):
+    """Boxes standing inside a probe box, ignoring what a walker stands on.
+
+    Floor, treads and the landing legitimately fill the space below walking
+    level, so they are not obstructions; rails and walls are."""
+    standing = ("ground", "slab", "tread", "landing")
+    out = []
+    for (bx0, bx1, by0, by1, bz0, bz1, tag) in BOXES:
+        if tag in standing:
+            continue
+        if bx1 <= x0 or bx0 >= x1 or by1 <= y0 or by0 >= y1:
+            continue
+        if bz1 <= z0 or bz0 >= z1:
+            continue
+        out.append((tag, round(bx0, 3), round(bx1, 3), round(by0, 3), round(by1, 3)))
+    return out
+
+
+def check_lanes():
+    """Every flight must be enterable and climbable: the column over each
+    tread, plus the floor strip the flight meets (flight A at the west lip of
+    the opening, flight B one storey up), may hold nothing but the floor."""
+    bad = []
+    for n in range(3):
+        base = n * H
+        for i in range(NSTEP):
+            # flight A climbs east out of floor n
+            x0 = SX0 + i * TREAD
+            zt = base + (i + 1) * RISE
+            for b in blockers(x0, x0 + TREAD, AY0, AY1, zt + 0.02, zt + RAIL_H):
+                bad.append(("flight A", n, i) + b)
+            # flight B climbs west out of the landing to floor n+1
+            x1 = SX1 - 1.20 - i * TREAD
+            zt = base + (NSTEP + i + 1) * RISE
+            for b in blockers(x1 - TREAD, x1, BY0, BY1, zt + 0.02, zt + RAIL_H):
+                bad.append(("flight B", n, i) + b)
+        # the floor strip in front of each end that meets a floor
+        for b in blockers(SX0 - 0.60, SX0, AY0, AY1, base + 0.02, base + 0.60):
+            bad.append(("foot of A", n, 0) + b)
+        for b in blockers(SX0 - 0.60, SX0, BY0, BY1, base + H + 0.02, base + H + 0.60):
+            bad.append(("head of B", n, 0) + b)
+    return bad
 
 
 def write_obj(path):
@@ -133,8 +193,21 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="example_four_floor.obj")
     a = ap.parse_args()
-    n, f = write_obj(a.out)
+    nb, f = write_obj(a.out)
     counts = {}
     for b in BOXES:
         counts[b[6]] = counts.get(b[6], 0) + 1
-    print(json.dumps({"boxes": n, "faces": f, "by_tag": counts}, indent=1))
+    print(json.dumps({"boxes": nb, "faces": f, "by_tag": counts}, indent=1))
+    bad = check_lanes()
+    if bad:
+        print("BLOCKED LANES: %d" % len(bad))
+        seen = set()
+        for (what, storey, i, tag, bx0, bx1, by0, by1) in bad:
+            k = (what, storey, tag, bx0, bx1, by0, by1)
+            if k in seen:              # one line per distinct box, not per tread
+                continue
+            seen.add(k)
+            print("  %-9s storey %d tread %2d: %-9s x %.2f..%.2f y %.2f..%.2f"
+                  % (what, storey, i, tag, bx0, bx1, by0, by1))
+        raise SystemExit(1)
+    print("lane check: every flight entry and climb is clear")

@@ -237,6 +237,8 @@ MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
   private_nh_.param("install_gate_alignment_skip_when_blocked",
                     install_gate_cfg_.alignment_reject_skip_when_blocked,
                     install_gate_cfg_.alignment_reject_skip_when_blocked);
+  // Stuck-escape route rotation (opt-in; reads route_rotation/* from rosparam).
+  loadEscapeRouteParams();
   if (navigation_mode_ != "escape" && navigation_mode_ != "replan_periodic" &&
       navigation_mode_ != "neupan_only") {
     ROS_ERROR("Invalid navigation_mode=%s; falling back to escape",
@@ -362,6 +364,30 @@ MissionManager::MissionManager(ros::NodeHandle &nh, ros::NodeHandle &private_nh)
              "install_gate_shadow=false)");
   }
 
+  // Stuck-escape route rotation plumbing (only when explicitly enabled).
+  if (escape_route_enable_ && escape_cfg_.enable) {
+    escape_trace_pub_ =
+        nh_.advertise<std_msgs::String>("/neupan/mission_escape_trace", 20);
+    // The clearance proxy reuses the install-gate scan map, which the gate
+    // subscribes itself; with the gate off escapeCorridorClearance() returns -1
+    // and ranking falls back to signature rotation only (still correct).
+    stair_gait_status_sub_ = nh_.subscribe(stair_gait_status_topic_, 1,
+                                           &MissionManager::stairGaitStatusCb, this);
+    ROS_INFO("[escape] route rotation ENABLED: dwell=%d/%dms throttle=%dms "
+             "rounds=%d stair_commit=%d escape_only_at_landing=%d "
+             "terrain=%s trace=%s (candidate fan-out is sim-only: PlanPath.srv "
+             "exposes no inflation_radius)",
+             escape_cfg_.trigger_dwell_ms, escape_cfg_.transition_dwell_ms,
+             escape_cfg_.replan_throttle_ms, escape_cfg_.max_rounds,
+             escape_cfg_.stair_commit_enable ? 1 : 0,
+             escape_cfg_.escape_only_at_landing ? 1 : 0,
+             stair_gait_status_topic_.c_str(),
+             escape_cfg_.trace_enable ? "on" : "off");
+  } else if (escape_route_enable_) {
+    ROS_WARN("[escape] escape_route_enable=true but route_rotation/enable=false; "
+             "route rotation inactive (plain NeuPAN replan)");
+  }
+
   start_mission_srv_ = nh_.advertiseService(
       "/waypoint_manager/start_mission", &MissionManager::startMissionCb, this);
   pause_srv_ = nh_.advertiseService("/waypoint_manager/pause",
@@ -483,6 +509,12 @@ void MissionManager::process() {
 
   if (replan_requested_.exchange(false) && !recovery_episode_active_ &&
       (state_ == State::NAVIGATING || state_ == State::RETURNING_HOME)) {
+    // Stuck-escape route rotation: when enabled, run the gated episode instead
+    // of the plain cancel+re-plan. It returns true when it consumed the request
+    // (installed a rotated route, or deliberately held/deferred it).
+    if (escape_route_enable_ && escape_cfg_.enable && runEscapeEpisode()) {
+      return;
+    }
     ROS_WARN("NeuPAN requested a new global path for waypoint %d", current_index_);
     if (path_client_) {
       path_client_->cancelGoal();
@@ -1775,6 +1807,354 @@ void MissionManager::replanCb(const std_msgs::EmptyConstPtr &) {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Stuck-escape route rotation (mission_manager side of the escape contract).
+//
+// NeuPAN's local policy (NeuPAN/neupan/util/stuck_escape.py) owns the dwell
+// counting and the back-up-plus-rotate; when it cannot recover it publishes
+// /neupan/replan. That request used to trigger a plain cancel+re-plan, which
+// re-installed the *same* route and livelocked. runEscapeEpisode() is the route
+// layer of the same escape: throttle the bursts, refuse to swap a route out
+// from under a robot mid-flight, remember which route signatures this stuck
+// spell already tried so a retry rotates instead of repeating, and install the
+// result through the ordinary replan safety gate.
+//
+// Interface note (why this is not the full N-candidate fan-out the simulator
+// runs): the ROS1 nav_interfaces/PlanPath.srv carries only {goal, shadow_only}
+// and there is no ValidatePath clearance service, so inflation-scale siblings
+// and validatePath-cleared ranking cannot be expressed from here without new
+// service fields the plan deliberately forbids. That fan-out is simulator-only
+// and documented as such in docs/multifloor/escape-exploration.md; everything
+// the interface *does* support (re-plan, signature rotation, terrain gate,
+// install gate, telemetry) runs on the identical gate library.
+// ---------------------------------------------------------------------------
+
+void MissionManager::loadEscapeRouteParams() {
+  private_nh_.param("escape_route_enable", escape_route_enable_,
+                    escape_route_enable_);
+  if (!escape_route_enable_) return;
+  private_nh_.param("stair_gait_status_topic", stair_gait_status_topic_,
+                    stair_gait_status_topic_);
+  // route_rotation/* mirrors stuck_escape.route_rotation in robots/<id>/neupan/
+  // config.yaml one key at a time. Absent keys keep the EscapeParams default
+  // (== the constants the simulator used before they were configurable), so an
+  // old param file loads without raising and behaves identically.
+  private_nh_.param("route_rotation/enable", escape_cfg_.enable, escape_cfg_.enable);
+  private_nh_.param("route_rotation/install_gain_m", escape_cfg_.install_gain_m,
+                    escape_cfg_.install_gain_m);
+  private_nh_.param("route_rotation/rescue_clearance_m", escape_cfg_.rescue_clearance_m,
+                    escape_cfg_.rescue_clearance_m);
+  private_nh_.param("route_rotation/min_candidate_clearance_m",
+                    escape_cfg_.min_candidate_clearance_m,
+                    escape_cfg_.min_candidate_clearance_m);
+  private_nh_.param("route_rotation/max_rounds", escape_cfg_.max_rounds,
+                    escape_cfg_.max_rounds);
+  private_nh_.param("route_rotation/route_sig_grid_m", escape_cfg_.route_sig_grid_m,
+                    escape_cfg_.route_sig_grid_m);
+  private_nh_.param("route_rotation/max_tried_sigs", escape_cfg_.max_tried_sigs,
+                    escape_cfg_.max_tried_sigs);
+  private_nh_.param("route_rotation/episode_reset_progress_m",
+                    escape_cfg_.episode_reset_progress_m,
+                    escape_cfg_.episode_reset_progress_m);
+  private_nh_.param("route_rotation/episode_reset_timeout_sec",
+                    escape_cfg_.episode_reset_timeout_sec,
+                    escape_cfg_.episode_reset_timeout_sec);
+  private_nh_.param("route_rotation/detour_lookahead_m", escape_cfg_.detour_lookahead_m,
+                    escape_cfg_.detour_lookahead_m);
+  private_nh_.param("route_rotation/detour_lookahead_widened_m",
+                    escape_cfg_.detour_lookahead_widened_m,
+                    escape_cfg_.detour_lookahead_widened_m);
+  private_nh_.param("route_rotation/detour_max_seeds", escape_cfg_.detour_max_seeds,
+                    escape_cfg_.detour_max_seeds);
+  private_nh_.param("route_rotation/detour_swing_range_m", escape_cfg_.detour_swing_range_m,
+                    escape_cfg_.detour_swing_range_m);
+  private_nh_.param("route_rotation/stair_commit_enable", escape_cfg_.stair_commit_enable,
+                    escape_cfg_.stair_commit_enable);
+  private_nh_.param("route_rotation/escape_only_at_landing",
+                    escape_cfg_.escape_only_at_landing,
+                    escape_cfg_.escape_only_at_landing);
+  private_nh_.param("route_rotation/landing_snap_radius_m",
+                    escape_cfg_.landing_snap_radius_m,
+                    escape_cfg_.landing_snap_radius_m);
+  private_nh_.param("route_rotation/trigger_dwell_ms", escape_cfg_.trigger_dwell_ms,
+                    escape_cfg_.trigger_dwell_ms);
+  private_nh_.param("route_rotation/transition_dwell_ms", escape_cfg_.transition_dwell_ms,
+                    escape_cfg_.transition_dwell_ms);
+  private_nh_.param("route_rotation/replan_throttle_ms", escape_cfg_.replan_throttle_ms,
+                    escape_cfg_.replan_throttle_ms);
+  private_nh_.param("route_rotation/trace_enable", escape_cfg_.trace_enable,
+                    escape_cfg_.trace_enable);
+  // Double-list keys (read for trace/reporting fidelity; the fan-out that would
+  // consume them is sim-only per the note above).
+  auto readDoubles = [this](const std::string &key,
+                            std::vector<double> &dst) {
+    XmlRpc::XmlRpcValue v;
+    if (!private_nh_.getParam(key, v) ||
+        v.getType() != XmlRpc::XmlRpcValue::TypeArray) {
+      return;
+    }
+    dst.clear();
+    for (int i = 0; i < v.size(); ++i) {
+      dst.push_back(static_cast<double>(v[i]));
+    }
+  };
+  readDoubles("route_rotation/candidate_inflation_scales",
+              escape_cfg_.candidate_inflation_scales);
+  readDoubles("route_rotation/detour_berths_m", escape_cfg_.detour_berths_m);
+  readDoubles("route_rotation/detour_berths_widened_m",
+              escape_cfg_.detour_berths_widened_m);
+  readDoubles("route_rotation/detour_swing_rad", escape_cfg_.detour_swing_rad);
+}
+
+double MissionManager::escapeCorridorClearance(
+    const std::vector<mission_manager_gate::Pt> &pts) const {
+  // Minimum lateral clearance (m) of `pts` against the current 360 scan, or -1
+  // when no fresh scan is up (unknown -> excluded from ranking, not "free").
+  if (!install_gate_scan_ready_ || pts.size() < 2 ||
+      install_gate_scan_map_pts_.empty()) {
+    return -1.0;
+  }
+  return mission_manager_gate::corridorBlocked(
+             pts, install_gate_scan_map_pts_,
+             install_gate_cfg_.blocked_half_width_m)
+      .min_lateral_m;
+}
+
+void MissionManager::stairGaitStatusCb(const std_msgs::StringConstPtr &msg) {
+  if (!msg) return;
+  // /stair_gait/status carries {"state":"flat|up|down|unknown",...} as a latched
+  // JSON string (see ros_ws/src/stair_gait). A minimal substring read avoids
+  // pulling a JSON dependency into mission_manager for one field. on_flight =
+  // actively traversing a recognised flight; a landing is a standable platform.
+  const std::string &d = msg->data;
+  std::string state = "unknown";
+  const std::size_t pos = d.find("\"state\"");
+  if (pos != std::string::npos) {
+    const std::size_t colon = d.find(':', pos);
+    const std::size_t q1 = d.find('"', colon + 1);
+    const std::size_t q2 =
+        (q1 == std::string::npos) ? std::string::npos : d.find('"', q1 + 1);
+    if (q1 != std::string::npos && q2 != std::string::npos) {
+      state = d.substr(q1 + 1, q2 - q1 - 1);
+    }
+  }
+  escape_on_flight_ = (state == "up" || state == "down");
+  escape_at_landing_ = (state == "flat");
+  escape_terrain_stamp_ = ros::Time::now();
+}
+
+void MissionManager::resetEscapeEpisode(const std::string &why) {
+  mission_manager_gate::resetEpisode(escape_episode_);
+  escape_last_burst_at_ = ros::Time();
+  escape_last_path_length_ = 0.0;
+  escape_episode_id_.clear();
+  if (escape_route_enable_) {
+    ROS_INFO("[escape] episode cleared (%s)", why.c_str());
+  }
+}
+
+void MissionManager::publishEscapeTrace(
+    const mission_manager_gate::EscapeTraceRecord &rec) {
+  if (!escape_cfg_.trace_enable) return;
+  const std::string line = mission_manager_gate::formatEscapeTrace(rec);
+  if (escape_trace_pub_) {
+    std_msgs::String msg;
+    msg.data = line;
+    escape_trace_pub_.publish(msg);
+  }
+  ROS_INFO_STREAM("[escape_trace] " << line);
+}
+
+bool MissionManager::runEscapeEpisode() {
+  const ros::Time now = ros::Time::now();
+  const double now_sec = now.toSec();
+  static const double kTerrainStaleSec = 1.5;  // stair_gait ticks latched + debounced
+  if (escape_episode_id_.empty()) escape_episode_id_ = mission_id_;
+
+  mission_manager_gate::EscapeTraceRecord rec;
+  rec.stamp = now_sec;
+  rec.episode_id = escape_episode_id_;
+  rec.round = escape_episode_.round;
+  rec.kind = "direct";
+
+  // Terrain snapshot (freshness-gated). /stair_gait/status exists on ROS1 only;
+  // with no fresh feed the robot is treated as never mid-flight (terrain-blind,
+  // the documented ROS2 posture).
+  bool on_flight = false;
+  bool at_landing = false;
+  if (!escape_terrain_stamp_.isZero() &&
+      (now - escape_terrain_stamp_).toSec() <= kTerrainStaleSec) {
+    on_flight = escape_on_flight_;
+    at_landing = escape_at_landing_;
+  }
+  rec.on_flight = on_flight;
+  const bool floor_transition = floor_transit_active_;
+
+  // Inter-burst throttle. NeuPAN already applied the dwell before it asked, so
+  // the route layer only needs to keep a livelock from spamming the planner.
+  if (!escape_last_burst_at_.isZero() &&
+      (now - escape_last_burst_at_).toSec() * 1000.0 <
+          static_cast<double>(escape_cfg_.replan_throttle_ms)) {
+    rec.action = "throttled";
+    publishEscapeTrace(rec);
+    return true;  // consumed without a new plan
+  }
+  escape_last_burst_at_ = now;
+
+  // Terrain gate (rules 1/2): mid-flight, finish onto a landing instead of
+  // having a route swapped under the robot. A required reversal is the local
+  // layer's (NeuPAN back-up) job; here it simply means "do not re-plan the
+  // route", so both non-allow outcomes hold the current path.
+  mission_manager_gate::TerrainGateInput tin;
+  tin.on_flight = on_flight;
+  tin.at_landing = at_landing;
+  tin.reversal_requested = false;  // a route re-plan is not a body reversal
+  tin.floor_transition = floor_transition;
+  const mission_manager_gate::TerrainAction action =
+      mission_manager_gate::terrainGate(tin, escape_cfg_);
+  if (action != mission_manager_gate::TerrainAction::kAllow) {
+    rec.action = mission_manager_gate::terrainActionName(action);
+    publishEscapeTrace(rec);
+    ROS_WARN_THROTTLE(2.0, "[escape] %s: keep route, finish to landing (wp=%d)",
+                      rec.action.c_str(), current_index_);
+    return true;
+  }
+
+  // Progress watch: if the dog rolled or the spell went stale since the last
+  // install this is a fresh stuck spell, not a continuation.
+  double progress_since = 0.0;
+  if (!active_path_.poses.empty()) {
+    const double d =
+        mission_manager_gate::pathLength(pathToPoints(active_path_));
+    progress_since = std::max(0.0, escape_last_path_length_ - d);
+  }
+  if (mission_manager_gate::episodeMaybeReset(escape_episode_, progress_since, now_sec,
+                                              install_gate_blocked_gated_.load(),
+                                              escape_cfg_)) {
+    ROS_INFO("[escape] episode reset (rolled %.2fm or stale) wp=%d", progress_since,
+             current_index_);
+  }
+
+  // Candidate: re-plan to the current goal (the one route the ROS1 interface can
+  // express per the note above).
+  nav_msgs::Path cpath;
+  std::string fail_reason;
+  if (!planCurrentWaypoint(cpath, fail_reason) || cpath.poses.size() < 2) {
+    rec.action = "no_candidate";
+    rec.current = escape_last_path_length_;
+    publishEscapeTrace(rec);
+    ROS_WARN("[escape] re-plan failed (%s), keeping current route wp=%d",
+             fail_reason.c_str(), current_index_);
+    return true;  // consumed: do not fall through to the plain cancel+re-plan
+  }
+
+  mission_manager_gate::EscapeCandidate cand;
+  cand.pts = pathToPoints(cpath);
+  cand.length = mission_manager_gate::pathLength(cand.pts);
+  cand.kind = "direct";
+  cand.sig = mission_manager_gate::routeSignature(cand.pts, escape_cfg_.route_sig_grid_m,
+                                                  cand.kind);
+  cand.clearance = escapeCorridorClearance(cand.pts);
+  const double cur_d = escapeCorridorClearance(pathToPoints(active_path_));
+  rec.clearance = cand.clearance;
+  rec.current = cur_d;
+  rec.sig = cand.sig;
+
+  // Rotation memory: if this exact route was already installed this episode,
+  // re-installing it is the livelock this layer exists to break, so hold and let
+  // the local maneuver (or a changed map) produce something new next burst.
+  bool already_tried = false;
+  for (std::size_t i = 0; i < escape_episode_.tried_sigs.size(); ++i) {
+    if (escape_episode_.tried_sigs[i] == cand.sig) {
+      already_tried = true;
+      break;
+    }
+  }
+  if (already_tried) {
+    rec.action = "no_candidate";  // rotation exhausted: nothing new to install
+    publishEscapeTrace(rec);
+    ROS_WARN_THROTTLE(2.0, "[escape] route already tried this episode (round %d), holding wp=%d",
+                      escape_episode_.round, current_index_);
+    return true;
+  }
+
+  // Install only through the ordinary replan safety gate so the escape cannot
+  // bypass heading / side-lock / no-change protection.
+  if ((install_gate_enable_ || install_gate_shadow_) && active_path_.poses.size() >= 2) {
+    geometry_msgs::PoseStamped pose;
+    if (getRobotPose(pose)) {
+      const std::vector<mission_manager_gate::Pt> active_pts = pathToPoints(active_path_);
+      const double yaw = tf2::getYaw(pose.pose.orientation);
+      const mission_manager_gate::Pt robot{pose.pose.position.x, pose.pose.position.y};
+      const double window_m = install_gate_cfg_.metric_window_m;
+      std::vector<mission_manager_gate::Pt> a_pts =
+          mission_manager_gate::trimFromNearest(active_pts, robot, window_m);
+      std::vector<mission_manager_gate::Pt> c_pts =
+          mission_manager_gate::trimFromNearest(cand.pts, robot, window_m);
+      if (a_pts.size() < 2) a_pts = active_pts;
+      if (c_pts.size() < 2) c_pts = cand.pts;
+      mission_manager_gate::PathMetrics act_m =
+          mission_manager_gate::computePathMetrics(a_pts, robot, yaw, install_gate_cfg_);
+      mission_manager_gate::PathMetrics cand_m =
+          mission_manager_gate::computePathMetrics(c_pts, robot, yaw, install_gate_cfg_);
+      if (install_gate_scan_ready_) {
+        act_m.min_scan_lateral_m = mission_manager_gate::corridorBlocked(
+            a_pts, install_gate_scan_map_pts_,
+            install_gate_cfg_.blocked_half_width_m).min_lateral_m;
+        cand_m.min_scan_lateral_m = mission_manager_gate::corridorBlocked(
+            c_pts, install_gate_scan_map_pts_,
+            install_gate_cfg_.blocked_half_width_m).min_lateral_m;
+      }
+      mission_manager_gate::GateInput gin;
+      gin.active = act_m;
+      gin.candidate = cand_m;
+      gin.blocked_gated = install_gate_blocked_gated_.load();
+      gin.blocked_raw = install_gate_blocked_raw_.load();
+      gin.blocked_dwell_sec = install_gate_blocked_dwell_sec_;
+      gin.deviation_m = mission_manager_gate::maxDeviation(c_pts, a_pts);
+      const mission_manager_gate::GateDecision gate =
+          mission_manager_gate::evaluateInstallGate(gin, install_gate_cfg_);
+      if (install_gate_enable_ && !gate.install) {
+        rec.action = "gate_reject";
+        publishEscapeTrace(rec);
+        ROS_WARN("[escape] install rejected by gate reason=%s (%s) wp=%d",
+                 gate.reason.c_str(), gate.detail.c_str(), current_index_);
+        return true;
+      }
+    }
+  }
+
+  // Install the rotated route (hot swap), mirroring processPeriodicReplan so the
+  // escape drives the same action path as an ordinary replan.
+  if (!path_client_ || !path_client_->isServerConnected()) return false;
+  nav_interfaces::navPathGoal action_goal;
+  action_goal.path = cpath;
+  active_path_ = cpath;
+  path_done_.store(false);
+  path_succeeded_.store(false);
+  distance_remaining_.store(-1.0);
+  last_feedback_distance_ = -1.0;
+  last_path_feedback_at_ = now;
+  const std::uint64_t generation = path_goal_generation_.fetch_add(1) + 1;
+  path_client_->sendGoal(
+      action_goal,
+      boost::bind(&MissionManager::pathDoneCb, this, generation,
+                  boost::placeholders::_1, boost::placeholders::_2),
+      boost::bind(&MissionManager::pathActiveCb, this, generation),
+      boost::bind(&MissionManager::pathFeedbackCb, this, generation,
+                  boost::placeholders::_1));
+  mission_manager_gate::noteEpisodeInstall(escape_episode_, cand.sig, now_sec, escape_cfg_);
+  escape_last_path_length_ = cand.length;
+  rec.round = escape_episode_.round;
+  rec.action = "installed";
+  publishEscapeTrace(rec);
+  ROS_WARN("[escape] installed rotated route round=%d len=%.2fm sig=%s wp=%d",
+           escape_episode_.round, cand.length, cand.sig.c_str(), current_index_);
+  EC_TRACE(ec::PATH_INSTALL, "escape_route", "wp=%d round=%d sig=%s", current_index_,
+           escape_episode_.round, cand.sig.c_str());
+  return true;
+}
+
 void MissionManager::recoveryRequestCb(
     const nav_interfaces::RecoveryRequestConstPtr &msg) {
   if (!recovery_shadow_enable_ || !msg || msg->request_id.empty()) {
@@ -2216,6 +2596,8 @@ void MissionManager::skipCurrentWaypointOrFail(const std::string &fail_reason) {
 bool MissionManager::startCurrentWaypoint() {
   clearRouteSegment();
   resetInstallGateState("waypoint");
+  // A fresh navigation goal starts a fresh stuck-escape episode.
+  resetEscapeEpisode("waypoint");
 
   // Multi-floor gate: a waypoint tagged with another floor cannot be planned
   // on the current map. Drive to the floor's transition point (lift lobby,

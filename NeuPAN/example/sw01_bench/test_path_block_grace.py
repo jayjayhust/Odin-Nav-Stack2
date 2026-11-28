@@ -10,9 +10,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Unit tests for the path-block grace state machine (`note_path_block`)."""
+"""Unit tests for the path-block grace (`note_path_block`) and the terrain-aware
+stuck-escape suppression (`note_terrain`) state machines."""
 import os
 import sys
+
+import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", ".."))
 from neupan.util.stuck_escape import StuckEscapePolicy
@@ -36,6 +39,18 @@ def feed(p, seq):
 
 
 fails = 0
+
+
+def run_case(name, fn):
+    """Run one assertion-style case, tallying pass/fail without aborting the run."""
+    global fails
+    try:
+        fn()
+        print(name + " PASS")
+    except AssertionError as e:
+        fails += 1
+        print(str(e) + " FAIL")
+
 
 # T1: disabled switch never activates
 p = new_policy(path_block_grace_enable=False)
@@ -80,5 +95,95 @@ p = new_policy()
 assert abs(p.grace_q_s_scale - 0.5) < 1e-9 and abs(p.grace_q_theta_scale - 0.25) < 1e-9
 print("T6 shares escape grace scales (q_s*0.5 / q_theta*0.25) PASS")
 
+
+# ---------------------------------------------------------------------------
+# Terrain-aware escape suppression (note_terrain). The whole point of this
+# branch is that the escape no longer reverses off a staircase: while a flight
+# is being traversed the stall counter is held instead of escalating, and the
+# default (stair_suppress_enable=false) leaves the policy byte-identical to what
+# it was before terrain existed.
+# ---------------------------------------------------------------------------
+STUCK_CFG = {
+    "enable": True,
+    "criterion": "displacement",
+    "trigger_frames": 3,
+    "front_obs_threshold": 0.6,
+    "early_replan_enable": False,
+}
+
+
+def stuck_state():
+    return np.array([[0.0], [0.0], [0.0]])
+
+
+def close_points():
+    # one obstacle dead ahead at 0.30 m: inside the cone, inside the trigger
+    # threshold, and asymmetric enough that the corridor guard stays asleep.
+    return np.array([[0.30], [0.0]])
+
+
+def drive(p, terrain=None, frames=6, t0=10.0, dt=0.2):
+    """Advance decide() `frames` times with a stalled command and an obstacle
+    ahead. Re-notes the terrain each frame so freshness never races the clock.
+    Returns (entered, final_count)."""
+    entered = False
+    for i in range(frames):
+        t = t0 + i * dt
+        p.note_pose(t, 0.0, 0.0)
+        p.note_cmd(0.0, 0.0)
+        if terrain is not None:
+            p.note_terrain(t, terrain, 4)
+        d = p.decide(t, stuck_state(), close_points())
+        if d.entered:
+            entered = True
+    return entered, p.count
+
+
+def t7_default_off_unchanged():
+    # The opt-out has to be total: a robot with no stair detection (or the
+    # feature simply off) must escape exactly as before, terrain fed or not.
+    p = StuckEscapePolicy(dict(STUCK_CFG))
+    assert p.stair_suppress_enable is False
+    entered, _ = drive(p, terrain="up")
+    assert entered, "T7: escape suppressed even though stair_suppress_enable is off"
+
+
+def t8_on_flight_holds():
+    p = StuckEscapePolicy(dict(STUCK_CFG, stair_suppress_enable=True))
+    entered, cnt = drive(p, terrain="up")
+    assert not entered, "T8: entered escape while a flight was being traversed"
+    assert cnt == 0, "T8: stall count escalated instead of held (%d)" % cnt
+    assert p.stair_suppressed is True
+
+
+def t9_landing_releases():
+    p = StuckEscapePolicy(dict(STUCK_CFG, stair_suppress_enable=True))
+    drive(p, terrain="up", frames=4)          # hold, count stays at 0
+    entered, _ = drive(p, terrain="flat", frames=6, t0=20.0)  # reach a landing
+    assert entered, "T9: escape still held after the flight turned to flat floor"
+
+
+def t10_grace_ends_at_landing():
+    p = StuckEscapePolicy(dict(STUCK_CFG, stair_suppress_enable=True,
+                               post_escape_grace_max_sec=5.0))
+    p.grace_active = True
+    p.grace_start_t = 0.0
+    p.grace_start_xy = (0.0, 0.0)
+    p.grace_clear_since = None
+    p.note_terrain(6.0, "up", 4)              # past grace_max but still climbing
+    assert p.update_grace(6.0, stuck_state(), close_points()) is None, \
+        "T10: grace weights restored mid-flight"
+    p.note_terrain(6.1, "flat", 0)            # reached the landing
+    assert p.update_grace(6.1, stuck_state(), close_points()) == (1.0, 1.0), \
+        "T10: grace window did not close on the landing"
+
+
+run_case("T7 default-off leaves the escape unchanged (terrain ignored)", t7_default_off_unchanged)
+run_case("T8 opt-in: mid-flight holds the stall count, no escape", t8_on_flight_holds)
+run_case("T9 opt-in: a landing releases the hold, escape resumes", t9_landing_releases)
+run_case("T10 grace window runs on to the landing", t10_grace_ends_at_landing)
+
 if __name__ == "__main__":
-    print("\ntest_path_block_grace: 6/6 PASS")
+    total = 10
+    print("\ntest_path_block_grace: %d/%d PASS" % (total - fails, total))
+    sys.exit(1 if fails else 0)

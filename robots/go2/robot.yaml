@@ -93,3 +93,17 @@ local_planner:
         odom_topic: /odin1/odometry
       package: sru_nav
       launch: sru_nav.launch
+
+  # Escape-policy slot: swaps only the stall maneuver, not the NeuPAN MPC.
+  # stuck_escape (default) | null | <custom> | <dotted.module>
+  escape_policy:
+    backend: stuck_escape
+
+# Terrain-semantics slot. The geometric staircase detector is the reference
+# backend; /stair_gait/status JSON stays published for NeuPAN's escape terrain
+# gate (`stair_suppress_enable` in neupan/config.yaml -> stuck_escape).
+# For a site with several terrains in view at once, replace `backend` with an
+# `instances:` file (one backend + region per instance, e.g.
+# ros_ws/src/terrain_recognizer/config/instances.example.yaml).
+terrain_recognizer:
+  backend: stair_gait

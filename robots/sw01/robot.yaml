@@ -119,3 +119,8 @@ local_planner:
       # Robot-specific overrides (conservative policy_scale), passed to the
       # planner launch as params_file; same pattern as neupan.config above.
       config: sru/config.yaml
+
+  # Escape-policy slot: swaps only the stall maneuver, not the NeuPAN MPC.
+  # stuck_escape (default) | null | <custom> | <dotted.module>
+  escape_policy:
+    backend: stuck_escape

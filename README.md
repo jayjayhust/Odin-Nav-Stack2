@@ -38,8 +38,8 @@
 
 ## 1.1 Key Features
 
-- **High-Accuracy SLAM & Persistent Relocalization** (inside Odin1, not open-sourced)  
-  Real-time mapping with long-term relocalization using compact binary maps.
+- **High-Accuracy SLAM & Persistent Relocalization** (MindSLAM inside Odin1, not open-sourced)  
+  Real-time mapping with long-term relocalization using compact binary maps. MindSLAM is the stack's sole source of global pose (TF `map → odom`) and registered point clouds — ONS2 itself runs no SLAM algorithm.
 - **Dynamic Obstacle-Aware Navigation** (fully open-sourced)  
   Global A\* planning with a memory of blind-spot obstacles (`sliding_map`), combined with the NeuPAN local planner for safe motion in cluttered environments.
 - **Mission Management** (fully open-sourced)  
@@ -69,7 +69,7 @@
   Import your own OBJ / STL (UE or Revit exports) in the browser: the page separates floors, walls
   and flights on its own, and the global 3D A\* plus local NeuPAN/DWA are the repository's own
   algorithms. The clearance band switches between hard and soft cost, cells can be erased or painted
-  by hand and saved. **"导出 pgm" writes a binary `P5` `<name>.pgm` together with the `map_server`
+  by hand and saved. **`pgm` in the 导出 block writes a binary `P5` `<name>.pgm` together with the `map_server`
   `<name>.yaml`** (`resolution` / `origin` / `occupied_thresh` / `free_thresh` all matching), splits
   floors at slab peaks instead of handing you a height slice, and the pair drops straight into
   `map_planner/maps/` so that `--map=<name>` works next to the `.bin` from Q9000 / Odin1.  
@@ -364,10 +364,13 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | I want to… | Read |
 |---|---|
 | **Run a patrol mission** on an existing robot | [01 · Quick Start](docs/usage/01_quick_start.md) |
+| **Dispatch structured inspection tasks from a backend** — when, which points, which sensors, which actions, with reports back | [Inspection Tasks](docs/inspection.md) |
 | **Control the entire navigation workflow from a browser** — start/stop stack, map, waypoint missions, e-stop, teleop, bag recording, camera, intercom | [ONS2 Web Console Guide](docs/web_console.md) · [Quick Start § 5 · Web Control Frontend](docs/usage/01_quick_start.md#5-web-control-frontend) |
 | **Understand or retune the local planner** — what was optimised and why | [NeuPAN Optimisation Notes](docs/neuPAN_optimisation.md) |
 | **Look up the default values for my platform** — measured per-robot values plus a recommended tuning order | [02 · Parameter Tuning](docs/usage/02_parameter_tuning.md) |
 | **Look up what a specific parameter does**, or debug a symptom | [Advanced Tuning & Troubleshooting](docs/TUNING_GUIDE.md) — full parameter dictionary (MPC/DUNE, scan pre-processing, adaptive safety band, global planner) plus a symptom→parameter table |
+| **Write my own terrain recognizer** — backend contract, compiling skeleton, build/config wiring, offline tests | [04 · Add a Custom Terrain Recognizer](docs/usage/04_custom_terrain_backend.md) |
+| **Swap the terrain recognizer or the escape policy** | [Roadmap: terrain & escape slots](docs/ROADMAP.md) |
 | **Pick or write a platform profile** | [Robot Profiles](docs/architecture/ROBOT_PROFILE.md) |
 | **Add automated inspection** — checklist verdicts, annotated frames | [Perception guide](perception/README.md) → [Odin-perception](https://github.com/ManifoldTechLtd/Odin-perception) |
 | **Connect a new robot** — interface contract, chassis bridge, TF, launch | [03 · Integrate Your Own Robot](docs/usage/03_integrate_your_robot.md) |
@@ -391,10 +394,11 @@ Stop: `bash scripts/ons2_sw01_stop.sh`. Use `ROS_DOMAIN_ID=98` in every terminal
 | 1 | [Quick Start for Existing Robots](docs/usage/01_quick_start.md) | Start the stack on Go2, SW01, or Dobot Lumo, and send missions |
 | 2 | [Parameter Tuning](docs/usage/02_parameter_tuning.md) | Change speed, footprint, clearance, and tracking for each platform |
 | 3 | [Integrate Your Own Robot](docs/usage/03_integrate_your_robot.md) | Connect a new robot: interface contract, chassis bridge, TF, launch |
-| 4 | [Multifloor Navigation on Go2](docs/multifloor/README.zh-CN.md) | Four-storey missions: per-floor maps, floor switching, stair transitions, `stair_gait` |
-| 5 | [4G Remote Debugging](docs/multifloor/remote-debug.md) | Onboard switch + 4G router: IP plan, tunnel, ROS 1 `ROS_IP`, bandwidth, power |
-| 6 | [LAN Debugging](docs/multifloor/lan-debug.md) | Cable into the switch or the router's local WiFi: static IP, `ROS_IP` switching, loss triage |
-| 7 | [Point Cloud to Mesh Viewer](docs/multifloor/mesh-viewer.md) | Solid mesh built from the swept clouds: transparency, cross-floor route, known limits |
+| 4 | [Add a Custom Terrain Recognizer](docs/usage/04_custom_terrain_backend.md) | Plug a learned model into the terrain slot: contract, skeleton, build/config wiring, offline tests |
+| 5 | [Multifloor Navigation on Go2](docs/multifloor/README.zh-CN.md) | Four-storey missions: per-floor maps, floor switching, stair transitions, `stair_gait` |
+| 6 | [4G Remote Debugging](docs/multifloor/remote-debug.md) | Onboard switch + 4G router: IP plan, tunnel, ROS 1 `ROS_IP`, bandwidth, power |
+| 7 | [LAN Debugging](docs/multifloor/lan-debug.md) | Cable into the switch or the router's local WiFi: static IP, `ROS_IP` switching, loss triage |
+| 8 | [Point Cloud to Mesh Viewer](docs/multifloor/mesh-viewer.md) | Solid mesh built from the swept clouds: transparency, cross-floor route, known limits |
 
 ## 5.3 Feature Status at a Glance
 
@@ -472,6 +476,10 @@ Prerequisite on this side: the Odin driver must actually publish images, i.e. `s
 
 The stack is layered: Odin1 sensing and TF → `pointcloud_to_laserscan` → `sliding_map` obstacle memory → A\* global planning (`map_planner`) → NeuPAN local control (`neupan_ros`) → chassis bridge, coordinated by `mission_manager`. Only one node may publish `/cmd_vel` at a time. Control passes from NeuPAN to `atomic_move` through `/neupan/stop`.
 
+The hardware/software split sits at the Odin1 boundary: **MindSLAM**, the closed-source SLAM engine inside Odin1, owns all mapping and localization — it builds the `.bin` relocalization map and the `.pcd` cloud behind the `.pgm` planning map (SLAM mode, `custom_map_mode: 1`), then localizes against the `.bin` at runtime (relocalization mode, `custom_map_mode: 2`), publishing the TF chain `map → odom → imu`, `/odin1/odometry`, and the registered `/odin1/cloud_slam`. Everything open-sourced in this repository is an orchestration + planning layer on top of those outputs; the launch gates even wait for MindSLAM's `relocalization success` before starting any navigation node. See [ONS2 Architecture § 5.1](docs/architecture/ONS2_ARCHITECTURE.md) for the full principle and the multi-floor map-switch constraint it imposes.
+
+On top of that pose, navigation is a three-tier decision loop. **Global navigation** (`map_planner`): 8-connected A\* over the static `.pgm` map merged with the `sliding_map` dynamic-obstacle memory, shaped by hard inflation plus a distance-transform proximity cost, then string-pulled, smoothed, and quality-validated; `mission_manager` replans periodically or on blockage, with an install gate that rejects regressive candidates. **Local avoidance** (NeuPAN): a point-robot MPC that treats every obstacle point in `/scan_360` as a collision constraint — DUNE encodes the points into a latent distance space (analytic, no per-chassis training) and NRMP solves the receding-horizon problem as a conic QP, with an adaptive safety band for narrow corridors and curvature-based speed governing. **Stuck escape** (`stuck_escape`): when arc-length progress stalls while the front is blocked, a guarded state machine takes over `/cmd_vel` to back up, rotate toward the larger clearance, and request a global replan, then hands control back through a grace period. Principles: [ONS2 Architecture §§ 5.3–5.4](docs/architecture/ONS2_ARCHITECTURE.md); per-frame pipeline and escape gate table: [Module Dataflow §§ 3–4](docs/architecture/MODULE_DATAFLOW.md).
+
 # 7. Repository Structure
 
 ```text
@@ -522,9 +530,11 @@ Odin-Nav-Stack2/
 ├── docker/                        # Docker setup for Jetson (ROS 1)
 └── docs/                          # Documentation
     ├── web_console.md             # ONS2 Web Console end-to-end user guide (+ web_console.zh-CN.md)
-    ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot
+    ├── usage/                     # 01_quick_start, 02_parameter_tuning, 03_integrate_your_robot,
+    │                              #   04_custom_terrain_backend
     ├── architecture/              # ROBOT_PROFILE.md, ONS2_ARCHITECTURE.md, MODULE_DATAFLOW.md
     ├── TUNING_GUIDE.md            # Detailed parameter dictionary & troubleshooting reference
+    ├── ROADMAP.md                 # Terrain-recognizer & escape-policy slot roadmap (+ ROADMAP.zh-CN.md)
     └── multifloor/                # [fork] Multi-floor design, 3D planner & stairs, offline simulation harness
 ```
 

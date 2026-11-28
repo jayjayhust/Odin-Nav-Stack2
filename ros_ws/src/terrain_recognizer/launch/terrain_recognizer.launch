@@ -1,0 +1,68 @@
+<?xml version="1.0"?>
+<!--
+  terrain_recognizer: terrain-semantics SLOT.
+
+  Launch layers, lowest priority first:
+    1. config/terrain_recognizer.yaml        node defaults (package)
+    2. config/<backend>.yaml                 backend defaults (package)
+    3. $(arg config)                         robot-specific file, when given
+                                             (terrain_recognizer.config in
+                                              robots/<robot>/robot.yaml)
+    4. $(arg instances)                      multi-instance file, when given
+                                             (terrain_recognizer.instances in
+                                              robots/<robot>/robot.yaml). It sets
+                                              the `instances` parameter, which
+                                              overrides `backend`.
+    5. the launch arguments below            explicit operator overrides
+
+  Backends today: stair_gait (stairs, geometric), ramp_slope (continuous ramps
+  and dock slopes, geometric), dino_v3 (learned, stub).
+
+  Several terrains can coexist in one frame: declare one instance per region in
+  the instances file (see config/instances.example.yaml). Every instance gets
+  /terrain_recognizer/<name>/status, all of them appear together on
+  /terrain_recognizer/scene, and /stair_gait/status stays a single reduced
+  verdict over the instances that can see straight ahead.
+
+  `publish_legacy` keeps /stair_gait/status alive for NeuPAN's escape terrain
+  gate. Pass publish_legacy:=false when the legacy stair_gait node still runs,
+  so exactly one publisher owns that topic.
+-->
+<launch>
+  <arg name="backend" default="stair_gait"/>
+  <arg name="config" default=""/>
+  <arg name="instances" default=""/>
+  <arg name="cloud_topic" default="/odin1/cloud_slam"/>
+  <arg name="base_frame" default="base_link"/>
+  <arg name="detect_rate_hz" default="10.0"/>
+  <arg name="confirm_frames" default="3"/>
+  <arg name="publish_legacy" default="true"/>
+  <arg name="legacy_corridor_half_width" default="0.6"/>
+
+  <node pkg="terrain_recognizer" type="terrain_recognizer_node"
+        name="terrain_recognizer" output="screen"
+        respawn="true" respawn_delay="3">
+    <rosparam command="load" file="$(find terrain_recognizer)/config/terrain_recognizer.yaml"/>
+    <!-- stair_gait is the reference backend, so its defaults are also loaded
+         when `backend` is empty and the backends come from the instances file. -->
+    <rosparam if="$(eval arg('backend') in ('', 'stair_gait'))"
+              command="load" file="$(find terrain_recognizer)/config/stair_gait.yaml"/>
+    <rosparam if="$(eval arg('backend') == 'dino_v3')"
+              command="load" file="$(find terrain_recognizer)/config/dino_v3.yaml"/>
+    <!-- ramp_slope keys are all prefixed (`ramp_slope/...`), so this file is safe
+         to load unconditionally: it cannot collide with another backend, and it
+         gives ramp_slope instances their defaults even when the node-level
+         `backend` argument is empty (instances mode). -->
+    <rosparam command="load" file="$(find terrain_recognizer)/config/ramp_slope.yaml"/>
+    <rosparam if="$(eval arg('config') != '')" command="load" file="$(arg config)"/>
+    <rosparam if="$(eval arg('instances') != '')" command="load" file="$(arg instances)"/>
+
+    <param name="backend" value="$(arg backend)"/>
+    <param name="cloud_topic" value="$(arg cloud_topic)"/>
+    <param name="base_frame" value="$(arg base_frame)"/>
+    <param name="detect_rate_hz" value="$(arg detect_rate_hz)"/>
+    <param name="confirm_frames" value="$(arg confirm_frames)"/>
+    <param name="publish_legacy" value="$(arg publish_legacy)"/>
+    <param name="legacy_corridor_half_width" value="$(arg legacy_corridor_half_width)"/>
+  </node>
+</launch>

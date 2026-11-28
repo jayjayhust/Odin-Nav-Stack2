@@ -616,3 +616,14 @@ if __name__ == '__main__':
 **安装与接入的逐步操作在该仓库的 README 里** —— 其中的 *Integrating with Odin-Nav-Stack2* 章节说明了话题契约、标注图发布，以及 ROS 1 / Jetson 上的坑。不要在这里重复那份配置。
 
 导航侧的前置条件：你的驱动必须真的在推图 —— 驱动配置里 `sendrgb: 1` 与 `sendrgbundistort: 1`，并用 `rostopic hz /odin1/image/undistorted` 确认有数据之后，再接感知。
+
+## 12. 可选 · 接一个地形识别器
+
+步态与脱困决策来自 `terrain_recognizer` 槽位，而不是写死的几何判断。自带两个纯几何后端：`stair_gait`（高度剖面踏步，默认）和 `ramp_slope`（连续斜坡的平面拟合 —— 装卸平台坡度板、车库坡道、场地高差过渡），两者的词汇互补而不重叠，所以户外场地可以同时跑。学习型模型接在同一个接口后面：
+
+1. 复制 `ros_ws/src/terrain_recognizer/src/backends/dino_v3_backend.cpp`，把 `classify()` 换成你的推理。
+2. 用 `registerTerrainBackend("<name>", factory)` 注册，并把源文件加进 `CMakeLists.txt`。
+3. 在 `robots/<robot>/robot.yaml` 里选用：`terrain_recognizer.backend: <name>`，或写成 `terrain_recognizer.instances` 里与 `stair_gait` 并列的一项。
+4. 每条结论都要填 `legacy_state` —— 这是 NeuPAN 脱困门控唯一读的字段。
+
+完整流程（契约表、可编译骨架、构建与配置接线、离线测试）：[04 · 增加自定义地形识别器](04_custom_terrain_backend.zh-CN.md)。

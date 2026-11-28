@@ -39,18 +39,18 @@ box(0, T, T, D - T, 0, H, "wall")
 box(W - T, W, T, D - T, 0, H, "wall")
 
 # ------------------------------------------------------- up-going platform --
-import sys
-RISE = float(sys.argv[sys.argv.index('--rise')+1]) if '--rise' in sys.argv else 0.15
-TREAD = float(sys.argv[sys.argv.index('--tread')+1]) if '--tread' in sys.argv else 0.45
-OUT = sys.argv[sys.argv.index('--out')+1] if '--out' in sys.argv else 'example_single_floor.obj'
+# The 0.15 / 0.45 tier is the only one: one riser is one cell and one tread is
+# three at the page's 0.15 m default. A 0.30 riser looked aligned but the grid
+# origin comes from the model's own bounds, so the phase is never guaranteed and
+# 2 cells became 3. The 25 cm variant that used to ride on this flag pair is
+# gone; the multi-terrain sample covers the non-office shapes now.
+RISE, TREAD = 0.15, 0.45
+OUT = "example_single_floor.obj"
 RAIL_H = 0.95                    # railing height above the tread it stands on
 PLAT = RISE * 4
 box(0.60, 2.00, 0.60, 2.60, 0, PLAT, "platform")
 box(0.60, 2.00, 0.60, 2.60, PLAT, PLAT, "platform-cap")   # the walking face
-# four treads going east off the platform edge, 0.30 tread / 0.18 rise
-# 0.15 rise is one cell whatever phase the grid lands on; 0.45 tread is
-# three. A 0.30 riser looked aligned but the grid origin comes from the
-# model's own bounds, so the phase is never guaranteed and 2 cells became 3.
+# four treads going east off the platform edge
 for i in range(4):
     x0 = 2.00 + i * TREAD
     top = PLAT - RISE * (i + 1)
@@ -109,10 +109,10 @@ for i in range(NX):
 box(3.80, 4.20, 3.30, 3.70, 0, H, "column")
 box(7.40, 7.80, 1.60, 2.00, 0, H, "column")
 box(5.20, 6.40, 5.20, 6.00, 0, 0.75, "desk")
-box(5.20, 6.40, 5.20, 5.60, 0.75, 0.78, "desk-top")
+# No separate desk-top slab: the box's own top at z=0.75 is the desktop.
 box(6.90, 8.50, 6.40, 6.55, 0, 1.20, "partition")
+# No separate barrel lid: the cylinder stand-in's own top at z=1.00 is the lid.
 box(2.60, 3.00, 5.80, 6.20, 0, 1.00, "barrel")
-box(2.60, 3.00, 5.80, 6.20, 1.00, 1.02, "barrel-lid")
 
 
 # ------------------------------------------------------------------ OBJ out --
@@ -126,7 +126,7 @@ def write_obj(path):
             for (x, y, z) in ((x0, y0, z0), (x1, y0, z0), (x1, y1, z0), (x0, y1, z0),
                               (x0, y0, z1), (x1, y0, z1), (x1, y1, z1), (x0, y1, z1)):
                 fh.write("v %.4f %.4f %.4f\n" % (x, y, z))
-            for q in ((0, 1, 2, 3), (4, 5, 6, 7), (0, 1, 5, 4),
+            for q in ((0, 3, 2, 1), (4, 5, 6, 7), (0, 1, 5, 4),
                       (1, 2, 6, 5), (2, 3, 7, 6), (3, 0, 4, 7)):
                 a, b, c, d = (q[0] + n, q[1] + n, q[2] + n, q[3] + n)
                 fh.write("f %d %d %d\n" % (a, b, c))
@@ -136,6 +136,6 @@ def write_obj(path):
 
 if __name__ == "__main__":
     here = os.path.dirname(os.path.abspath(__file__))
-    out = OUT if os.path.isabs(OUT) else os.path.join(here, OUT)
+    out = os.path.join(here, OUT)
     write_obj(out)
     print("%s  %d boxes  %d bytes" % (out, len(BOXES), os.path.getsize(out)))

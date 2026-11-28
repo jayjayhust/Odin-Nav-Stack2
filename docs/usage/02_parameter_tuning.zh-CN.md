@@ -121,9 +121,120 @@ ROS2 用的是同一套 NeuPAN 内核。依赖这些话题之前，先在你自�
 | 脱困旋转时转进墙里 | 旋转净空低于外接圆半径 | `rotate_open_clearance_m ≥ R_circ + 0.02`；保持 `corridor_guard_enable: true` |
 | 为已经消失的障碍刹车 | `sliding_map` 记忆残留，或打到自身外形 | 降 `cell_decay_sec`；把 `footprint_margin_m` 提 0.05 |
 | 求解耗时长（动作一顿一顿） | 障碍点太多或视野太长 | 降 `receding`；确认 `solver: 'SCS'` 与 `nrmp_warm_start: true` |
+| 脱困时朝着楼梯倒车 | 机器人在楼梯上但地形门控没开 | 设置 `terrain_recognizer.backend` 并打开 `stair_suppress_enable: true`（见 §8） |
 
 ## 6. 各平台注意事项
 
 - **Go2：** `w_deadband`、`adaptive_d_max`、`smith_predictor` 默认都是关的。要开就一个一个开。
 - **SW01：** `output_gain` 是 SW01 专用补偿，其他机器人上保持关闭。
 - **Dobot Lumo：** `/cmd_vel` 断流时，桥会在 `cmd_vel_timeout` 后下发零速，再经过 `cmd_vel_damp_timeout` 让机器人阻尼停下。**阻尼是终态**：需要发 `/dobot/reset` 才能恢复。除非机器人架在台架上、且有人守在急停旁边，否则不要用 `dry_run:=false` 运行。
+
+## 7. 脱困策略槽（`local_planner.escape_policy`）
+
+局部规划器卡住时由**谁来接管** `/cmd_vel`——不是 MPC 怎么算。两个键，都可选：
+
+```yaml
+local_planner:
+  escape_policy:
+    backend: stuck_escape              # stuck_escape | null | <name> | <dotted.module>
+    config: neupan/escape_policy.yaml  # 可选；从 robots/<robot>/ 解析
+```
+
+- **不改行为就别写它。** `stuck_escape` 仍是默认值，仍然读 `neupan/config.yaml` 里的 `stuck_escape:` 块，所以之前调好的参数一个都不动。
+- **`null`** 彻底关闭脱困（MPC 输出原样下发）。只在怀疑脱困逻辑干扰时用它做隔离——此时机器人卡住就是卡住。
+- **`config`** 叠加在 `stuck_escape:` 块之上：文件里只覆盖它包含的键，所以现场配置文件可以只有两行。
+- **调参顺序**：`trigger_frames`（等多久）→ `front_obs_threshold`（何时算被堵）→ `back_speed` / `rotate_speed`（动作多猛）→ `exit_obs_distance` / `duration_sec`（何时放弃）。推荐用 `criterion: progress` 配 `progress_threshold_m` 做卡住判据，`displacement` 是旧判据。
+- **地形感知**：`stair_suppress_enable: true` 会让节点读取 `/stair_gait/status`，机器人处在楼梯上时压住脱困。前提是有人发布这个结论——见 §8。
+
+启动时看日志确认接线：`[navigation_mode] mode=... escape=... policy=<backend>`。
+
+## 8. 地形识别槽（`terrain_recognizer`）
+
+顶层键，按需开启。不写就完全不启动地形节点。
+
+```yaml
+terrain_recognizer:
+  backend: stair_gait                              # stair_gait | ramp_slope | dino_v3 | <custom>
+  config: terrain_recognizer/stair_gait.yaml       # 可选，从 robots/<robot>/ 解析
+```
+
+一个后端只看一个区域，所以这种简写只适合“只关心正前方地面”的机器人。输出有三个：`/terrain_recognizer/status` 上的 latched 类型化结论、同一帧的 `/terrain_recognizer/scene`，以及精简后的旧版 JSON `/stair_gait/status`。
+
+**同一帧里出现多个地形时**（前方楼梯、侧边坡道、中间平台），把 `backend` 换成实例文件——每个区域一个具名 `(backend, region)`。复制 `ros_ws/src/terrain_recognizer/config/instances.example.yaml` 修改：
+
+```yaml
+# robots/<robot>/robot.yaml
+terrain_recognizer:
+  backend: stair_gait                          # 省略 backend 的实例默认用它
+  instances: terrain_recognizer/instances.yaml
+```
+
+```yaml
+# instances.yaml —— 加载到节点的私有命名空间
+instances:
+  front:
+    backend: stair_gait          # 可选；缺省用 terrain_recognizer.backend
+    roi: {x_min: 0.6, x_max: 3.2, y_min: -0.6, y_max: 0.6}
+  left:
+    backend: stair_gait
+    legacy: false                # 永不参与 /stair_gait/status 投票
+    roi: {x_min: 0.6, x_max: 3.2, y_min: 0.4, y_max: 1.8}
+```
+
+- 每个实例发布 `/terrain_recognizer/<name>/status`；本帧所有有结论的实例一起出现在 `/terrain_recognizer/scene`（`terrain_recognizer/TerrainScene`）。多地形看的是这个话题；该模式下不再使用 `/terrain_recognizer/status`。
+- `roi` 在 `base_link` 下先裁点云再交给后端，所以同一个后端的两个实例可以看不同方向的同一块地面。后端自己的 `roi_*` 仍会在这个裁切内生效，因此几何 ROI 至少要和实例区域一样宽。
+- 后端**参数**是节点级的（只有一个 `min_steps`、一个 `detect_rate_hz`）。实例之间差的是区域，不是调参。
+- `/stair_gait/status` 仍是单值，因为 NeuPAN 的楼梯门控只能接一个：只有 `legacy` 开启（默认）且区域与前方走廊（`legacy_corridor_half_width`，`0.6 m`；要求至少覆盖区域与走廊中较窄者的一半）真正重叠的实例参与投票，`stair_up/down` 优先于 `flat`，同优先级比 `confidence`。所以朝左/朝右的实例不可能把脱困按住。
+
+`stair_gait` 几何参数（包内默认值在 `ros_ws/src/terrain_recognizer/config/stair_gait.yaml`）：
+
+| 键 | 作用 | 配错时的症状 |
+|---|---|---|
+| `roi_x_min` / `roi_x_max` | 往前看多远的地面 | 楼梯发现太晚（x_min 过大）或把近处家具算进来（x_min 过小） |
+| `roi_y_half` | 参与投票的横向走廊宽度 | 机器狗稍微走偏结论就翻转 |
+| `roi_z_min` / `roi_z_max` | `base_link` 下接受的高度范围 | `z_min` 切掉下面几级踏步时会漏掉下楼梯 |
+| `bin_m`、`min_bin_points` | 高度剖面的分辨率与支撑点数 | 远处稀疏点云上结论抖动或缺失 |
+| `min_rise_m` / `max_rise_m` | 单级踏步必须落在此区间 | 薄踏步被忽略 / 墙面被当成台阶 |
+| `min_steps` | 要求连续踏步数 | 单个马路牙子被当成楼梯 |
+| `max_rise_spread_m` | 各级踏步之间的容差 | 台阶不平时结论变成 `unknown`（这是故意的） |
+
+`ramp_slope` 几何参数（包内默认值在 `ros_ws/src/terrain_recognizer/config/ramp_slope.yaml`）—— 户外场景的另一半，针对连续斜坡而不是踏步（装卸平台坡度板、车库坡道、场地到院子 的高差过渡、两个铺装面之间的排水沟）。它用同一份高度剖面做直线拟合，从不说 `stair_*`：踏步过不了它的平面拟合。参数键带 `ramp_slope/` 前缀，所以两个后端可以是同一个节点的两个实例。
+
+| 键 | 作用 | 配错时的症状 |
+|---|---|---|
+| `ramp_slope/x_min` / `x_max` | 测坡度的窗口 | 坡度发现太晚（x_min 过大）或把坡尾平地一起平均进来（x_max 过大，残差变大） |
+| `ramp_slope/y_half` | 参与投票的横向走廊宽度 | 机器狗稍微走偏结论就翻转 |
+| `ramp_slope/z_min` / `z_max` | `base_link` 下接受的高度范围 | `z_min` 切掉低端时会漏掉下坡；`z_max` 太小时上坡被截断 |
+| `ramp_slope/bin_m`、`min_bin_points` | 剖面分辨率与支撑点数 | 远处稀疏点云上坡度抖动 |
+| `ramp_slope/min_bins`、`min_span_m` | 判断所需的最小证据 | 只看 0.5 m 就报 `ramp_*`（把 `min_span_m` 调大） |
+| `ramp_slope/max_rms_m` | “是不是一个平面”的残差门限 | 楼梯和马路牙子被判成斜坡（调小） |
+| `ramp_slope/max_step_m` | 相邻 bin 允许的最大高度跳变 | 单个路缘或装卸边缘被读成“有点斜的平地”（调小） |
+| `ramp_slope/min_slope_deg` | 低于此角度算 `flat` | 3% 的缓坡也报 `ramp_up`，把速度上限压低 |
+| `ramp_slope/max_slope_deg` | 高于此角度结论是 `unknown` | 楼梯被当成坡道开上去（保持明显低于楼梯坡度，~25–30°） |
+
+户外常态是两个一起跑 —— 前方楼梯、侧面坡道 —— 必须用实例，因为一个后端只能描述一个区域：
+
+```yaml
+instances:
+  front: {backend: stair_gait, roi: {x_min: 0.6, x_max: 3.2, y_min: -0.6, y_max: 0.6}}
+  ramp:  {backend: ramp_slope, legacy: false,
+          roi: {x_min: 0.5, x_max: 3.0, y_min: -1.6, y_max: -0.4}}
+```
+
+`ramp_up` / `ramp_down` 故意把 `legacy_state` 报成 `flat`：坡道是可行驶、可倒退的地面，绝不能把脱困门控按住 —— 那个门控是为楼梯存在的。
+
+`config/terrain_recognizer.yaml` 里的节点级键：`detect_rate_hz`（10 Hz 足够，检测器很便宜）、`confirm_frames`（镜子或玻璃门导致翻转时提到 5）、`publish_legacy`（保持 `true`，除非老的 `stair_gait` 节点还在跑、两边都会发布 `/stair_gait/status`）、`legacy_corridor_half_width`（能参与 `/stair_gait/status` 投票的前方走廊宽度）。
+
+验证：
+
+```bash
+rostopic echo -n1 /terrain_recognizer/status     # 单实例模式
+rostopic echo -n1 /terrain_recognizer/scene      # 所有实例，一条消息
+rostopic echo -n1 /terrain_recognizer/front/status
+rostopic echo -n1 /stair_gait/status             # NeuPAN 消费的旧版 JSON
+```
+
+`dino_v3` 目前是空壳：只加载自己的参数、打一条警告、不发布任何东西，所以选中它不会悄悄把错误类别喂给上层。
+
+要接自己的模型，见 [04 · 增加自定义地形识别器](04_custom_terrain_backend.zh-CN.md)：后端契约、可编译骨架、构建与配置接线、离线测试。
+

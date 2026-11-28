@@ -43,6 +43,7 @@ navigation: ...
 mission: ...
 global_planner: ...
 local_planner: ...
+terrain_recognizer: ...   # optional; absent = no terrain node
 ```
 
 ### `frames`
@@ -235,6 +236,55 @@ Because the contracts differ, `interface` is per-backend. `mode: action` and
     - `local_planner.backends.<backend>.interface.cmd_vel_topic` (default: `/sru/cmd_vel`)
     - `bridge.{ros1,ros2,common}.cmd_vel_topic` (default: `/cmd_vel`, passed to the chassis bridge launch)
     - ROS 2: every scalar key of `bridge.common`, `bridge.native`, and `bridge.ros2` is passed to the bridge launch file as a launch argument (see Merge rules)
+
+#### `local_planner.escape_policy` (slot 2b)
+
+```yaml
+local_planner:
+  backend: neupan
+  escape_policy:
+    backend: stuck_escape             # stuck_escape (default) | null | <name> | <dotted.module>
+    config: neupan/escape_policy.yaml # optional, relative to the profile directory
+```
+
+- Swaps only the maneuver that overrides `/cmd_vel` when the local planner stalls. The MPC core
+  (`PAN`/`NRMP`/`DUNE`, `adaptive_d_max`) is unaffected.
+- `backend` is exported as `NEUPAN_ESCAPE_POLICY` by both bringups (`go2.launch`,
+  `dobot.launch`, ROS 2 `bringup.launch.py` → `neupan_ros.launch.py`); `neupan_ros.py` falls
+  back to `escape_policy.backend` in `robots/<robot>/neupan/config.yaml`, then to
+  `stuck_escape`. Omit the key entirely to keep the default.
+- `config` is exported as `NEUPAN_ESCAPE_CONFIG` and layered **over** the `stuck_escape:` block of
+  the NeuPAN config file, so a site file only overrides what it changes.
+- The contract is `decide() → EscapeDecision` (`NeuPAN/neupan/escape_policies/base.py`). See
+  [ONS2_ARCHITECTURE § 5.4.3](ONS2_ARCHITECTURE.md) and [ROADMAP](../ROADMAP.md).
+
+### `terrain_recognizer`
+
+```yaml
+terrain_recognizer:
+  backend: stair_gait                    # stair_gait (treads) | ramp_slope (slopes) | dino_v3 (stub) | <custom>
+  config: terrain_recognizer/stair_gait.yaml  # optional, relative to the profile directory
+  instances: terrain_recognizer/instances.yaml  # optional; one (backend, region) per area
+```
+
+- Top-level and optional. When neither `backend` nor `instances` is set, `ons2_bringup` launches no
+  terrain node — that is the opt-out for robots without terrain sensing.
+- `backend` is the single-instance shorthand and the default backend for instances that omit their
+  own. `instances` (a YAML file resolved like `config`) declares several named
+  `(backend, region)` pairs, because one model can only describe one region while real sites put
+  stairs ahead and a ramp beside the robot in the same frame. The file is loaded into the node's
+  private namespace, so its top-level key is `instances`; copy
+  `ros_ws/src/terrain_recognizer/config/instances.example.yaml`.
+- `ros1_bringup_arguments()` emits `terrain_backend:=<backend>`, `terrain_config:=<abs path>` and
+  `terrain_instances:=<abs path>` when set, which `go2.launch` forwards to
+  `terrain_recognizer/launch/terrain_recognizer.launch`. The values are also available through the
+  read-only `--terrain-backend` / `--terrain-config` / `--terrain-instances` CLI helpers.
+- Outputs: `/terrain_recognizer/<instance>/status` per instance (`/terrain_recognizer/status` in
+  single-instance mode), all of them together on `/terrain_recognizer/scene`, and the reduced
+  legacy JSON on `/stair_gait/status` that the escape terrain gate (`stair_suppress_enable`)
+  consumes.
+- ROS 1 only today. A ROS 2 profile may carry the key; the ROS 2 bringup ignores it until a ROS 2
+  node exists (see [ROADMAP](../ROADMAP.md)).
 
 ## Merge rules
 

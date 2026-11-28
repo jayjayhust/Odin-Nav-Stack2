@@ -13,6 +13,7 @@ from launch_ros.actions import Node
 from robot_profile import (
     bridge_launch_arguments,
     bridge_launch_file,
+    escape_policy_spec,
     footprint_parameters,
     global_planner_backend,
     global_planner_launch,
@@ -154,6 +155,9 @@ def _include_profile_nodes(context, *args, **kwargs):
             LaunchConfiguration('neupan_config').perform(context).strip()
             or neupan_config_path(profile)
         )
+        # Escape-policy slot: robot.yaml local_planner.escape_policy -> env vars
+        # consumed by neupan_ros (see neupan.escape_policies).
+        esc = escape_policy_spec(profile)
         planner_actions.append(IncludeLaunchDescription(
             PythonLaunchDescriptionSource(os.path.join(
                 get_package_share_directory('neupan_ros'),
@@ -162,6 +166,8 @@ def _include_profile_nodes(context, *args, **kwargs):
                 'config_file': neupan_cfg,
                 'navigation_mode': LaunchConfiguration('navigation_mode'),
                 'periodic_replan_sec': LaunchConfiguration('periodic_replan_sec'),
+                'escape_policy': esc['backend'],
+                'escape_policy_config': esc['config'],
             }.items(),
         ))
     elif lp_backend != 'neupan':

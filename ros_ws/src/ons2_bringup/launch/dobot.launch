@@ -12,6 +12,15 @@
   <arg name="local_planner_pkg" default=""/>
   <arg name="local_planner_launch" default=""/>
   <arg name="neupan_config" default=""/>
+  <!-- Escape-policy slot (local_planner.escape_policy in robot.yaml). -->
+  <arg name="escape_policy" default="stuck_escape"/>
+  <arg name="escape_policy_config" default=""/>
+  <!-- Terrain-recognizer slot (top-level terrain_recognizer in robot.yaml).
+       Dobot Lumo has no terrain node, so these stay empty; they are declared
+       because robot_profile.py emits them for every profile that sets the keys. -->
+  <arg name="terrain_backend" default=""/>
+  <arg name="terrain_config" default=""/>
+  <arg name="terrain_instances" default=""/>
   <arg name="neupan_launch_prefix" default=""/>
   <arg name="dry_run" default="true"/>
   <arg name="allow_walk_switch" default="false"/>
@@ -107,6 +116,8 @@
     <arg name="odom_topic" value="/odin1/odometry"/>
     <arg name="odom_feedback" value="false"/>
     <arg name="launch_prefix" value="$(arg neupan_launch_prefix)"/>
+    <arg name="escape_policy" value="$(arg escape_policy)"/>
+    <arg name="escape_policy_config" value="$(arg escape_policy_config)"/>
   </include>
 
   <include if="$(eval arg('local_planner') != 'neupan' and arg('local_planner_pkg') != '' and arg('local_planner_launch') != '')"

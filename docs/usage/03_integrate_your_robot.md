@@ -620,3 +620,14 @@ and the ROS 1 / Jetson pitfalls. Do not duplicate that setup here.
 Prerequisite on this side: your driver must actually publish images — `sendrgb: 1` and
 `sendrgbundistort: 1` in the driver config — verified with
 `rostopic hz /odin1/image/undistorted` before wiring perception in.
+
+## 12. Optional · Add a terrain recognizer
+
+Gait and escape decisions come from the `terrain_recognizer` slot, not from hard-coded geometry. Two geometry-only backends ship: `stair_gait` (height-profile treads, the default) and `ramp_slope` (plane fit for continuous slopes — dock levellers, garage ramps, apron transitions), which split the vocabulary instead of overlapping, so an outdoor site can run both at once. A learned model plugs in behind the same interface:
+
+1. Copy `ros_ws/src/terrain_recognizer/src/backends/dino_v3_backend.cpp` and replace `classify()`.
+2. Register it with `registerTerrainBackend("<name>", factory)` and add the source file to `CMakeLists.txt`.
+3. Select it in `robots/<robot>/robot.yaml`: `terrain_recognizer.backend: <name>`, or one entry of `terrain_recognizer.instances` next to `stair_gait`.
+4. Keep `legacy_state` filled in every verdict — it is the only field NeuPAN's escape gate reads.
+
+Full walkthrough (contract table, compiling skeleton, build/config wiring, offline tests): [04 · Add a Custom Terrain Recognizer](04_custom_terrain_backend.md).

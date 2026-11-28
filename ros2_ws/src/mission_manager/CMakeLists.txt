@@ -70,6 +70,15 @@ if(BUILD_TESTING)
   target_include_directories(replan_install_gate_test PRIVATE include)
   enable_testing()
   add_test(NAME replan_install_gate_test COMMAND replan_install_gate_test)
+  # Stuck-escape route-rotation parity gate (mirrors the ros1 tree, same
+  # escape_route_gate.h and the same docs/multifloor/sim/escape_contract.
+  # fixture.json the simulator's probe_escape_contract.js runs).
+  add_executable(test_escape_route_gate test/test_escape_route_gate.cpp)
+  target_include_directories(test_escape_route_gate PRIVATE include)
+  set(ESCAPE_FIXTURE "${CMAKE_CURRENT_SOURCE_DIR}/../../../docs/multifloor/sim/escape_contract.fixture.json")
+  get_filename_component(ESCAPE_FIXTURE "${ESCAPE_FIXTURE}" ABSOLUTE)
+  target_compile_definitions(test_escape_route_gate PRIVATE ESCAPE_FIXTURE_PATH="${ESCAPE_FIXTURE}")
+  add_test(NAME test_escape_route_gate COMMAND test_escape_route_gate)
   ament_add_pytest_test(navigation_path_safety
     test/test_navigation_path_safety.py
     TIMEOUT 180

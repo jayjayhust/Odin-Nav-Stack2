@@ -128,3 +128,8 @@ local_planner:
         odom_topic: /odin1/odometry
       package: sru_nav
       launch: sru_nav.launch
+
+  # Escape-policy slot: swaps only the stall maneuver, not the NeuPAN MPC.
+  # stuck_escape (default) | null | <custom> | <dotted.module>
+  escape_policy:
+    backend: stuck_escape

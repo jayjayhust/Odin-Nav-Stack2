@@ -69,6 +69,16 @@
   #topicList .type { color: var(--muted); font-size: 11px; overflow: hidden; text-overflow: ellipsis;
     white-space: nowrap; flex: 0 0 auto; max-width: 115px; margin-left: auto; }
   .tag { font-size: 10px; border: 1px solid rgba(227,179,65,.5); color: var(--warn); border-radius: 4px; padding: 0 3px; flex: 0 0 auto; }
+  .inspBar { height: 6px; border-radius: 3px; background: #0f141b; border: 1px solid var(--line); overflow: hidden; margin: 4px 0 5px; }
+  .inspBar > i { display: block; height: 100%; width: 0; background: var(--accent); transition: width .3s; }
+  .inspEll { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #inspQueue { max-height: 132px; overflow: auto; font-size: 12px; }
+  #inspQueue .q { display: flex; gap: 8px; justify-content: space-between; padding: 3px 0; border-bottom: 1px dashed var(--line); }
+  #inspQueue .q:last-child { border-bottom: none; }
+  #inspQueue .q span:first-child { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #inspQueue .q span:last-child { flex: 0 0 auto; }
+  #inspJson { width: 100%; min-height: 72px; background: #0f141b; color: var(--text); border: 1px solid #3a4454;
+    border-radius: 6px; padding: 6px; font: 11px/1.45 ui-monospace, Menlo, Consolas, monospace; resize: vertical; }
 </style>
 </head>
 <body>
@@ -161,6 +171,32 @@
         <button id="bReset">重置</button>
       </div>
       <div class="toast" id="missionToast"></div>
+    </div>
+
+    <div class="card" id="inspCard">
+      <h3>巡检任务<span class="chip" id="inspChip" style="margin-left:8px">--</span></h3>
+      <div class="muted" id="inspMeta" style="font-size:11.5px;margin-bottom:6px">--</div>
+      <div id="inspActive" class="hidden">
+        <div class="row" style="justify-content:space-between;margin-bottom:2px">
+          <b class="inspEll" id="inspName">--</b>
+          <span class="muted" id="inspStep" style="flex:0 0 auto">--</span>
+        </div>
+        <div class="inspBar"><i id="inspBar"></i></div>
+        <div class="muted inspEll" id="inspMsg" style="font-size:11.5px">--</div>
+        <div class="row" style="margin-top:6px">
+          <button class="danger" id="bInspCancel" style="flex:1">取消当前任务</button>
+          <button id="bInspDetail">任务详情</button>
+        </div>
+      </div>
+      <div class="muted" style="margin:8px 0 4px">队列</div>
+      <div id="inspQueue"></div>
+      <div class="row" style="margin-top:8px">
+        <input type="text" class="wide" id="inspToken" placeholder="巡检令牌（后台配置了才需要）">
+        <button id="bInspRefresh">刷新</button>
+      </div>
+      <textarea id="inspJson" placeholder="粘贴后台下发的结构化任务 JSON（调试用）"></textarea>
+      <div class="row" style="margin-top:6px"><button class="primary" id="bInspSubmit" style="flex:1">下发任务</button></div>
+      <div class="toast" id="inspToast"></div>
     </div>
 
     <div class="card">
@@ -753,6 +789,7 @@
       lastIcErr = ic.last_error; setToast('intercomToast', '播报失败：' + ic.last_error);
     }
     renderPresets(ic.presets);
+    renderInspection(S.inspection);
   }
   function refresh() {
     return fetch('/api/state', { cache: 'no-store' }).then(readJson)
@@ -999,6 +1036,117 @@
     fetch('/api/record/state', { cache: 'no-store' }).then(readJson).then(renderRecord).catch(function () {});
     if (++opsTick % 5 === 0) loadTopics();
   }
+
+  // ---------- inspection tasks ----------
+  var INSP_STATE = { QUEUED: ['排队中', 'warn'], SCHEDULED: ['已计划', 'warn'], RUNNING: ['执行中', 'ok'],
+    SUCCEEDED: ['已完成', 'ok'], PARTIAL: ['部分完成', 'warn'], FAILED: ['失败', 'bad'],
+    CANCELLED: ['已取消', ''], INTERRUPTED: ['被打断', 'bad'] };
+  var inspToken = '';
+  try { inspToken = localStorage.getItem('ons2_insp_token') || ''; } catch (e) {}
+  function inspHeaders(extra) {
+    var headers = extra || {};
+    if (inspToken) headers['X-Inspection-Token'] = inspToken;
+    return headers;
+  }
+  function inspRequest(path, options) {
+    options = options || {};
+    options.cache = 'no-store';
+    options.headers = inspHeaders(options.headers);
+    return fetch(path, options).then(readJson, function (err) {
+      return { ok: false, error: '网络错误：' + err.message };
+    });
+  }
+  function inspStateText(state) { return (INSP_STATE[state] || [state || '--', ''])[0]; }
+  function renderInspection(sn) {
+    sn = sn || {};
+    var chip = $('inspChip');
+    chip.textContent = sn.enabled ? '已启用' : '未启用';
+    chip.className = 'chip ' + (sn.enabled ? 'ok' : 'warn');
+    var points = sn.points || {}, counts = sn.counts || {};
+    $('inspMeta').textContent = '点位 ' + (points.count || 0) + (points.loaded ? '' : '（未加载点位库）') +
+      ' · 排队 ' + (counts.queued || 0) + ' · 运行 ' + (counts.running || 0) +
+      ' · 完成 ' + (counts.finished || 0);
+
+    var active = sn.active;
+    $('inspActive').classList.toggle('hidden', !active);
+    if (active) {
+      var prog = active.progress || {};
+      $('inspName').textContent = active.name || active.task_id;
+      $('inspStep').textContent = inspStateText(active.state);
+      $('inspMsg').textContent = (active.current_step_id ? active.current_step_id + ' · ' : '') +
+        (prog.steps_done || 0) + '/' + (prog.steps_total || 0) + ' 步 · ' + (active.message || '--');
+      $('inspBar').style.width = (prog.steps_total ? Math.round(100 * (prog.steps_done || 0) / prog.steps_total) : 0) + '%';
+    }
+
+    var queue = sn.queue || [];
+    var key = queue.map(function (t) {
+      return t.task_id + t.state + (t.progress ? t.progress.steps_done : 0);
+    }).join('|');
+    var box = $('inspQueue');
+    if (box.dataset.key !== key) {
+      box.dataset.key = key; box.innerHTML = '';
+      if (!queue.length) box.innerHTML = '<span class="muted">队列为空</span>';
+      queue.forEach(function (t) {
+        var row = document.createElement('div'); row.className = 'q';
+        var left = document.createElement('span'); left.textContent = t.name || t.task_id;
+        var right = document.createElement('span'); right.className = 'muted';
+        var p = t.progress || {};
+        right.textContent = inspStateText(t.state) + ' ' + (p.steps_done || 0) + '/' + (p.steps_total || 0);
+        row.appendChild(left); row.appendChild(right); box.appendChild(row);
+      });
+    }
+  }
+  function inspActiveId() {
+    return S && S.inspection && S.inspection.active ? S.inspection.active.task_id : '';
+  }
+  $('inspToken').value = inspToken;
+  $('inspToken').addEventListener('change', function () {
+    inspToken = this.value.trim();
+    try { localStorage.setItem('ons2_insp_token', inspToken); } catch (e) {}
+    setToast('inspToast', inspToken ? '令牌已保存在本机浏览器' : '已清除令牌');
+  });
+  $('bInspCancel').onclick = function () {
+    var taskId = inspActiveId();
+    if (!taskId) return setToast('inspToast', '当前没有执行中的巡检任务');
+    if (!confirm('取消巡检任务 ' + taskId + '？机器人会立即停止。')) return;
+    inspRequest('/api/inspection/tasks/' + encodeURIComponent(taskId) + '/cancel',
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+      .then(function (res) { setToast('inspToast', res.error || '取消请求已发送'); refresh(); });
+  };
+  $('bInspDetail').onclick = function () {
+    var taskId = inspActiveId();
+    if (!taskId) return;
+    window.open('/api/inspection/tasks/' + encodeURIComponent(taskId) +
+      (inspToken ? '?token=' + encodeURIComponent(inspToken) : ''), '_blank');
+  };
+  $('bInspRefresh').onclick = function () {
+    inspRequest('/api/inspection/status').then(function (res) {
+      if (res.error) return setToast('inspToast', '读取失败：' + res.error);
+      renderInspection(res); setToast('inspToast', '已刷新');
+    });
+  };
+  $('bInspSubmit').onclick = function () {
+    var text = $('inspJson').value.trim();
+    if (!text) return setToast('inspToast', '请先粘贴任务 JSON');
+    var payload;
+    try { payload = JSON.parse(text); } catch (e) { return setToast('inspToast', 'JSON 解析失败：' + e.message); }
+    setToast('inspToast', '下发中…');
+    inspRequest('/api/inspection/tasks', { method: 'POST',
+      headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      .then(function (res) {
+        if (res.accepted && res.accepted.length) {
+          var summary = '已接收 ' + res.accepted.length + ' 个任务';
+          if (res.rejected && res.rejected.length) summary += '，拒绝 ' + res.rejected.length + ' 个：' + res.rejected[0].error;
+          setToast('inspToast', summary);
+          $('inspJson').value = '';
+        } else if (res.rejected && res.rejected.length) {
+          setToast('inspToast', '被拒绝：' + res.rejected[0].error);
+        } else {
+          setToast('inspToast', res.error || '下发失败');
+        }
+        refresh();
+      });
+  };
 
   $('center').addEventListener('click', centerRobot);
   $('fit').addEventListener('click', function () { fitMap(); draw(); });

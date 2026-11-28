@@ -66,6 +66,7 @@
 #include <nav_interfaces/action/nav_path.hpp>
 
 #include "mission_manager/replan_install_gate.h"
+#include "mission_manager/escape_route_gate.h"
 
 class MissionManager {
 public:
@@ -252,6 +253,19 @@ private:
   void updateInstallGateBlocked();
   std::vector<mission_manager_gate::Pt> pathToPoints(
       const nav_msgs::msg::Path &path) const;
+
+  // ---- Stuck-escape route rotation (see mission_manager/escape_route_gate.h) ----
+  // Opt-in governor on a NeuPAN replan request: throttle, terrain gate, per-goal
+  // route-signature rotation and the same install gate the periodic replan uses,
+  // plus one trace record per decision. escape_route_enable=false leaves the plain
+  // replan untouched. Terrain is blind on ROS2 (no /stair_gait/status feed); the
+  // multi-floor/stair scope of this branch is ROS1-only (see docs).
+  void loadEscapeRouteParams();
+  bool runEscapeEpisode();
+  void resetEscapeEpisode(const std::string &why);
+  void publishEscapeTrace(const mission_manager_gate::EscapeTraceRecord &rec);
+  double escapeCorridorClearance(
+      const std::vector<mission_manager_gate::Pt> &pts) const;
 
   bool startCurrentWaypoint();
   // Skips the current waypoint and advances to the next one (or transitions to FAILED
@@ -502,6 +516,15 @@ private:
   std::atomic<bool> install_gate_blocked_gated_{false};
   std::atomic<double> install_gate_min_lateral_m_{-1.0};
   double install_gate_blocked_dwell_sec_{0.0};
+
+  // Stuck-escape route rotation state (default off; opt-in via escape_route_enable).
+  bool escape_route_enable_{false};
+  mission_manager_gate::EscapeParams escape_cfg_;
+  mission_manager_gate::EscapeEpisode escape_episode_;
+  std::string escape_episode_id_;
+  rclcpp::Time escape_last_burst_at_{0, 0, RCL_ROS_TIME};  // inter-burst throttle clock
+  double escape_last_path_length_{0.0};                    // active-path length at last install
+  rclcpp::Publisher<std_msgs::msg::String>::SharedPtr escape_trace_pub_;  // /neupan/mission_escape_trace
 
   // SRU local planner backend runtime state
   rclcpp::Publisher<geometry_msgs::msg::PoseStamped>::SharedPtr sru_goal_pub_;

@@ -1,0 +1,71 @@
+# Example instances file for a site where several terrains coexist.
+#
+# Point `terrain_recognizer.instances` in robots/<robot>/robot.yaml at this kind
+# of file (a copy of it, or your own):
+#
+#   terrain_recognizer:
+#     instances: terrain_recognizer/instances.yaml
+#
+# The file is loaded into the node's private namespace, so the top-level key is
+# `instances` and every child is one instance. Each instance publishes
+# /terrain_recognizer/<name>/status and contributes to
+# /terrain_recognizer/scene.
+#
+# Per instance:
+#   backend  (required)  factory key: stair_gait | ramp_slope | dino_v3 | <custom>
+#   roi      (optional)  axis-aligned region in base_link; the node crops the
+#                        cloud to it before the backend runs, so two instances
+#                        of the same backend can look at different ground
+#   legacy   (optional)  default true; false keeps the instance out of the
+#                        single /stair_gait/status verdict. Even with true, an
+#                        instance only votes when its region really overlaps the
+#                        forward corridor (legacy_corridor_half_width, 0.6 m).
+#
+# Note that backend parameters themselves stay node-global (loaded from
+# config/stair_gait.yaml and the robot's own config file), so all instances of
+# one backend share `min_steps`, `detect_rate_hz`, ... and differ only by region.
+
+instances:
+  # Ground straight ahead: votes on /stair_gait/status, i.e. it can hold the
+  # escape while the robot is on stairs.
+  front:
+    backend: stair_gait
+    roi:
+      x_min: 0.6
+      x_max: 3.2
+      y_min: -0.6
+      y_max: 0.6
+
+  # Wider look-ahead to the left, e.g. a ramp beside the corridor. Reported on
+  # /terrain_recognizer/left/status and /terrain_recognizer/scene only.
+  left:
+    backend: stair_gait
+    legacy: false
+    roi:
+      x_min: 0.6
+      x_max: 3.2
+      y_min: 0.4
+      y_max: 1.8
+
+  # Loading-dock ramp on the right: a continuous slope, not treads. The second
+  # geometric backend fits a plane, so it reports ramp_up / ramp_down here and
+  # leaves staircases to the instances above (their treads fail its fit).
+  ramp:
+    backend: ramp_slope
+    legacy: false
+    roi:
+      x_min: 0.5
+      x_max: 3.0
+      y_min: -1.6
+      y_max: -0.4
+
+  # Learned backend prototype (interface stub today: publishes nothing, so the
+  # scene simply keeps the geometric verdicts).
+  # right:
+  #   backend: dino_v3
+  #   legacy: false
+  #   roi:
+  #     x_min: 0.6
+  #     x_max: 3.2
+  #     y_min: -1.8
+  #     y_max: -0.4

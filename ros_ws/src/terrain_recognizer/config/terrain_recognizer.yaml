@@ -1,0 +1,46 @@
+# terrain_recognizer - node-level defaults.
+#
+# This file is the base layer of the SLOT configuration; a robot-specific file
+# (`terrain_recognizer.config` in robots/<robot>/robot.yaml) is loaded on top of
+# it, then the launch arguments (backend / cloud_topic / ...) win last.
+#
+# Which model answers the question when `instances` is not used:
+#   stair_gait  geometric tread detector - stairs, flat (default, no extra deps)
+#   ramp_slope  geometric slope fit - ramps, dock levellers, flat (no extra deps)
+#   dino_v3     learned encoder - prototype stub, publishes no verdict yet
+#
+# stair_gait and ramp_slope split the vocabulary rather than compete: treads fail
+# ramp_slope's plane fit, continuous ramps have no tread edges for stair_gait. To
+# watch both directions at once, declare them as two instances.
+#
+# For sites where several terrains coexist, set `terrain_recognizer.instances`
+# in robot.yaml instead (see config/instances.example.yaml); the list wins and
+# every instance gets its own backend + region.
+backend: "stair_gait"
+
+cloud_topic: "/odin1/cloud_slam"
+base_frame: "base_link"
+
+# Detection runs on a timer against the newest cloud, not per cloud frame, so a
+# slow model degrades latency instead of blocking the subscriber.
+detect_rate_hz: 10.0
+
+# Consecutive identical verdicts before anything is published (debounce).
+confirm_frames: 3
+
+# Single-instance topic. With `instances`, each one publishes
+# terrain_recognizer/<name>/status instead.
+status_topic: "terrain_recognizer/status"
+
+# All instances in one latched message (what "several terrains at once" means).
+scene_topic: "terrain_recognizer/scene"
+
+# Legacy compatibility channel consumed by NeuPAN's escape terrain gate
+# (neupan_ros.py -> /stair_gait/status JSON). It is a reducer over the instances
+# whose region overlaps the forward corridor (`legacy_corridor_half_width`,
+# in base_link metres); a staircase verdict outranks a flat one. Set
+# publish_legacy to false when the legacy stair_gait node still runs, so exactly
+# one publisher owns the topic.
+publish_legacy: true
+legacy_status_topic: "stair_gait/status"
+legacy_corridor_half_width: 0.6

@@ -142,8 +142,28 @@ def make_handler(hub):
             length = int(self.headers.get("Content-Length", "0") or "0")
             return self.rfile.read(min(length, MAX_BODY_BYTES)) if length > 0 else b""
 
+        def _serve_inspection(self, provider):
+            try:
+                result = provider()
+            except PermissionError as exc:
+                return self._send_json({"ok": False, "error": str(exc)}, status=401)
+            except KeyError as exc:
+                detail = exc.args[0] if exc.args else exc
+                return self._send_json({"ok": False, "error": "not found: {}".format(detail)},
+                                       status=404)
+            except ValueError as exc:
+                payload = getattr(exc, "payload", None) or {"ok": False, "error": str(exc)}
+                return self._send_json(payload, status=400)
+            except OSError as exc:
+                return self._send_json({"ok": False, "error": str(exc)}, status=500)
+            if isinstance(result, tuple):
+                body, content_type, extra_headers = result
+                return self._send(200, body, content_type, extra_headers)
+            return self._send_json(result)
+
         def do_GET(self):
-            path = urlparse(self.path).path
+            parsed = urlparse(self.path)
+            path = parsed.path
             if path in ("/", "/index.html"):
                 with open(os.path.join(STATIC_DIR, "index.html"), "rb") as f:
                     return self._send(200, f.read(), "text/html; charset=utf-8")
@@ -202,6 +222,11 @@ def make_handler(hub):
                     self.wfile.flush()
                 self.close_connection = True
                 return
+
+            if path.startswith("/api/inspection"):
+                from web_console.inspection import api as inspection_api
+                return self._serve_inspection(lambda: inspection_api.handle_get(
+                    hub.inspection, path, parse_qs(parsed.query), self.headers))
             return self._send_json({"ok": False, "error": "Not Found"}, status=404)
 
         def do_POST(self):
@@ -213,6 +238,10 @@ def make_handler(hub):
                     volume = int((qs.get("volume") or ["100"])[0])
                     mime = (qs.get("mime") or [self.headers.get("Content-Type", "webm")])[0]
                     return self._send_json(hub.intercom.speak_raw_async(body, mime_or_ext=mime, volume=volume))
+                if parsed.path.startswith("/api/inspection"):
+                    from web_console.inspection import api as inspection_api
+                    return self._serve_inspection(lambda: inspection_api.handle_post(
+                        hub.inspection, parsed.path, body, self.headers, parse_qs(parsed.query)))
                 handler = routes.get(parsed.path)
                 if handler is None:
                     return self._send_json({"ok": False, "error": "Not Found"}, status=404)

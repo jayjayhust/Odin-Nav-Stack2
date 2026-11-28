@@ -124,9 +124,119 @@ ROS2 uses the same NeuPAN core. Verify the topics on your build (`ros2 topic lis
 | Rotates into a wall during escape | Rotation clearance below the circumscribed radius | `rotate_open_clearance_m ≥ R_circ + 0.02`; keep `corridor_guard_enable: true` |
 | Brakes for obstacles that are gone | Stale `sliding_map` memory or self-footprint hits | Lower `cell_decay_sec`; raise `footprint_margin_m` by 0.05 |
 | Solve time is high (jerky motion) | Too many obstacle points or receding too long | Lower `receding`; check `solver: 'SCS'` and `nrmp_warm_start: true` |
+| Escape reverses toward a staircase | Terrain gate off while the robot is on stairs | Set `terrain_recognizer.backend` and `stair_suppress_enable: true` (see §8) |
 
 ## 6. Platform-specific cautions
 
 - **Go2:** `w_deadband`, `adaptive_d_max`, and `smith_predictor` are off by default. Enable them one at a time.
 - **SW01:** `output_gain` is a SW01-only compensation. Keep it off on other robots.
 - **Dobot Lumo:** when `/cmd_vel` goes stale, the bridge sends zero velocity after `cmd_vel_timeout` and damps the robot after a further `cmd_vel_damp_timeout`. Damping is terminal: send `/dobot/reset` to recover. Do not run with `dry_run:=false` unless the robot is on a gantry with an operator at the emergency stop.
+
+## 7. Escape-policy slot (`local_planner.escape_policy`)
+
+Which maneuver takes over `/cmd_vel` when the local planner stalls — not how the MPC works. Two keys, both optional:
+
+```yaml
+local_planner:
+  escape_policy:
+    backend: stuck_escape              # stuck_escape | null | <name> | <dotted.module>
+    config: neupan/escape_policy.yaml  # optional; resolved from robots/<robot>/
+```
+
+- **Leave it out unless you are changing behavior.** `stuck_escape` stays the default and keeps reading the `stuck_escape:` block of `neupan/config.yaml`, so nothing you tuned before moves.
+- **`null`** disables escape entirely (MPC output untouched). Use it only to isolate a suspected escape interaction, since a stalled robot then simply stays stalled.
+- **`config`** layers over the `stuck_escape:` block: the file overrides only the keys it contains, so a site file can be two lines long.
+- **Tuning order**: `trigger_frames` (how long it waits) → `front_obs_threshold` (when it considers itself blocked) → `back_speed` / `rotate_speed` (how violent the maneuver is) → `exit_obs_distance` / `duration_sec` (when it gives up). `criterion: progress` with `progress_threshold_m` is the recommended stall test; `displacement` is the legacy one.
+- **Terrain awareness**: `stair_suppress_enable: true` makes the node read `/stair_gait/status` and hold the escape while the robot is on stairs. It only works if something publishes that verdict — see §8.
+
+Check the wiring at startup: `[navigation_mode] mode=... escape=... policy=<backend>` in the neupan log.
+
+## 8. Terrain-recognizer slot (`terrain_recognizer`)
+
+Top-level key, opt-in. Absent means no terrain node is launched at all.
+
+```yaml
+terrain_recognizer:
+  backend: stair_gait                              # stair_gait | ramp_slope | dino_v3 | <custom>
+  config: terrain_recognizer/stair_gait.yaml       # optional, resolved from robots/<robot>/
+```
+
+One backend describes one region, so this shorthand is for robots that only care about the ground straight ahead. Three outputs are published: the latched typed verdict on `/terrain_recognizer/status`, the same frame on `/terrain_recognizer/scene`, and the reduced legacy JSON on `/stair_gait/status`.
+
+**When several terrains are in view at once** (stairs ahead, a ramp to the side, a landing between them), replace `backend` with an instances file — one named `(backend, region)` pair per area. Copy `ros_ws/src/terrain_recognizer/config/instances.example.yaml`:
+
+```yaml
+# robots/<robot>/robot.yaml
+terrain_recognizer:
+  backend: stair_gait                          # default for instances that omit one
+  instances: terrain_recognizer/instances.yaml
+```
+
+```yaml
+# instances.yaml - loaded into the node's private namespace
+instances:
+  front:
+    backend: stair_gait          # optional; defaults to terrain_recognizer.backend
+    roi: {x_min: 0.6, x_max: 3.2, y_min: -0.6, y_max: 0.6}
+  left:
+    backend: stair_gait
+    legacy: false                # never votes on /stair_gait/status
+    roi: {x_min: 0.6, x_max: 3.2, y_min: 0.4, y_max: 1.8}
+```
+
+- Each instance publishes `/terrain_recognizer/<name>/status`, and every instance with a verdict appears together on `/terrain_recognizer/scene` (`terrain_recognizer/TerrainScene`). That is the multi-terrain view; `/terrain_recognizer/status` is not used in this mode.
+- `roi` crops the cloud in `base_link` before the backend runs, so two instances of the same backend can look at different ground. The backend's own `roi_*` keys still apply *inside* the crop, so keep the geometry ROI at least as wide as the instance region.
+- Backend **parameters** stay node-global (one `min_steps`, one `detect_rate_hz`). Instances differ by region, not tuning.
+- `/stair_gait/status` stays a single verdict because NeuPAN's escape gate can only act on one: only instances with `legacy` enabled (default) whose region really overlaps the forward corridor (`legacy_corridor_half_width`, `0.6 m`; at least half of the narrower of region and corridor) vote, `stair_up/down` outranks `flat`, ties break on confidence. A left- or right-facing instance therefore cannot hold the escape.
+
+`stair_gait` geometry knobs (package defaults in `ros_ws/src/terrain_recognizer/config/stair_gait.yaml`):
+
+| Key | Effect | Symptom when wrong |
+|---|---|---|
+| `roi_x_min` / `roi_x_max` | How far ahead the ground is inspected | Stairs detected too late (x_min too large) or mixed with nearby furniture (x_min too small) |
+| `roi_y_half` | Lateral corridor that votes | Verdict flips when the dog walks slightly off-center |
+| `roi_z_min` / `roi_z_max` | Heights accepted in `base_link` | Down-stairs missed when `z_min` cuts the lower treads |
+| `bin_m`, `min_bin_points` | Profile resolution and support | Noisy or missing verdict on sparse far returns |
+| `min_rise_m` / `max_rise_m` | One tread must fall inside this band | Thin treads ignored / walls counted as steps |
+| `min_steps` | Consecutive treads required | Single curbs classified as staircases |
+| `max_rise_spread_m` | Tolerance between treads | Verdict becomes `unknown` on uneven stairs (deliberate) |
+
+`ramp_slope` geometry knobs (package defaults in `ros_ws/src/terrain_recognizer/config/ramp_slope.yaml`) — the outdoor counterpart, for continuous slopes instead of treads (dock levellers, garage ramps, apron-to-yard transitions, drainage dips). It is the same height profile with a straight-line fit, and it never claims `stair_*`: treads fail the plane fit. Keys are prefixed `ramp_slope/` so both backends can run as instances of one node.
+
+| Key | Effect | Symptom when wrong |
+|---|---|---|
+| `ramp_slope/x_min` / `x_max` | Window the slope is measured over | Slope read too late (x_min too large) or averaged over the ramp's end (x_max too large, rms grows) |
+| `ramp_slope/y_half` | Lateral corridor that votes | Verdict flips when the dog rolls slightly off-centre |
+| `ramp_slope/z_min` / `z_max` | Heights accepted in `base_link` | Down-ramps missed when `z_min` cuts the lower end; up-ramps cut when `z_max` is too small |
+| `ramp_slope/bin_m`, `min_bin_points` | Profile resolution and support | Noisy slope on sparse far returns |
+| `ramp_slope/min_bins`, `min_span_m` | Evidence needed before judging | Reports `ramp_*` from a 0.5 m glimpse (raise `min_span_m`) |
+| `ramp_slope/max_rms_m` | "Is it one plane?" residual gate | Stairs and kerbs start being labelled as ramps (lower it) |
+| `ramp_slope/max_step_m` | Largest jump between neighbouring bins | A single kerb or dock edge is read as a slightly tilted "flat" (lower it) |
+| `ramp_slope/min_slope_deg` | Below this the ground is `flat` | A gentle 3 % apron reports `ramp_up` and drops the speed cap |
+| `ramp_slope/max_slope_deg` | Above this the verdict is `unknown` | A staircase is driven as a ramp (keep it well under stair pitch, ~25–30°) |
+
+Running both at once is the normal outdoor setup — stairs ahead, a ramp to the side — and needs instances, because one backend only describes one region:
+
+```yaml
+instances:
+  front: {backend: stair_gait, roi: {x_min: 0.6, x_max: 3.2, y_min: -0.6, y_max: 0.6}}
+  ramp:  {backend: ramp_slope, legacy: false,
+          roi: {x_min: 0.5, x_max: 3.0, y_min: -1.6, y_max: -0.4}}
+```
+
+`ramp_up` / `ramp_down` report `legacy_state: flat` on purpose: a ramp is drivable and reversible, so it must never hold the escape gate — that gate exists for stairs.
+
+Node-level keys in `config/terrain_recognizer.yaml`: `detect_rate_hz` (10 Hz is enough; the detector is cheap), `confirm_frames` (raise to 5 if a mirror or glass door causes flicker), `publish_legacy` (keep `true` unless the legacy `stair_gait` node still runs and both would publish `/stair_gait/status`), `legacy_corridor_half_width` (how wide the forward corridor is that may vote on `/stair_gait/status`).
+
+Verify:
+
+```bash
+rostopic echo -n1 /terrain_recognizer/status     # single-instance mode
+rostopic echo -n1 /terrain_recognizer/scene      # all instances, one message
+rostopic echo -n1 /terrain_recognizer/front/status
+rostopic echo -n1 /stair_gait/status             # legacy JSON consumed by NeuPAN
+```
+
+`dino_v3` is a stub today: it loads its parameters, logs one warning and publishes nothing, so selecting it cannot silently feed a wrong class to the stack.
+
+Ready to bring your own model? [04 · Add a Custom Terrain Recognizer](04_custom_terrain_backend.md) covers the backend contract, a compiling skeleton, build/config wiring and offline tests.

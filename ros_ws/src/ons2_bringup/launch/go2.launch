@@ -14,6 +14,16 @@
   <arg name="local_planner_pkg" default=""/>
   <arg name="local_planner_launch" default=""/>
   <arg name="neupan_config" default=""/>
+  <!-- Escape-policy slot (local_planner.escape_policy in robot.yaml). -->
+  <arg name="escape_policy" default="stuck_escape"/>
+  <arg name="escape_policy_config" default=""/>
+  <!-- Terrain-recognizer slot (top-level terrain_recognizer in robot.yaml).
+       Empty backend disables the node. `terrain_instances` points at a
+       multi-instance file when several terrains coexist (see
+       terrain_recognizer/config/instances.example.yaml). -->
+  <arg name="terrain_backend" default=""/>
+  <arg name="terrain_config" default=""/>
+  <arg name="terrain_instances" default=""/>
   <arg name="mount_x"/>
   <arg name="mount_y"/>
   <arg name="mount_z"/>
@@ -70,6 +80,20 @@
     <arg name="footprint_margin_m" value="$(arg footprint_margin_m)"/>
   </include>
 
+  <!-- Terrain-semantics SLOT (robots/<robot>/robot.yaml -> terrain_recognizer).
+       Publishes /terrain_recognizer/status and, for backwards compatibility, the
+       latched JSON on /stair_gait/status consumed by NeuPAN's escape terrain
+       gate. If the legacy stair_gait node still runs for gait actuation, pass
+       publish_legacy:=false so only one publisher owns that topic. -->
+  <include if="$(eval arg('terrain_backend') != '' or arg('terrain_instances') != '')"
+           file="$(find terrain_recognizer)/launch/terrain_recognizer.launch">
+    <arg name="backend" value="$(arg terrain_backend)"/>
+    <arg name="config" value="$(arg terrain_config)"/>
+    <arg name="instances" value="$(arg terrain_instances)"/>
+    <arg name="cloud_topic" value="/odin1/cloud_slam"/>
+    <arg name="base_frame" value="base_link"/>
+  </include>
+
   <include if="$(eval arg('global_planner') == 'map_planner')"
            file="$(find ons2_bringup)/launch/map_planner.launch">
     <arg name="map_file_name" value="$(arg map_file_name)"/>
@@ -90,6 +114,8 @@
     <arg name="navigation_mode" value="$(arg navigation_mode)"/>
     <arg name="odom_topic" value="/odin1/odometry"/>
     <arg name="odom_feedback" value="false"/>
+    <arg name="escape_policy" value="$(arg escape_policy)"/>
+    <arg name="escape_policy_config" value="$(arg escape_policy_config)"/>
   </include>
 
   <include if="$(eval arg('local_planner') != 'neupan' and arg('local_planner_pkg') != '' and arg('local_planner_launch') != '')"

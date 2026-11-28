@@ -1,0 +1,42 @@
+{
+  "schema_version": 1,
+  "task_id": "insp_mesh_demo_001",
+  "name": "Mesh 示例 · 沿线四点巡检",
+  "metadata": {
+    "note": "字段与 web_console/inspection/schema.py 同一套：步骤 name / sensors / actions[].type / actions[].params / dwell_sec，动作词表 measure_scan · capture_image · speak · wait，传感器词表 camera · lidar_scan。只有 target 是仿真扩展：{from: start|goal} 绑规划起终点，{route_at: 0..1} 取整条路线弧长比例（与模型无关，本文件用它），{waypoint: n} 绑第 n 个途经点，{xyz: [x,y,z]} 给地图坐标；上实机时把它们换成 point_id 或 x/y 即可。"
+  },
+  "steps": [
+    {
+      "step_id": "s1",
+      "name": "起点 · 出发前扫描",
+      "target": {"from": "start"},
+      "sensors": ["lidar_scan"],
+      "actions": [{"type": "measure_scan", "params": {"samples": 1}}],
+      "dwell_sec": 1.4
+    },
+    {
+      "step_id": "s2",
+      "name": "路线 30% · 停顿观察",
+      "target": {"route_at": 0.3},
+      "sensors": [],
+      "actions": [{"type": "wait", "params": {"sec": 1.0}}],
+      "dwell_sec": 1.0
+    },
+    {
+      "step_id": "s3",
+      "name": "路线 62% · 路面拍照",
+      "target": {"route_at": 0.62},
+      "sensors": ["camera"],
+      "actions": [{"type": "capture_image", "params": {"count": 1}}],
+      "dwell_sec": 1.6
+    },
+    {
+      "step_id": "s4",
+      "name": "终点 · 收工播报",
+      "target": {"from": "goal"},
+      "sensors": [],
+      "actions": [{"type": "speak", "params": {"text": "巡检完成，现场正常"}}],
+      "dwell_sec": 2.0
+    }
+  ]
+}

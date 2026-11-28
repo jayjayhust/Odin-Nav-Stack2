@@ -1,6 +1,6 @@
 # Imported mesh · global planning (`mesh_nav.html`)
 
-Load any OBJ / STL - multi storey stairs included - and let the page work out which faces are floor and which are wall, then plan over what is walkable.
+Load any OBJ / STL / GLB - multi storey stairs included - and let the page work out which faces are floor and which are wall, then plan over what is walkable.
 
 **This page does not invent an algorithm.** The map and the search are ports from `ros_ws/src/octo_planner_ros1`:
 
@@ -20,9 +20,17 @@ Added on top, specific to a mesh source:
 
 ## What works
 
-OBJ / STL import, voxelisation, inflation, standable surface in yellow and the standable surface the inflation band costs in red, start and goal picked on the model, resolution and inflation selectable.
+OBJ / STL / GLB import, voxelisation, inflation, standable surface in yellow and the standable surface the inflation band costs in red, start and goal picked on the model, resolution and inflation selectable.
 
 Four storey sample (`example_four_floor.obj`, 293 boxes, 3,516 faces): 5,952 standable cells, strata `5:600 28:518 51:541 73:342 ...`.
+
+### GLB import
+
+`.glb` is decoded locally as glTF 2.0; no loader download or network request is added, so `file://` and offline use keep working. The importer walks the default scene and applies node TRS/matrix transforms before handing triangles to the same voxelisation and planning pipeline.
+
+Supported geometry includes embedded BIN or base64 data-URI buffers, buffer-view/accessor offsets, interleaved and sparse accessors, indexed or non-indexed triangles, triangle strips/fans, multiple meshes/primitives, and mirrored transforms with winding correction. Materials, textures and animations are ignored: navigation needs geometry, and surface normals are recomputed.
+
+Not supported: external buffer URIs, Draco or meshopt compression, quantized POSITION accessors, skinning, morph targets, and GPU instancing. Export a static, uncompressed GLB for navigation.
 
 ## Port pitfalls already fixed
 
@@ -56,9 +64,10 @@ This probe is worth keeping: **when a plan fails, measure the two components bef
 
 ## Global blue, local yellow: the local leg follows NeuPAN, not a homemade A*
 
-- **Global** `0x4fc3ff`, `renderOrder 10`, `depthTest:false`: planned once, drawn end to end.
+- **Global** `0x2f8cff`, `renderOrder 10`, `depthTest:false`: planned once, drawn end to end.
 - **Local** `0xffcf3f`, `renderOrder 11`, under the constraints of the deployed NeuPAN (`robots/go2/neupan/planner.yaml`): differential drive, `max_speed 0.625 m/s / 0.875 rad/s`, `receding 10`, `collision_threshold 0.05`.
 - **Window** `0x6fd3ff` wireframe, shown on level segments only.
+- **Both routes are ribbons, not `THREE.Line`s**: WebGL ignores `linewidth`, so a real line is one device pixel whatever is asked for — unreadable in a recording. Each band's half width comes from a target *pixel* width (8 px global, 7 px local) and that point's distance to the camera, so the route reads equally bold zoomed in or out, capped so it can never draw wider than the robot body (`HALF_W`). Both bands draw at 55% opacity (`ROUTE_OPACITY`), because `depthTest:false` makes them paint over the dog wherever the route runs through it and an opaque band hid the robot. Each point also carries a vertical pair of vertices, because a purely horizontal band collapses to one pixel at a grazing camera angle. `__MESH.dbgRoutePx()` reports what is actually drawn.
 
 The previous version drew "3D A* re-run inside a 2.5 m box on the inflated grid", and that was wrong: `nav_sim.cpp` is explicit that NeuPAN constrains the robot against the point set itself - "no occupancy grid and no inflation" - and that `half width + 0.05 m` is a hard limit, not a cost term. What runs now:
 
@@ -125,6 +134,8 @@ Built, measured, then deleted: **a semantic stair ramp**. It detected the flight
 
 0.05 m remains in the resolution dropdown for manual use, but the `示例 · 单层（25 cm 极限梯）` button is now 0.15 m, and the four storey sample has always been 0.15 m.
 
+The 25 cm tier itself has since been retired: its OBJ, the generator's `--rise / --tread` pair and that button are gone, and the multi-terrain sample below took its place. The numbers in this section and the next stay as the record of what was measured on it.
+
 ### Trying a step-edge test instead of a layer count (rejected, kept for the record)
 
 25 cm is the Go2's climbing limit and the sample sits at 0.15 m. To support 25 cm directly, `stairCol` was rewritten to look for a step edge - a lateral neighbour whose top differs by one riser - instead of counting occupied layers. Two versions were measured:
@@ -155,7 +166,7 @@ With the flag off, all ten scenarios are **identical to before the change** - `o
 
 ## A one storey sample, built for obstacle tests
 
-The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: an **18 x 10 m** room, **44 boxes and 528 triangles**, **all mathematical boxes, nothing reconstructed**.
+The four storey model is awkward for this: the camera has to dive through three plates to see anything you just dropped. So there is a second sample, **one storey with stairs**: an **18 x 10 m** room, **52 boxes and 624 triangles**, **all mathematical boxes, nothing reconstructed**.
 
 - four walls at 3.4 m, no ceiling so the interior stays readable;
 - two 0.4 m columns, a 1.2 x 0.8 x 0.75 desk, a 1.6 m partition, a 0.4 m barrel;
@@ -165,7 +176,7 @@ The four storey model is awkward for this: the camera has to dive through three 
 
 The room grew from 12 x 8 m to 18 x 10 m to fit that last piece. The grid is **130 x 76 x 37 cells**, **9,891 standable cells** on the floor, of which the 0.30 m band costs 210 (2.1%) - cleaner than the four storey 3.7%, because there is no dense stair core.
 
-Generator: `make_example_single_floor.py`, rerun it after changing any number; it writes `example_single_floor.obj` (44 boxes / 15,721 B), and `--rise 0.25 --tread 0.28 --out example_single_floor_25cm.obj` writes the 25 cm tier (44 boxes / 15,665 B).
+Generator: `make_example_single_floor.py`, rerun it after changing any number; it writes `example_single_floor.obj` (52 boxes / 18,623 B). The box layout is written at one tier only - the `--rise / --tread` pair that used to emit a 25 cm variant went with the tier.
 
 `#single` plans **floor to floor**: `(3.0, 4.2)` to `(9.6, 2.2)`, 44 cells / 7.26 m / 466 expanded, going round the columns and the desk.
 
@@ -183,7 +194,7 @@ Two real bugs from the previous round stay fixed: `snap` accepted a free cell it
 
 `#singlepit` reported no path for a long time, and the attempts along the way - an edge test, a tread inflation exemption, a semantic ramp - were all wrong. The real cause was dull: **the 6 cm coping ring around the hole has its top face at exactly z = 0**, and the floor's 3x3 stamping then laid one occupied layer right across the hole, sealing the descending flight at floor height.
 
-**The fix**: keep only the real retaining wall on the east lip (`PX1-0.06..PX1`) and delete the other three decorative 6 cm rings. The pit plans immediately: 19 cells, 3.11 m, path z from 0.13 to -0.47, and the 25 cm tier does the same.
+**The fix**: keep only the real retaining wall on the east lip (`PX1-0.06..PX1`) and delete the other three decorative 6 cm rings. The pit plans immediately: 19 cells, 3.11 m, path z from 0.13 to -0.47 (and the 25 cm tier did the same, before it was retired).
 
 ### The crossing: eight up, a 1.50 m landing, eight down
 
@@ -206,6 +217,46 @@ Two post-processing centring passes were tried, both failed, both removed:
 2. Centring on "same layer walkable plus equal column top, take the midpoint": the column top of that free cell is flattened all the way to the north floor boundary, so the climb points were pushed to the north edge (y 7.88) - worse than the original.
 
 The fix is geometric: the bridge is narrowed from 1.40 m to **1.10 m** (a normal indoor flight), so after 0.30 inflation plus 0.175 half body only 2-3 cells are left and A* has no edge to hug. Re-measured: y becomes 7.28 -> 6.67 -> 7.07 -> 7.28, and 7.28 is the band centre (7.30 in world), i.e. the climb and the deck are back on the centre line.
+
+## A single floor of terrain, not obstacles: the multi-terrain sample
+
+The room sample is about things to go round; this one is about the ground itself, and it replaced the 25 cm tier as the third sample (`示例 单层多地形`). `make_example_multi_terrain.py` builds **two fenced lanes that both climb out of the same west apron**, with a flat aisle between them, so one route can meet every class the terrain recogniser slot knows:
+
+| lane | route | classes |
+|---|---|---|
+| A, y 1.00-3.40 | four treads -> 0.60 m plate -> 12 deg ramp -> 1.24 m dock -> ramp down -> raised floor at 0.60 m | flat, stair_up, ramp_up, dock, ramp_down |
+| B, y 6.20-8.60 | four treads -> platform at 0.60 m -> four more -> upper floor at 1.20 m | stair_up x2, flat |
+| middle, y 4.90-5.50 | flat aisle, two columns and a 0.85 m pallet to go round | flat, obstacles |
+
+32 prisms, 11,299 B, grid **130 x 76 x 33** at 0.15 m; three flights are recognised and all three get a macro edge (`macroOK`).
+
+Two rules the raster imposes, both found by probing the grid rather than guessing at the geometry:
+
+- **A lone riser is closed.** 0.15 m of mass sits inside the floor's own walking layer, the inflation band seals the cells in front of it, and a 0.45 m deep top face is three cells wide, which cannot pass the 3x3 cap test. A recognised flight is exempt, and `recognizers/stairs.js` wants `MIN_RISE = 4` cells of rise, so **0.60 m (four risers) is the shallowest lip this page can climb**; a 0.45 m three-riser flight is rejected with `{"why":"rise","n":165,"rise":3}`.
+- **A ramp needs solid mass under its surface.** A wedge that tapers to zero has no occupied cell under its low end, so `support` finds nothing, the body width test sees a patchy plane, and the foot cannot be entered - the climb stopped three cells short of it in every probe. Both ramps therefore stand on a plate and join two flat levels, which is what a loading dock looks like anyway.
+
+And a shape this planner does not draw: **coming down a plateau onto open floor**. A descent's foot portal snaps onto the flight's own tread stamp inside the flight core, so the macro edge lands in a pocket `fits` rejects (every one of the 40 offers there), and the route has to fight the flight cell by cell. Every lane here therefore ends on a raised floor - the same shape as the 25 cm sample this one replaced, whose goal sat on top of the stair.
+
+Because the ramps are geometry the old maps never had, they needed three planner changes, all general and kept: a **tilted face is not inflated** (it is ground, not a wall), **a tilted face counts as support** (a slope cannot pass the 3x3 wide-cap test by construction), and **`fits` exempts the free cell standing on a tilted face**. Without them a solid ramp is impassable however it is drawn.
+
+Measured through `.probe/probe_terrain.js`, one plan per lane:
+
+| lane | result |
+|---|---|
+| A: apron -> raised floor, over stairs and both ramps | ok; z 0.12 -> 0.20 -> 0.35 -> 0.50 -> 0.65 -> 0.72 -> 0.95 -> 1.17 (dock) -> 0.97 -> 0.77 -> 0.57 |
+| A: apron -> dock top | ok |
+| B: apron -> platform | ok; z 0.12 -> 0.72 |
+| B: apron -> upper floor over both flights | ok; z 0.72 -> 0.80 -> 0.95 -> 1.10 -> 1.25 -> 1.32 |
+| middle aisle, flat, past the columns | ok |
+
+The routes above are read back from the page's own **地形提示** panel rather than from the drawn line, because the drawn line says nothing about what the ground under it is. The panel (left column, under 地图信息; toolbar chip 地形提示, on by default) appends one line each time the class under the dog changes, and mirrors it to the console as `TERRAIN <class>`; the header carries the live class. Riding lane A end to end through `.probe/probe_terrain_hint.py` prints
+
+```
+平地 / 台阶上行 · 4 级 · 共 0.60 m / 台面 · 高 0.60 m / 坡道上行 · 约 11° /
+台面 · 高 1.20 m / 坡道下行 · 约 12° / 台面 · 高 0.60 m
+```
+
+which is lane A's list from the table above, in order. The class is read from the **map's ground stamp** under the body, not from the route's z (a flight spine point is stamped at the tread *top*, and the graded shortcut is not straight in z either), the ramp angle is a least-squares fit through the whole run of steep stamps (a fixed window kept only the lower half of a ramp and read a 12° slope as 15°), and a flight is matched on its claimed tread cells with the lowest claimed level dropped - the flight frame's `len/2` overshoots by three cells on purpose and put the first metre of flat floor inside the flight until this was taken from the cells themselves.
 
 ## Local dynamic avoidance on a flight: the stairs as an unwrapped flat corridor
 
@@ -272,7 +323,7 @@ Three traps that had to be hit before the model worked:
 
 Result: **181 points / 35.7 m / z 0.08 -> 11.03 (top of the 4F plate) / 11,855 expanded nodes / A* 61 ms**, climbing flight by flight inside the stairwell with no shortcut through a plate.
 
-A timing bug was fixed as well: the `#demo` button loads the model asynchronously while the picking code used to run before the map existed and returned silently, which looked like a dead button. It now waits for `state.map`, up to 32 s.
+A timing bug was fixed as well: the `#demo` button loads the model asynchronously while the picking code used to run before the map existed and returned silently, which looked like a dead button. It now waits for `state.map`, up to 32 s. The plan click lives inside that wait too — it used to sit in the outer 500 ms timer and could fire with no endpoints set, and the `#demo,close` camera tween next to it referenced a map handle that only exists inside the wait, so it threw `m is not defined` and never zoomed.
 
 
 ## Importing your own model: units and cell count
@@ -287,7 +338,7 @@ Measured on `ThirdPersonExampleMap.obj` (710 vertices / 520 faces): detected as 
 
 ### Up axis
 
-OBJ's own convention is Y up, while the Odin point cloud and this page keep Z up; Unreal exports converted to OBJ often swap Z for Y, so the model arrives lying on its side. The toolbar now has an up-axis selector (Z / Y / X) that rotates the vertices once on import (Y->Z is `(x,y,z) -> (x,-z,y)`, X->Z is `-> (-z,y,x)`), so the planner, the camera and the dog all share one frame; the HUD states the axis used.
+OBJ's own convention is Y up, while the Odin point cloud and this page keep Z up; Unreal exports converted to OBJ often swap Z for Y, so the model arrives lying on its side. The toolbar defaults to **Y up** for imported meshes and also offers Z / X. It rotates the vertices once on import (Y->Z is `(x,y,z) -> (x,-z,y)`, X->Z is `-> (-z,y,x)`), so the planner, the camera and the dog all share one frame; the HUD states the axis used. The bundled examples are authored Z up, so their buttons select Z explicitly.
 
 Measured on the full `ThirdPersonExampleMap.obj` (36,472 vertices / 54,644 faces / 5.4 MB): only Y-up puts it the right way up (30 x 30 m footprint, 12.7 m tall); detected as centimetres, grid 210 x 210 x 94, 53,633 standable cells, 282 ms build, two-point plan 253 points / 46.9 m / A* 55 ms. With Z-up the same file becomes a 30 m ring of walls - the model is fine, the axes were not aligned.
 
@@ -313,17 +364,17 @@ On the robot the chain is **Q9000 / Odin1 -> MindCloud Studio (.lx project) -> e
 |---|---|
 | `.lx` project, MindCloud adjustment and dynamic-object removal | Not simulated: the model comes straight from OBJ / STL (UE, Revit exports) |
 | `.pcd` 3D cloud | The voxel grid (0.15 m by default, 0.05 m available) |
-| `pcd_to_pgm.py` height slice `--slice-above` / `--slice-below` | 导出层: floors are split by slab peaks and only geometry inside the band is projected, which is the same operation as one slice along z |
+| `pcd_to_pgm.py` height slice `--slice-above` / `--slice-below` | 导出 · 层: floors are split by slab peaks and only geometry inside the band is projected, which is the same operation as one slice along z |
 | `-r` resolution | The 分辨率 selector, written into `resolution:` verbatim |
 | GIMP cleanup (white free, black occupied, grey unknown) | 擦禁行 / 增禁行 brushes: hand edits go straight into the pgm (erased becomes free, painted becomes occupied) and are replayed after a rebuild |
-| `.pgm` + `.yaml` must share a name | 导出 pgm produces `<name>.pgm` and `<name>.yaml`; multi-floor models split into `<name>_f1`, `_f2`, ... |
+| `.pgm` + `.yaml` must share a name | 导出 · `pgm` produces `<name>.pgm` and `<name>.yaml`; multi-floor models split into `<name>_f1`, `_f2`, ... |
 | `.bin` relocalisation map | **Cannot be simulated**: Odin's private format, only produced on the robot |
 | `--map=<name>` startup | Drop the two files into `ros_ws/src/map_planner/maps/`, the `.bin` into `customer_file/`, keep all three names equal, then `--map=<name>` |
 
 Two export modes:
 
 - **几何 (default)**: only walls and obstacles are written as `occupied`; the 0.30 m clearance is left out, exactly like the real pgm, because inflation belongs to the planner costmap.
-- **几何+净空带**: bakes the computed clearance into the image, useful only as a safety-boundary demo.
+- **含净空** (the second option): bakes the computed clearance into the image, useful only as a safety-boundary demo.
 
 The `yaml` matches `map_server`: `image`, `resolution`, `origin` (world coordinate of the grid's lower-left corner, zero orientation), `negate: 0`, `occupied_thresh: 0.65`, `free_thresh: 0.196`. The pgm is binary `P5`, row 0 is the top of the image i.e. world `+y`, and unknown cells are 205, the same grey GIMP uses.
 
@@ -333,7 +384,7 @@ Measured on `ThirdPersonExampleMap.obj` (0.15 m / 0.30 inflation / Y up / 0.45 s
 
 A pgm knows walkable from not walkable, but not "this is a flight, come up the middle". On a 2 m wide, 2.5 m long stair, A* cuts the corner along one railing: shorter in cells, but it hands the local planner a start pose aimed at the wall. The page now writes the flights it fitted as a prior, and the real global planner reads it.
 
-**In the page**: as soon as the mesh loads, the `梯段` checkbox (on by default) draws every flight as an amber tread ribbon plus a pale centre line. The ribbon follows each step rather than boxing the flight in. `导出梯段` writes `<map>.stairs.json`, same frame and name stem as `<map>.pgm` / `.yaml`.
+**In the page**: as soon as the mesh loads, the `楼梯段` checkbox (on by default) draws every flight as an amber tread ribbon plus a pale centre line. The ribbon follows each step rather than boxing the flight in. `导出 · 梯段` writes `<map>.stairs.json`, same frame and name stem as `<map>.pgm` / `.yaml`.
 
 The file holds, per flight, the footprint centre, the unit axis of the run in the pgm world frame, the half width and length, the height span, and the per-step `spine` (lateral centre offset), `halfAt` (half width) and `along` (position along the run). The per-step data matters: at the foot the first treads merge into the floor, so a single centre leaves those steps outside the charge and the line climbs the side there.
 

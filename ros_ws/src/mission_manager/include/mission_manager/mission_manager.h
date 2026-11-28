@@ -47,6 +47,7 @@
 #include <tf2_ros/transform_listener.h>
 
 #include "mission_manager/replan_install_gate.h"
+#include "mission_manager/escape_route_gate.h"
 
 #include <string>
 #include <map>
@@ -190,6 +191,21 @@ private:
   void updateInstallGateBlocked();
   std::vector<mission_manager_gate::Pt> pathToPoints(
       const nav_msgs::Path &path) const;
+
+  // ---- Stuck-escape route rotation (see mission_manager/escape_route_gate.h) ----
+  // Opt-in governor on a NeuPAN /neupan/replan request. It applies the inter-burst
+  // throttle, the terrain gate (no route swap mid-flight), per-goal route-signature
+  // rotation and the same install gate the periodic replan uses, and emits one trace
+  // record per decision. escape_route_enable=false leaves the plain replan untouched.
+  // All decision math lives in the ROS-free gate library so the simulator and the
+  // robot run the identical contract (docs/multifloor/escape-exploration.md).
+  void loadEscapeRouteParams();
+  bool runEscapeEpisode();
+  void resetEscapeEpisode(const std::string &why);
+  void publishEscapeTrace(const mission_manager_gate::EscapeTraceRecord &rec);
+  void stairGaitStatusCb(const std_msgs::StringConstPtr &msg);
+  double escapeCorridorClearance(
+      const std::vector<mission_manager_gate::Pt> &pts) const;
 
   // ---- Multi-floor support (waypoint.floor driven) ----
   void floorStatusCb(const nav_interfaces::FloorStatusConstPtr &msg);
@@ -457,6 +473,21 @@ private:
   std::atomic<bool> install_gate_blocked_gated_{false};
   std::atomic<double> install_gate_min_lateral_m_{-1.0};
   double install_gate_blocked_dwell_sec_{0.0};
+
+  // Stuck-escape route rotation state (default off; opt-in via escape_route_enable).
+  bool escape_route_enable_{false};
+  mission_manager_gate::EscapeParams escape_cfg_;
+  mission_manager_gate::EscapeEpisode escape_episode_;
+  std::string escape_episode_id_;
+  ros::Time escape_last_burst_at_;         // inter-burst throttle clock
+  double escape_last_path_length_{0.0};    // active-path length at last install (progress watch)
+  ros::Publisher escape_trace_pub_;        // /neupan/mission_escape_trace
+  // Terrain snapshot from /stair_gait/status (ROS1; no feed on ROS2 -> never mid-flight).
+  ros::Subscriber stair_gait_status_sub_;
+  std::string stair_gait_status_topic_{"/stair_gait/status"};
+  bool escape_on_flight_{false};
+  bool escape_at_landing_{false};
+  ros::Time escape_terrain_stamp_;
 
   // SRU backend runtime state
   ros::Publisher sru_goal_pub_;

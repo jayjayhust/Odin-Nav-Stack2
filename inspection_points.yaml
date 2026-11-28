@@ -1,0 +1,34 @@
+# Inspection point library (default path: <repo>/inspection_points.yaml).
+#
+# Consumed by web_console/inspection when a task target uses `point_id`.
+# Coordinates are in the map frame, metres, yaw in radians. Keep this file next
+# to the maps it belongs to so a re-survey updates both together.
+#
+# The values below are placeholders: replace them with surveyed points for your
+# own maps before dispatching tasks that reference them.
+schema_version: 1
+
+points:
+  lobby_door:
+    map: 1F
+    floor: "1F"
+    x: 3.42
+    y: -1.08
+    yaw: 0.0
+    name: 大厅门口
+
+  pump_room:
+    map: 1F
+    floor: "1F"
+    x: 12.60
+    y: 4.35
+    yaw: 1.57
+    name: 泵房
+
+  # Same id on two maps: the task's "map" field disambiguates.
+  # stair_A:
+  #   map: 2F
+  #   floor: "2F"
+  #   x: 1.0
+  #   y: 2.0
+  #   yaw: 0.0

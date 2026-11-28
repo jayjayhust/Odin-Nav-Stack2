@@ -147,6 +147,19 @@ Estimates local corridor half-width from scan slices and dynamically clamps `d_m
 | `corridor_guard_enable` | `true` | Suppress premature escape while slowly crawling inside a narrow symmetric corridor (`corridor_standstill_sec: 3.0`). | `★★★` |
 | `path_block_grace_enable` | `true` (SW01) | Temporarily relax `q_theta` (`0.25x`) and `q_s` (`0.5x`) when live scan points block the reference path within `path_block_dist_m` (`0.80 m`), allowing MPC to steer around the obstacle before triggering escape. | `★★★` |
 
+### 3.4 Escape-Policy Slot & Terrain Gate
+
+Entries in `robots/<robot>/robot.yaml`. Both are optional; leaving them out keeps the behaviour described in §3.3. Tuning guidance and the full backend contract are in [02 · Parameter Tuning § 7–8](usage/02_parameter_tuning.md).
+
+| Parameter | Default | Purpose | Priority |
+|---|---|---|---|
+| `local_planner.escape_policy.backend` | `stuck_escape` | Which kernel in `NeuPAN/neupan/escape_policies/` overrides `/cmd_vel` when the planner stalls: `stuck_escape`, `null`, a registry name, or a dotted module exposing `create_policy(cfg)`. | `★` |
+| `local_planner.escape_policy.config` | none | Per-robot YAML layered **over** the `stuck_escape:` block above; only the keys it contains are overridden. | `★` |
+| `stair_suppress_enable` (inside `stuck_escape:`) | `false` | Hold escape while `/stair_gait/status` reports a staircase verdict. Requires a publisher — see `terrain_recognizer` below. | `★★` |
+| `terrain_recognizer.backend` | none | Launches the terrain node: `stair_gait` (treads, Go2 default), `ramp_slope` (continuous slopes, outdoor sites) or `dino_v3` (interface stub). Also the default backend for instances that omit their own. Absent and no `instances` = no terrain node. | `★★` |
+| `terrain_recognizer.config` | none | Optional YAML resolved from `robots/<robot>/` and loaded over the package defaults. | `★` |
+| `terrain_recognizer.instances` | none | Path to a YAML declaring named `(backend, region, legacy)` instances — several terrains in one frame (`/terrain_recognizer/scene`). Node-global backend parameters apply to all of them. | `★★` |
+
 ---
 
 ## 4. Global Planner (`map_planner`) & `sliding_map` Parameters

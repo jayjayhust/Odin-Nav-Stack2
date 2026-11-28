@@ -5,6 +5,11 @@
   <arg name="odom_topic" default="/odin1/odometry"/>
   <arg name="odom_feedback" default="false"/>
   <arg name="launch_prefix" default=""/>
+  <!-- Escape-policy SLOT (local_planner.escape_policy in robot.yaml).
+       stuck_escape | null | <custom> | <dotted.module>; empty config keeps the
+       parameters in the neupan config file. -->
+  <arg name="escape_policy" default="stuck_escape"/>
+  <arg name="escape_policy_config" default=""/>
 
   <param name="/navigation_mode" value="$(arg navigation_mode)"/>
 
@@ -15,5 +20,8 @@
     <env name="NEUPAN_ROS_CONFIG" value="$(arg config)"/>
     <env name="NEUPAN_ODOM_TOPIC" value="$(arg odom_topic)"/>
     <env name="NEUPAN_ODOM_FEEDBACK" value="$(arg odom_feedback)"/>
+    <env name="NEUPAN_ESCAPE_POLICY" value="$(arg escape_policy)"/>
+    <env if="$(eval arg('escape_policy_config') != '')"
+         name="NEUPAN_ESCAPE_CONFIG" value="$(arg escape_policy_config)"/>
   </node>
 </launch>

@@ -152,3 +152,45 @@ local_planner:
       # Paths below are resolved relative to `robots/<your_robot>/`:
       config: neupan/config.yaml          # NeuPAN ROS node wrapper configuration
       planner: neupan/planner.yaml        # NeuPAN MPC kinematics, DUNE weights & NRMP solver config
+
+  # Escape-policy SLOT: swaps only the maneuver that overrides /cmd_vel when the
+  # local planner reports a stall. The NeuPAN MPC core (PAN/DUNE/NRMP) is untouched.
+  # `backend` is resolved as (1) NEUPAN_ESCAPE_POLICY env / this key, falling back
+  # to (2) `stuck_escape`. Built-ins: `stuck_escape` (reference state machine),
+  # `null` (never escape). A dotted module path is also accepted; it must export
+  # `create_policy(cfg)` returning an `EscapePolicy` (see NeuPAN/neupan/escape_policies).
+  escape_policy:
+    backend: stuck_escape
+    # Optional per-robot YAML overriding the policy parameters; when omitted the
+    # parameters come from `escape_policies.<backend>:` / `stuck_escape:` in
+    # `neupan/config.yaml`:
+    # config: neupan/escape_policy.yaml
+
+# ----------------------------------------------------------------------------
+# Terrain Recognizer Slot
+# ----------------------------------------------------------------------------
+# Optional semantic terrain module. `backend` selects a model under the
+# `terrain_recognizer` ROS 1 package:
+#   - `stair_gait` (default): geometric staircase detector (needs Odin1 cloud).
+#   - `ramp_slope`          : geometric ramp / dock-slope detector (same cloud).
+#   - `dino_v3`             : learned visual/geometric backend (prototype, roadmap).
+#   - `<custom>`            : any backend registered in that package.
+# Absent `backend` and absent `instances` disables the node.
+#
+# Several terrains can coexist in one frame (stairs ahead, a ramp to the side, a
+# landing in between) and one backend only describes one region, so use
+# `instances` to declare one (backend, region) pair per area. The file is loaded
+# into the node's private namespace; copy the package's
+# `config/instances.example.yaml`. When `instances` is set it overrides
+# `backend`, which stays the single-instance shorthand.
+#
+# Published: `terrain_recognizer/TerrainObservation` on
+# `/terrain_recognizer/<instance>/status` (`/terrain_recognizer/status` in
+# single-instance mode), all instances together on `/terrain_recognizer/scene`,
+# and a reduced legacy latched JSON on `/stair_gait/status` consumed by
+# NeuPAN's escape terrain gate (only instances overlapping the forward corridor
+# vote there).
+# terrain_recognizer:
+#   backend: stair_gait
+#   config: terrain_recognizer/stair_gait.yaml   # resolved against `robots/<your_robot>/`
+#   instances: terrain_recognizer/instances.yaml # optional; overrides `backend`

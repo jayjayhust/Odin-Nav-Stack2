@@ -163,6 +163,40 @@ stuck_escape:
   path_block_frames: 5
   path_block_clear_frames: 10
 
+  # Route rotation: the *global* half of the escape. The keys above decide how
+  # the robot unsticks itself; this sub-map decides which alternative route is
+  # installed when unsticking is not enough, and how stairs suppress the swap.
+  # One contract, three readers: ros_ws(+ros2_ws)/src/mission_manager/include/
+  # mission_manager/escape_route_gate.h, docs/multifloor/sim/mesh_nav.template.html
+  # (replanGlobal) and docs/multifloor/sim/build.py --profile. Defaults
+  # reproduce the constants the simulator shipped before they were configurable,
+  # so a rebuilt page behaves identically until a value is changed here.
+  route_rotation:
+    enable: true                              # Explore alternative routes during a stuck spell
+    candidate_inflation_scales: [1.0, 1.5, 2.0]  # One global plan per inflation multiplier
+    detour_berths_m: [0.5, 0.95]              # [m] Lateral bypass offsets, first attempt
+    detour_berths_widened_m: [0.5, 0.95, 1.45]  # [m] ... from the second attempt on
+    detour_lookahead_m: 3.0                   # [m] Route ahead searched for the tightest spot
+    detour_lookahead_widened_m: 6.0           # [m] ... from the second attempt on
+    detour_max_seeds: 6                       # Cap on bypass via-points per round
+    detour_swing_rad: [-0.6, 0.6]             # [rad] Angled swings off the perpendicular, third attempt on
+    detour_swing_range_m: 1.3                 # [m] ... at this range
+    install_gain_m: 0.05                      # [m] Clearance gain a candidate needs to replace the route (also the equal-safety ranking band)
+    rescue_clearance_m: 0.225                 # [m] Body half-width + 5cm; below this the route wedges the robot
+    min_candidate_clearance_m: 0.175          # [m] Body half-width; exploration never installs below this
+    max_rounds: 3                             # Attempt index saturates here
+    route_sig_grid_m: 0.5                     # [m] Quantisation of the "already tried" route signature
+    max_tried_sigs: 8                         # Route signatures remembered per episode
+    episode_reset_progress_m: 1.2             # [m] Rolling again by this much -> stuck spell over
+    episode_reset_timeout_sec: 20             # [s] ... or this long since the last install
+    stair_commit_enable: true                 # Terrain rules on (false = terrain-blind escape)
+    escape_only_at_landing: true              # No route swap mid-flight, only on a landing
+    landing_snap_radius_m: 0.45               # [m] Distance to a flight portal that counts as "on the landing"
+    trigger_dwell_ms: 3000                    # [ms] Stalled before the escape fires
+    transition_dwell_ms: 6000                 # [ms] ... across a floor transition (slow gait handover is not a block)
+    replan_throttle_ms: 1200                  # [ms] Minimum gap between escape re-plan bursts
+    trace_enable: true                        # Emit one compact JSON line per escape decision
+
 # Dynamic follow target obstacle masking (disabled by default)
 follow_target:
   enable: false

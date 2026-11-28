@@ -8,6 +8,7 @@ from typing import Callable, Optional
 
 from web_console.camera import OnDemandImageGate
 from web_console.core import ConsoleState, load_pgm_yaml
+from web_console.inspection import InspectionConfig, InspectionManager
 from web_console.intercom import AudioIntercom
 from web_console.mission import MissionController
 from web_console.recorder import HEAVY_TYPES, BagRecorder
@@ -24,13 +25,21 @@ class MonitorStateHub:
     """Central thread-safe state hub shared between ROS callbacks and the HTTP server."""
 
     def __init__(self, stall_detector: Optional[StallDetector] = None,
-                 intercom: Optional[AudioIntercom] = None):
+                 intercom: Optional[AudioIntercom] = None,
+                 inspection_config: Optional[InspectionConfig] = None):
         self.console = ConsoleState()
         self.stall = stall_detector or StallDetector()
         self.camera = OnDemandImageGate(subscribe_fn=lambda: None, unsubscribe_fn=lambda: None, default_fps=8.0)
         self.intercom = intercom or AudioIntercom()
         self.nav = NavigationAndTeleopController()
         self.mission = MissionController()
+        self.inspection = InspectionManager(
+            hub=self,
+            config=inspection_config or InspectionConfig(enabled=False),
+            log=lambda message: print("[inspection] {}".format(message), flush=True))
+        self.mission.set_guard(self.inspection.operator_mission_blocked)
+        # Bound by the ROS adapters; returns min/mean range metrics or None.
+        self.sample_scan = None
         self.stack = NavStack(repo_root=REPO_ROOT)
         self.recorder = BagRecorder(bag_root=BAG_ROOT, repo_root=REPO_ROOT)
         self._list_topics: Callable[[], dict] = lambda: {}
@@ -43,10 +52,13 @@ class MonitorStateHub:
 
     def bind(self, call_trigger: Callable, publish_cmd_vel: Callable, publish_neupan_stop: Callable,
              publish_estop: Callable, subscribe_image: Callable, unsubscribe_image: Callable,
-             start_mission: Callable, list_topics: Optional[Callable] = None) -> None:
+             start_mission: Callable, list_topics: Optional[Callable] = None,
+             sample_scan: Optional[Callable] = None) -> None:
         if list_topics is not None:
             self._list_topics = list_topics
             self._ros_bound = True
+        if sample_scan is not None:
+            self.sample_scan = sample_scan
         self.camera._subscribe_fn = subscribe_image
         self.camera._unsubscribe_fn = unsubscribe_image
         self.nav._call_service_fn = call_trigger
@@ -70,6 +82,7 @@ class MonitorStateHub:
 
     def on_mission_status(self, status: dict) -> None:
         self.mission.update_status(status)
+        self.inspection.on_mission_status(status)
         self.stall.update_mission_state(
             status["state"],
             distance_to_target_m=status.get("distance_to_target_m"),
@@ -77,6 +90,9 @@ class MonitorStateHub:
             current_waypoint_idx=status.get("current_waypoint_idx"),
             total_waypoints=status.get("total_waypoints"),
         )
+
+    def on_mission_event(self, event: dict) -> None:
+        self.inspection.on_mission_event(event)
 
     def update_system_health_json(self, raw_json: str) -> None:
         try:
@@ -115,6 +131,7 @@ class MonitorStateHub:
             "pose": console["pose"],
             "map": console["map"],
             "mission": self.mission.get_status(),
+            "inspection": self.inspection.status(),
             "safety": self.stall.evaluate(),
             "camera": self.camera.get_status(),
             "intercom": self.intercom.get_status(),

@@ -56,6 +56,43 @@ def global_planner_launch(profile: dict, backend: str = '') -> tuple:
     return str(spec.get('package', '')).strip(), str(spec.get('launch', '')).strip()
 
 
+def escape_policy_spec(profile: dict) -> dict:
+    """Escape-policy slot of the active local planner.
+
+    `local_planner.escape_policy.backend` swaps only the stuck-escape maneuver
+    (NeuPAN MPC untouched); `config` is an optional per-robot YAML resolved
+    against the profile directory like every other backend config.
+    """
+    spec = profile.get('local_planner', {}).get('escape_policy', {}) or {}
+    backend = str(spec.get('backend', '') or '').strip() or 'stuck_escape'
+    rel = str(spec.get('config', '') or '').strip()
+    cfg = str((Path(profile['_profile_dir']) / rel).resolve()) if rel else ''
+    return {'backend': backend, 'config': cfg}
+
+
+def terrain_recognizer_spec(profile: dict) -> dict:
+    """Terrain-recognizer slot (top-level `terrain_recognizer`).
+
+    `backend` selects the semantics model (stair_gait geometry by default,
+    dino_v3 / custom for learned backends); `config` is an optional YAML
+    resolved against the profile directory. An empty backend disables the
+    node, which is how robots without terrain sensing opt out.
+
+    `instances` is an optional multi-instance YAML (path, resolved like
+    `config`): several terrains can coexist in one frame, and one backend can
+    only describe one region, so a site with stairs ahead and a ramp to the
+    side declares one instance per region. When present it overrides `backend`.
+    """
+    spec = profile.get('terrain_recognizer', {}) or {}
+    backend = str(spec.get('backend', '') or '').strip()
+    rel = str(spec.get('config', '') or '').strip()
+    cfg = str((Path(profile['_profile_dir']) / rel).resolve()) if rel else ''
+    rel_inst = str(spec.get('instances', '') or '').strip()
+    instances = (str((Path(profile['_profile_dir']) / rel_inst).resolve())
+                 if rel_inst else '')
+    return {'backend': backend, 'config': cfg, 'instances': instances}
+
+
 def sensor_mount_config(profile: dict) -> dict:
     m = profile['geometry']['sensor_mount']
     return {
@@ -187,6 +224,16 @@ def ros1_bringup_arguments(profile: dict, lp_backend: str = '', gp_backend: str 
         args['global_planner_launch'] = gp_launch
     for k, v in {**pc_to_scan_parameters(profile), **map_planner_parameters(profile)}.items():
         args[k] = f'{v}'
+    esc = escape_policy_spec(profile)
+    args['escape_policy'] = esc['backend']
+    if esc['config']:
+        args['escape_policy_config'] = esc['config']
+    terrain = terrain_recognizer_spec(profile)
+    args['terrain_backend'] = terrain['backend']
+    if terrain['config']:
+        args['terrain_config'] = terrain['config']
+    if terrain['instances']:
+        args['terrain_instances'] = terrain['instances']
     return args
 
 
@@ -203,6 +250,16 @@ if __name__ == '__main__':
         print(local_planner_backend(load_profile(sys.argv[2])))
     elif len(sys.argv) == 3 and sys.argv[1] == '--global-planner':
         print(global_planner_backend(load_profile(sys.argv[2])))
+    elif len(sys.argv) == 3 and sys.argv[1] == '--escape-policy':
+        print(escape_policy_spec(load_profile(sys.argv[2]))['backend'])
+    elif len(sys.argv) == 3 and sys.argv[1] == '--escape-policy-config':
+        print(escape_policy_spec(load_profile(sys.argv[2]))['config'])
+    elif len(sys.argv) == 3 and sys.argv[1] == '--terrain-backend':
+        print(terrain_recognizer_spec(load_profile(sys.argv[2]))['backend'])
+    elif len(sys.argv) == 3 and sys.argv[1] == '--terrain-config':
+        print(terrain_recognizer_spec(load_profile(sys.argv[2]))['config'])
+    elif len(sys.argv) == 3 and sys.argv[1] == '--terrain-instances':
+        print(terrain_recognizer_spec(load_profile(sys.argv[2]))['instances'])
     elif len(sys.argv) in (3, 4) and sys.argv[1] == '--local-planner-mode':
         prof = load_profile(sys.argv[2])
         b = sys.argv[3] if len(sys.argv) == 4 else ''
@@ -215,4 +272,4 @@ if __name__ == '__main__':
         print(' '.join(f'{k}:={v}' for k, v in kv.items()))
     else:
         raise SystemExit(
-            'Usage: robot_profile.py (--ros1-bringup-args|--mission-args|--neupan-config|--local-planner|--global-planner|--local-planner-mode) <profile.yaml>')
+            'Usage: robot_profile.py (--ros1-bringup-args|--mission-args|--neupan-config|--local-planner|--global-planner|--local-planner-mode|--escape-policy|--escape-policy-config|--terrain-backend|--terrain-config|--terrain-instances) <profile.yaml>')

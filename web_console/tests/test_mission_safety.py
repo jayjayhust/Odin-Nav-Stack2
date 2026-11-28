@@ -6,7 +6,7 @@ from web_console.safety import StallDetector
 
 def test_parse_waypoints_fills_defaults_and_names():
     points = parse_waypoints([{"x": "1.5", "y": 2}, {"x": 0, "y": 0, "name": "B", "dwell_sec": -3}])
-    assert points[0] == {"x": 1.5, "y": 2.0, "yaw": 0.0, "dwell_sec": 0.0, "name": "P1"}
+    assert points[0] == {"x": 1.5, "y": 2.0, "yaw": 0.0, "dwell_sec": 0.0, "name": "P1", "floor": ""}
     assert points[1]["name"] == "B" and points[1]["dwell_sec"] == 0.0
 
 

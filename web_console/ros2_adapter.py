@@ -15,6 +15,8 @@ TRIGGER_SERVICES = (
     "/waypoint/goal/skip", "/waypoint/goal/reset",
 )
 START_MISSION_SERVICE = "/waypoint_manager/start_mission"
+FRONT_SECTOR_RAD = 0.7      # ~40 deg total window around the first beam of the scan
+MAX_SCAN_SAMPLES = 20
 
 
 def _non_loopback_ipv4s():
@@ -44,15 +46,15 @@ def run(args, hub):
     from rclpy.node import Node
     from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy, qos_profile_sensor_data
     from rclpy.time import Time
-    from sensor_msgs.msg import CompressedImage
+    from sensor_msgs.msg import CompressedImage, LaserScan
     from std_msgs.msg import Bool, Empty, String
     from std_srvs.srv import Trigger
 
     try:
-        from nav_interfaces.msg import MissionStatus, Waypoint
+        from nav_interfaces.msg import MissionEvent, MissionStatus, Waypoint
         from nav_interfaces.srv import StartMission
     except ImportError:
-        MissionStatus = Waypoint = StartMission = None
+        MissionEvent = MissionStatus = Waypoint = StartMission = None
 
     class WebConsoleNode(Node):
         def __init__(self, context):
@@ -61,6 +63,9 @@ def run(args, hub):
             self._img_sub = None
             self._img_lock = threading.Lock()
             self._map_req_inflight = False
+
+            self._scan_lock = threading.Lock()
+            self._latest_scan = None
             self.tf_buffer = tf2_ros.Buffer(cache_time=Duration(seconds=10.0))
             self.tf_listener = tf2_ros.TransformListener(self.tf_buffer, self)
             latched = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL,
@@ -74,6 +79,11 @@ def run(args, hub):
             if MissionStatus is not None:
                 self.create_subscription(MissionStatus, "/waypoint_manager/status", self._on_status,
                                          qos_profile_sensor_data)
+            if MissionEvent is not None:
+                self.create_subscription(MissionEvent, "/waypoint_manager/mission_feedback", self._on_event,
+                                         qos_profile_sensor_data)
+            if args.scan_topic:
+                self.create_subscription(LaserScan, args.scan_topic, self._on_scan, qos_profile_sensor_data)
 
             self._cmd_pub = self.create_publisher(Twist, args.cmd_vel_topic, 10)
             self._neupan_stop_pub = self.create_publisher(Empty, "/neupan/stop", 10)
@@ -149,6 +159,19 @@ def run(args, hub):
         def _on_image(self, msg):
             hub.camera.on_compressed_frame(bytes(msg.data))
 
+        def _on_event(self, msg):
+            hub.on_mission_event({
+                "event": msg.event,
+                "waypoint_idx": int(msg.waypoint_idx),
+                "waypoint_name": msg.waypoint_name,
+                "timestamp": float(msg.timestamp),
+                "message": msg.message,
+            })
+
+        def _on_scan(self, msg):
+            with self._scan_lock:
+                self._latest_scan = msg
+
         def publish_cmd_vel(self, vx, vy, vyaw):
             msg = Twist()
             msg.linear.x, msg.linear.y, msg.angular.z = float(vx), float(vy), float(vyaw)
@@ -204,12 +227,65 @@ def run(args, hub):
                 wp = Waypoint()
                 wp.x, wp.y, wp.yaw = p["x"], p["y"], p["yaw"]
                 wp.dwell_sec, wp.name = p["dwell_sec"], p["name"]
+                if hasattr(wp, "floor"):
+                    wp.floor = str(p.get("floor") or "")
                 req.waypoints.append(wp)
             req.loop, req.temporary = bool(loop), bool(temporary)
             res, err = self._call(START_MISSION_SERVICE, self._start_client, req, timeout=15.0)
             if err:
                 return False, err, ""
             return bool(res.success), str(res.message), str(res.mission_id)
+
+        def sample_scan(self, samples=3, interval_sec=0.2):
+            """Averages finite lidar returns over a few consecutive scans."""
+            count = max(1, min(int(samples), MAX_SCAN_SAMPLES))
+            interval = max(0.0, min(float(interval_sec), 2.0))
+            readings, fronts = [], []
+            latest = None
+            for index in range(count):
+                with self._scan_lock:
+                    latest = self._latest_scan
+                if latest is not None:
+                    low = max(float(latest.range_min), 0.0)
+                    high = float(latest.range_max)
+                    finite = [float(value) for value in latest.ranges if low <= value <= high]
+                    if finite:
+                        readings.append(finite)
+                        front = self._front_range(latest, low, high)
+                        if front is not None:
+                            fronts.append(front)
+                if index + 1 < count:
+                    time.sleep(interval)
+            if not readings:
+                return None
+            flat = [value for reading in readings for value in reading]
+            metrics = {
+                "samples": len(readings),
+                "points": len(flat),
+                "min_range_m": round(min(flat), 3),
+                "mean_range_m": round(sum(flat) / len(flat), 3),
+                "max_range_m": round(max(flat), 3),
+                "frame_id": latest.header.frame_id,
+                "angle_min_rad": round(float(latest.angle_min), 4),
+                "angle_max_rad": round(float(latest.angle_max), 4),
+                "stamp": round(Time.from_msg(latest.header.stamp).nanoseconds * 1e-9, 3),
+            }
+            if fronts:
+                metrics["front_min_range_m"] = round(min(fronts), 3)
+            return metrics
+
+        @staticmethod
+        def _front_range(msg, low, high):
+            """Narrowest return inside the forward sector (index-based, so lidar mounting-agnostic)."""
+            count = len(msg.ranges)
+            width = max(1, int(round(FRONT_SECTOR_RAD / max(float(msg.angle_increment), 1e-6))))
+            half = min(width // 2, count // 2)
+            if half <= 0:
+                return None
+            # The scan's first beam is treated as "forward"; two-sided window covers wraparound.
+            window = list(msg.ranges[:half]) + list(msg.ranges[count - half:])
+            values = [float(value) for value in window if low <= value <= high]
+            return min(values) if values else None
 
     stop_all = False
 
@@ -229,7 +305,8 @@ def run(args, hub):
         hub.bind(call_trigger=node.call_trigger, publish_cmd_vel=node.publish_cmd_vel,
                  publish_neupan_stop=node.publish_neupan_stop, publish_estop=node.publish_estop,
                  subscribe_image=node.subscribe_image, unsubscribe_image=node.unsubscribe_image,
-                 start_mission=node.start_mission, list_topics=node.list_topics)
+                 start_mission=node.start_mission, list_topics=node.list_topics,
+                 sample_scan=node.sample_scan)
         if hub.camera.enabled:
             node.subscribe_image()
         executor = MultiThreadedExecutor(num_threads=4, context=ctx)

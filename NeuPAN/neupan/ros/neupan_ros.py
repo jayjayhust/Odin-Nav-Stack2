@@ -33,7 +33,7 @@ import time
 
 from neupan import neupan
 from neupan.util.adaptive_d_max import AdaptiveDMax, robot_half_width
-from neupan.util.stuck_escape import StuckEscapePolicy
+from neupan.escape_policies import create_escape_policy
 from neupan.ros.ec_trace import ec, EC
 from neupan.util.curvature_speed import CurvatureSpeedGovernor
 from neupan.util import get_transform
@@ -341,8 +341,9 @@ class neupan_core:
             self.config.get("cmd_w_lpf_alpha", 0.7)
         )
 
-        # Escape and adaptive-d_max policies live in neupan.util so that the
-        # simulation benchmark drives the exact same code (see those modules).
+        # Escape and adaptive-d_max policies live outside the ROS layer
+        # (neupan.escape_policies / neupan.util) so that the simulation benchmark
+        # drives the exact same code (see those modules).
         adaptive_cfg = self.config.get("adaptive_d_max", {}) or {}
         try:
             baseline_d_max = float(
@@ -352,20 +353,51 @@ class neupan_core:
             baseline_d_max = None
         self._adaptive = AdaptiveDMax(adaptive_cfg, baseline_d_max=baseline_d_max)
 
+        # Escape-policy SLOT: the maneuver half of local avoidance is pluggable
+        # (local_planner.escape_policy.backend in robot.yaml -> NEUPAN_ESCAPE_POLICY,
+        # or escape_policy.backend in this robot's neupan config.yaml). The MPC
+        # core (PAN/NRMP/DUNE) is untouched either way; only the decision that
+        # overrides /cmd_vel when the robot stalls is swapped. Default backend is
+        # ``stuck_escape``, whose parameters still live under ``stuck_escape:``.
         stuck_cfg = self.config.get("stuck_escape", {}) or {}
-        self._escape = StuckEscapePolicy(
-            stuck_cfg, criterion=stuck_cfg.get("criterion", "displacement")
+        policy_section = self.config.get("escape_policy", {}) or {}
+        _escape_backend = (
+            os.environ.get("NEUPAN_ESCAPE_POLICY", "").strip()
+            or str(policy_section.get("backend", "") or "").strip()
+            or "stuck_escape"
+        )
+        self._escape = create_escape_policy(
+            _escape_backend, self._load_escape_policy_config(_escape_backend, stuck_cfg)
         )
         if self._navigation_mode != "escape":
             self._escape.enable = False
         rospy.loginfo(
-            "[navigation_mode] mode=%s escape=%s recovery=%s",
-            self._navigation_mode, self._escape.enable,
+            "[navigation_mode] mode=%s escape=%s policy=%s recovery=%s",
+            self._navigation_mode, self._escape.enable, _escape_backend,
             self._recovery_behavior_enable,
         )
         self._escape_criterion = self._escape.criterion
         self._escape_ref_path_installed = False
         self._escape_ref_path_obj = None
+
+        # Terrain awareness for the escape (see StuckEscapePolicy.note_terrain).
+        # /stair_gait/status is a latched std_msgs/String carrying the detector
+        # verdict as JSON ({"state":"flat|up|down|unknown",...}); feeding it to
+        # the policy stops the escape reversing off a staircase. Detection only -
+        # stair actuation ships disabled and this gate must not depend on it, and
+        # the publisher's confirm_frames gating already debounces the verdict. The
+        # subscriber is only created when the policy opts in, so an unaffected
+        # robot pays nothing.
+        self._stair_gait_last = None
+        if getattr(self._escape, "stair_suppress_enable", False):
+            _stair_topic = stuck_cfg.get(
+                "stair_status_topic",
+                self.config.get("topic", {}).get("stair_gait_status", "/stair_gait/status"),
+            )
+            rospy.Subscriber(_stair_topic, String, self.stair_gait_callback, queue_size=1)
+            rospy.loginfo(
+                "[escape] terrain suppression ON, subscribing %s", _stair_topic
+            )
 
         # Gated hysteresis deadband on angular velocity during clean straight-line tracking.
         db_cfg = self.config.get("w_deadband", {}) or {}
@@ -920,6 +952,12 @@ class neupan_core:
             "count": info.get("count"),
             "in_corridor": info.get("in_corridor"),
             "corridor_hold": info.get("corridor_hold"),
+            "stair_suppressed": info.get(
+                "stair_suppressed", getattr(self._escape, "stair_suppressed", False)),
+            "terrain_state": info.get("terrain_state",
+                                      getattr(self._escape, "_terrain_state", None)),
+            "terrain_on_flight": info.get(
+                "terrain_on_flight", getattr(self._escape, "_terrain_on_flight", None)),
             "ref_speed_eff": round(self._ref_speed_eff, 3),
             "yaw_rate": round(getattr(self._escape, "last_yaw_rate", 0.0), 3),
             "rotation_exempt": bool(getattr(self._escape, "last_rotation_exempt", False)),
@@ -1184,12 +1222,51 @@ class neupan_core:
         elif msg.command == RecoveryCommand.ABORT:
             self._clear_recovery_episode()
 
+    def _load_escape_policy_config(self, backend, stuck_cfg):
+        """Return the parameter dict handed to the selected escape policy.
+
+        Precedence:
+          1. ``NEUPAN_ESCAPE_CONFIG`` file (exported by the launcher from
+             ``local_planner.escape_policy.config`` in robot.yaml). For the
+             reference backend the shared ``stuck_escape:`` block is used as
+             defaults underneath the file, so a site file only overrides.
+          2. ``escape_policies.<backend>`` in this robot's neupan config.
+          3. the legacy ``stuck_escape:`` block when backend == stuck_escape.
+          4. empty dict (custom backends carry their own defaults).
+        """
+        path = os.environ.get("NEUPAN_ESCAPE_CONFIG", "").strip()
+        if path:
+            if not os.path.isfile(path):
+                rospy.logwarn(
+                    "[escape] NEUPAN_ESCAPE_CONFIG=%s not found; "
+                    "using in-config parameters", path
+                )
+            else:
+                try:
+                    with open(path, "r") as f:
+                        loaded = yaml.safe_load(f) or {}
+                except (OSError, yaml.YAMLError) as exc:
+                    rospy.logwarn("[escape] cannot read %s: %s", path, exc)
+                    loaded = None
+                if isinstance(loaded, dict):
+                    if backend == "stuck_escape":
+                        return {**dict(stuck_cfg), **loaded}
+                    return dict(loaded)
+                if loaded is not None:
+                    rospy.logwarn("[escape] %s is not a mapping; ignored", path)
+        per_backend = (self.config.get("escape_policies", {}) or {}).get(backend)
+        if isinstance(per_backend, dict):
+            return dict(per_backend)
+        if backend == "stuck_escape":
+            return dict(stuck_cfg)
+        return {}
+
     def _stuck_escape_decide_and_command(self):
         """Run one step of the shared escape policy and translate the result
         into ROS side effects (logging, replan requests, MPC state reset).
 
-        The decision logic itself lives in ``neupan.util.stuck_escape`` so the
-        simulation benchmark exercises the same code path.
+        The decision logic itself lives in ``neupan.escape_policies`` (selected
+        backend) so the simulation benchmark exercises the same code path.
         """
         if not self._escape.enable or self.robot_state is None:
             self._trace_escape_info = {}
@@ -1385,7 +1462,7 @@ class neupan_core:
 
     def _update_post_escape_grace(self):
         """Restore the nominal q_theta/q_s once the grace window closes
-        (policy in ``neupan.util.stuck_escape``)."""
+        (policy in ``neupan.escape_policies.stuck_escape``)."""
         restore = self._escape.update_grace(
             time.time(), self.robot_state, self.obstacle_points
         )
@@ -1593,6 +1670,25 @@ class neupan_core:
     def _note_scan_cb(self, t0):
         """Record scan_callback wall duration (subscriber-thread GIL load)."""
         self._trace_scan_cb_ms = (time.perf_counter() - t0) * 1000.0
+
+    def stair_gait_callback(self, msg):
+        """Feed the /stair_gait/status verdict to the escape terrain gate.
+
+        Stamped with wall-clock time to match the ``time.time()`` the escape
+        policy is decided on, so the freshness check in ``note_terrain`` compares
+        like with like. A malformed or unexpected payload is ignored rather than
+        allowed to throw on the subscriber thread.
+        """
+        try:
+            data = json.loads(msg.data)
+        except (ValueError, TypeError, AttributeError):
+            return
+        if not isinstance(data, dict):
+            return
+        self._stair_gait_last = data
+        self._escape.note_terrain(
+            time.time(), data.get("state", "unknown"), data.get("steps", 0)
+        )
 
     def scan_callback(self, scan_msg):
         # Reception timestamp is intentionally wall-clock: it measures callback

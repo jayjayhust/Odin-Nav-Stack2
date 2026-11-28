@@ -1,17 +1,19 @@
 # Module I/O Dataflow & Runtime Diagnostics Map
 
-This document provides the node-level I/O dataflow map, the per-frame NeuPAN internal control pipeline, the `stuck_escape` gate evaluation sequence, and a symptom-to-topic diagnostic table.
+This document provides the node-level I/O dataflow map, the per-frame NeuPAN internal control pipeline, the escape-policy gate evaluation sequence (`stuck_escape` reference), and a symptom-to-topic diagnostic table.
 
 ---
 
 ## 1. End-to-End Runtime Dataflow
+
+> All pose and registered-cloud inputs below originate from **MindSLAM**, the closed-source SLAM engine inside Odin1 (relocalization mode, `custom_map_mode: 2`); `odin_ros_driver` is only its open ROS wrapper. The stack itself runs no SLAM — see [ONS2 Architecture § 5.1.1](ONS2_ARCHITECTURE.md#511-navigation-principle-mindslam-as-the-localization--mapping-backbone).
 
 ### 1.1 Path-Tracking Pipeline (`local_planner_mode: action`, Default NeuPAN or Custom Tracker)
 
 ```mermaid
 flowchart LR
     subgraph Perception["Perception & 360 Memory"]
-        ODIN["odin_ros_driver"] -->|"/odin1/cloud_slam"| P2S["pc_to_scan"]
+        ODIN["odin_ros_driver (MindSLAM inside Odin1)"] -->|"/odin1/cloud_slam"| P2S["pc_to_scan"]
         ODIN -->|"/odin1/odometry"| LP["Local Planner (neupan_ros)"]
         P2S -->|"/scan_raw or /scan"| STF["scan_temporal_filter"]
         STF -->|"/scan"| F360["sliding_map_node"]
@@ -53,10 +55,11 @@ flowchart LR
 
 | Module | Subscribed Inputs | Published Outputs / Services | Key Config Source | Primary Diagnostic Signal |
 |---|---|---|---|---|
-| `odin_ros_driver` | Sensor USB / Ethernet | `/odin1/cloud_slam`, `/odin1/odometry`, TF `map->odom->imu` | `control_command.yaml` (`custom_map_mode=2`) | `rostopic hz /odin1/odometry` |
+| `odin_ros_driver` | Sensor USB / Ethernet (MindSLAM engine on-device) | `/odin1/cloud_slam`, `/odin1/odometry`, TF `map->odom->imu` | `control_command.yaml` (`custom_map_mode=2`) | `rostopic hz /odin1/odometry` |
 | `pc_to_scan` | `/odin1/cloud_filtered` (ROS 2 default, `cloud_filter=on`) or `/odin1/cloud_slam` (ROS 1 default, or `cloud_filter=off`) | `/scan` (or `/scan_raw`), 90° FOV (`±0.7853 rad`), `range_max=5.0 m` | `robots/<robot>/robot.yaml` (`navigation.min/max_height`) | `rostopic hz /scan` |
 | `scan_temporal_filter` | `/scan_raw` | `/scan` | `enable: false` (passthrough by default) | `/scan_temporal_filter/trace` |
 | `sliding_map_node` | `/scan`, `/odin1/odometry`, TF | `/scan_360`, `/sliding_map` | `robots/<robot>/robot.yaml` (`geometry.footprint`), `cell_decay_sec=8.0` | `/sliding_map` occupied cell count |
+| `terrain_recognizer` (opt-in) | `/odin1/cloud_slam`, TF `base_link` | `/terrain_recognizer/status`, legacy `/stair_gait/status` | `terrain_recognizer/config/*.yaml` + `robot.yaml` (`terrain_recognizer.*`) | `/terrain_recognizer/status` |
 | `map_planner` | `/map`, `/sliding_map` | `/initial_path`, `/inflated_map`, srv `/map_planner/plan`, `/map_planner/validate_path` | `map_planner/config/nav_params.yaml` + `robot.yaml` overrides | Plan latency log & `/inflated_map` |
 | `neupan_ros` | `/scan_360` (or `/scan`), `/initial_path`, `/odin1/odometry`, TF | `/cmd_vel`, `/neupan/replan`, `/neupan/control_trace`, act `/neupan/nav_path` | `robots/<robot>/neupan/{config,planner}.yaml` | `/neupan/control_trace` |
 | `mission_manager` | `/odin1/odometry`, `/neupan/replan`, `/move_base_simple/goal` | `/waypoint_manager/status`, `/waypoint_manager/mission_feedback`, `/neupan/stop` | `robots/<robot>/robot.yaml` (`mission.*`, `local_planner.*`) | `/waypoint_manager/status` |
@@ -70,7 +73,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     A["LaserScan (/scan_360 or /scan) → Obstacle point cloud in map frame"] --> B["adaptive_d_max: estimate corridor half-width → clamp d_max"]
-    B --> C{"stuck_escape.decide()"}
+    B --> C{"escape_policy.decide()<br/>(default: stuck_escape)"}
     C -- "active" --> D["Escape command: reverse v = -back_speed + gated rotation w"]
     C -- "inactive" --> E["NeuPAN MPC: Analytical DUNE dual + NRMP SCS conic QP"]
     D & E --> F["Acceleration rate limiter + w_deadband hysteresis gate"]
@@ -79,8 +82,10 @@ flowchart TD
 
 ---
 
-## 4. `stuck_escape.decide()` Gate Sequence
+## 4. `escape_policy.decide()` Gate Sequence
 
+The local planner selects the policy through `local_planner.escape_policy.backend` (§5.4.3 of
+[ONS2_ARCHITECTURE](ONS2_ARCHITECTURE.md)); the sequence below is the `stuck_escape` reference.
 Each control frame evaluates the following gates in order:
 
 | # | Gate | Condition | Parameter (`config.yaml`) | Trace Field |
@@ -100,8 +105,8 @@ Each control frame evaluates the following gates in order:
 
 | Observed Symptom | First Module to Check | Topic / Field to Inspect |
 |---|---|---|
-| Robot backs up repeatedly without rotating | `stuck_escape` rotation gates (#2 & #3) | `rotation_blocked`, `nearest_obs` in `/neupan/escape_trace` |
-| Robot waits several seconds before escaping | `stuck_escape` guards (#5 & #6) | `in_corridor`, `corridor_hold`, `clearing`, `count` |
+| Robot backs up repeatedly without rotating | escape policy `stuck_escape` rotation gates (#2 & #3) | `rotation_blocked`, `nearest_obs` in `/neupan/escape_trace` |
+| Robot waits several seconds before escaping | escape policy `stuck_escape` guards (#5 & #6) | `in_corridor`, `corridor_hold`, `clearing`, `count` |
 | Path cuts through an obstacle seen moments ago | `sliding_map_node` decay / footprint | `/sliding_map` and `cell_decay_sec` (`8.0 s`) |
 | Global A* path hugs walls or clips corners | `map_planner` parameters | `inflation_radius`, `obstacle_cost_safe_distance`, `line_of_sight_safe_distance` in `robot.yaml` |
 | Mission pauses with `PATH_SAFETY_WAIT` (ROS 2) | `mission_manager` path safety check | `/waypoint_manager/mission_feedback` reason (`SCAN_STALE`, `DYNAMIC_MAP`, or obstacle on active path) |

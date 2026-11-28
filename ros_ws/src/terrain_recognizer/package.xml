@@ -1,0 +1,30 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>terrain_recognizer</name>
+  <version>0.1.0</version>
+  <description>
+    Terrain-semantics SLOT for ONS2. One node, swappable backends: the geometric
+    stair_gait detector is the reference implementation, learned backends such as
+    DINOv3 plug in behind the same interface. Publishes
+    terrain_recognizer/TerrainObservation on /terrain_recognizer/status and, for
+    backwards compatibility, the latched JSON verdict on /stair_gait/status that
+    NeuPAN's escape terrain gate consumes.
+  </description>
+  <maintainer email="jayjayhust@users.noreply.github.com">jayjayhust</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>std_msgs</depend>
+  <depend>geometry_msgs</depend>
+  <depend>message_generation</depend>
+  <depend>message_runtime</depend>
+  <depend>pcl_ros</depend>
+  <depend>pcl_conversions</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+  <depend>libpcl-all-dev</depend>
+  <depend>stair_gait</depend>
+</package>

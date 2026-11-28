@@ -141,6 +141,19 @@ ONS2 导航栈的实用参数词典与症状导向排障指南（涉及 `map_pla
 | `corridor_guard_enable` | `true` | 在窄对称走廊里慢速蠕行时，抑制过早脱困（`corridor_standstill_sec: 3.0`） | `★★★` |
 | `path_block_grace_enable` | `true`（SW01） | 当实时扫描点在 `path_block_dist_m`（`0.80 m`）内挡住参考路径时，临时放松 `q_theta`（`0.25x`）与 `q_s`（`0.5x`），让 MPC 先尝试绕行再触发脱困 | `★★★` |
 
+### 3.4 脱困策略槽与地形门控
+
+写在 `robots/<robot>/robot.yaml` 里。两项都可选，不写就等价于 §3.3 描述的行为。调参思路与后端契约见 [02 · 参数调优 § 7–8](usage/02_parameter_tuning.zh-CN.md)。
+
+| 参数 | 默认 | 作用 | 优先级 |
+|---|---|---|---|
+| `local_planner.escape_policy.backend` | `stuck_escape` | 规划器卡滞时由 `NeuPAN/neupan/escape_policies/` 里哪个策略接管 `/cmd_vel`：`stuck_escape`、`null`、注册名，或暴露 `create_policy(cfg)` 的点号模块 | `★` |
+| `local_planner.escape_policy.config` | 无 | 逐机器人 YAML，**叠加在**上面的 `stuck_escape:` 块之上；只覆盖它包含的键 | `★` |
+| `stair_suppress_enable`（在 `stuck_escape:` 内） | `false` | `/stair_gait/status` 报出楼梯结论时压住脱困。需要有发布方——见下面的 `terrain_recognizer` | `★★` |
+| `terrain_recognizer.backend` | 无 | 启动地形节点：`stair_gait`（踏步，Go2 默认）、`ramp_slope`（连续斜坡，户外场地）或 `dino_v3`（接口空壳）。同时也是没写自己 backend 的实例的默认后端。不写且无 `instances` 就不启动地形节点 | `★★` |
+| `terrain_recognizer.config` | 无 | 可选 YAML，从 `robots/<robot>/` 解析，叠加在包内默认值之上 | `★` |
+| `terrain_recognizer.instances` | 无 | YAML 路径，声明具名的 `(backend, region, legacy)` 实例——同一帧里识别多处地形（`/terrain_recognizer/scene`）。后端参数是节点级的，对所有实例生效 | `★★` |
+
 ---
 
 ## 4. 全局规划器（`map_planner`）与 `sliding_map` 参数
